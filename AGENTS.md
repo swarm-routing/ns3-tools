@@ -26,12 +26,16 @@ docs/               marker-line contract, arena reference
 ## Build & verify
 
 CI is [`reusable-ns3-ci.yml`](https://github.com/swarm-routing/.github/blob/main/.github/workflows/reusable-ns3-ci.yml):
-the module builds inside `ghcr.io/swarm-routing/ns3-dev:3.43-{debug,sanitized}`
-(warm ns-3 tree; only the module compiles) and runs its test.py suites. The
+the module builds inside `ghcr.io/swarm-routing/ns3-dev:latest-{debug,sanitized}`
+(warm ns-3 tree; only the module compiles) and runs its test.py suites.
+`latest` is the release ns-3 supports (it maintains its latest only), so
+automatic CI follows ns-3 with no edit; an older ns-3 release runs only on
+demand, through a manual `workflow_dispatch` passing `versions` (org
+CONTRIBUTING invariant 7). The
 same locally:
 
 ```bash
-docker run --rm -v "$PWD:/src/swarm-tools:ro" ghcr.io/swarm-routing/ns3-dev:3.43-debug \
+docker run --rm -v "$PWD:/src/swarm-tools:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
     ns3-build-contrib --test swarm-tools=/src/swarm-tools/ns3
 ```
 
