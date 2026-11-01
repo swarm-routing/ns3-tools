@@ -18,8 +18,8 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 `run-scenarios.py` / `bench_parse.py`.
 
 ```
-ns3/                contrib module (probes, emitters, arenas, tests)
-python/ns3_tool/    the ns3-tool CLI (stdlib-first), tests alongside
+ns3/                contrib module (probes, emitters, arenas, tests) — GPL-2.0-only
+python/ns3_tool/    the ns3-tool CLI (stdlib-first), tests alongside — MIT OR GPL-2.0-only
 docs/               marker-line contract, arena reference
 ```
 
@@ -44,18 +44,26 @@ with the code they test).
 
 Org-wide (1–9), then this repo's own.
 
-1. **SPDX header on every original source file.** `.h`, `.cc`, `.cpp`, `.py`
-   (and scripts, workflows) start with
+1. **Licensing per directory, as AntHocNet** ([`LICENSING.md`](LICENSING.md);
+   AntHocNet [LICENSING.md](https://github.com/danieljoppi/AntHocNet/blob/main/LICENSING.md),
+   [ADR-0028](https://github.com/danieljoppi/AntHocNet/blob/main/docs/adr/0028-core-is-dual-licensed.md)). A
+   simulator-free `core/` and the standalone tooling are `MIT OR GPL-2.0-only`;
+   ns-3 modules, the site, docs and data are `GPL-2.0-only`. Every original
+   `.h`/`.hpp`/`.cc`/`.cpp`/`.py`/`.sh` starts with
    `// Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)` +
-   `// SPDX-License-Identifier: MIT` (`#` comments where needed). CI checks it.
-2. **No GPL code in an MIT repo.** Never copy from ns-3's `src/aodv`, `src/olsr`
-   or any other ns-3 module; implement against public ns-3 interfaces. From
-   AntHocNet, only the `MIT OR GPL-2.0-only` paths (`core/`, `tools/`,
-   `ns3/tools/`, `docs/tools/`) may be extracted as-is. Its `ns3/` modules
-   (the `adaptive` arms, `routing-bench`, `oracle`) are **GPL-2.0-only**:
-   bringing one here needs the copyright holder's explicit relicensing
-   decision recorded in an issue first. `ns3/baselines/aomdv` and `gpsr` are
-   third-party GPL and never come here.
+   `// SPDX-License-Identifier: <MIT OR GPL-2.0-only | GPL-2.0-only>` (`#`
+   comments where needed), matching its directory in `LICENSING.md`. CI
+   (`reusable-licence-check.yml`) checks it. A new directory gets its row in
+   `LICENSING.md` in the same PR.
+2. **The licence boundary only goes one way.** GPL code may use the dual
+   parts; dual code never pulls GPL-only code in: a `core/` file includes only
+   the C++ standard library and other `core/` files (CI checks it), and a dual
+   script imports no GPL-only code. Code coming from AntHocNet keeps its
+   licence: its `core/`/`tools/` (dual) may land in dual or GPL paths here; its
+   `ns3/` modules and `web/` (GPL-2.0-only) only in GPL paths. Third-party code
+   (AntHocNet's vendored `aomdv`/`gpsr`, IITP RAS) lands only in GPL paths with
+   its provenance recorded. Write clean implementations against public ns-3
+   interfaces rather than copying ns-3's `src/aodv`/`src/olsr`.
 3. **Wire formats are POD + versioned.** Control headers are
    simulator-independent POD structs with bounds-checked little-endian
    readers/writers, a leading version byte, and deterministic roundtrip + fuzz
@@ -116,8 +124,8 @@ Org-wide (1–9), then this repo's own.
 
 | You want to… | Go to |
 |--------------|-------|
-| Python sources to port (MIT OR GPL) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`, `campaign.py`, `scenario_check.py`), `ns3/tools/run-scenarios.py` |
-| Harness design to reimplement (GPL in AntHocNet — do not copy) | AntHocNet `ns3/routing-bench/`, `docs/comparison-harness.md`, ADR-0027 |
+| Python sources to port (MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`, `campaign.py`, `scenario_check.py`), `ns3/tools/run-scenarios.py` |
+| Harness to port into `ns3/` (GPL-2.0-only, so it lands as-is in a GPL path) | AntHocNet `ns3/routing-bench/`, `docs/comparison-harness.md`, ADR-0027 |
 | Open issues being migrated here | AntHocNet #764, #771, #772, #773, #791, #431, #294 |
 | The org's invariants, labels, issue shape | [`swarm-routing/.github` CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md) |
 | The reference implementation and its history | [`danieljoppi/AntHocNet`](https://github.com/danieljoppi/AntHocNet) (`AGENTS.md`, `CONTEXT.md`, `docs/adr/`) |
