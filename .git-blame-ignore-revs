@@ -1,0 +1,4 @@
+# Formatting-only commits: `git blame --ignore-revs-file .git-blame-ignore-revs`
+# (GitHub's blame view reads this file automatically).
+# style(python): ruff format the readers and their self-tests (#30)
+f80d5415e922d0b0f4549bebe28b94f9cd463e59

@@ -33,6 +33,14 @@ jobs:
       # The harness keeps AntHocNet's formatting while it moves (a restyle would
       # hide the move in the diff); adopting the org .clang-format is its own PR.
       format: false
+      # Org invariant 5: seed 1 twice byte-identical, seed 2 different
+      # (swarm-routing/.github#26). OLSR: the stock arm that delivers on `latest`.
+      determinism: routing-compare --scenario=paper --nNodes=20 --time=30 --runs=1 --protocols=olsr --firstRun={seed}
+      # routing-compare prints the seed (`firstRun=` in ##CONFIG##, the run index
+      # after each marker tag); strip both before the cross-seed comparison, so
+      # "seed 2 differs" has to come from the results (swarm-routing/.github#40).
+      determinism-normalize: 's/firstRun=[0-9]+//; s/^(##[A-Z]+##) [0-9]+ /\1 /'
+      # strict-warnings stays off until the harness is clean under it (#31).
       dual-roots: 'python/ tools/'
       core-roots: ''
 
