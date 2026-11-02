@@ -29,7 +29,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import native_view as nv
+import native_view as nv  # noqa: E402 (sibling import after the sys.path insert)
 
 bp = nv.bp
 su = nv._load("stats_util")
@@ -69,7 +69,7 @@ def welch(a, b):
     se = math.sqrt(va + vb)
     if se == 0:
         return mb - ma, mb - ma, mb - ma
-    df = (va + vb) ** 2 / (va ** 2 / (len(a) - 1) + vb ** 2 / (len(b) - 1))
+    df = (va + vb) ** 2 / (va**2 / (len(a) - 1) + vb**2 / (len(b) - 1))
     h = su.t975(max(1, int(df))) * se
     return mb - ma, mb - ma - h, mb - ma + h
 
@@ -113,8 +113,18 @@ def anchor_rows(gen, d):
             if arm not in runs or ref not in runs:
                 continue
             st, v = compare(runs[arm], runs[ref])
-            rows.append((cell, arm, ref, len(runs[arm]), nv.mean(runs[arm], "pdr"),
-                         nv.mean(runs[ref], "pdr"), st, v))
+            rows.append(
+                (
+                    cell,
+                    arm,
+                    ref,
+                    len(runs[arm]),
+                    nv.mean(runs[arm], "pdr"),
+                    nv.mean(runs[ref], "pdr"),
+                    st,
+                    v,
+                )
+            )
     return rows
 
 
@@ -137,8 +147,18 @@ def family_rows(gen, control, d):
                     if ref not in ctrl:
                         continue
                     st, v = compare(arms[arm], ctrl[ref])
-                    rows.append((family, cell, arm, f"{label} ({ref})" if label != ref else ref,
-                                 nv.mean(arms[arm], "pdr"), nv.mean(ctrl[ref], "pdr"), st, v))
+                    rows.append(
+                        (
+                            family,
+                            cell,
+                            arm,
+                            f"{label} ({ref})" if label != ref else ref,
+                            nv.mean(arms[arm], "pdr"),
+                            nv.mean(ctrl[ref], "pdr"),
+                            st,
+                            v,
+                        )
+                    )
     return rows
 
 
@@ -149,24 +169,32 @@ def main():
     ap.add_argument("--dir", default=os.path.join("results", "cells"))  # relative to the cwd
     a = ap.parse_args()
     print("## Anchors\n")
-    print("| cell | arm | reference | n | arm PDR % | ref PDR % | dPDR (pp) "
-          "| d delay99 (ms) | d NRL | verdict |")
+    print(
+        "| cell | arm | reference | n | arm PDR % | ref PDR % | dPDR (pp) "
+        "| d delay99 (ms) | d NRL | verdict |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|")
     for cell, arm, ref, n, pa, pr, st, v in anchor_rows(a.gen, a.dir):
-        print(f"| {cell} | {arm} | {ref} | {n} | {pa:.2f} | {pr:.2f} | {fmt(st, 'pdr')} "
-              f"| {fmt(st, 'delay99')} | {fmt(st, 'nrl')} | {v} |")
+        print(
+            f"| {cell} | {arm} | {ref} | {n} | {pa:.2f} | {pr:.2f} | {fmt(st, 'pdr')} "
+            f"| {fmt(st, 'delay99')} | {fmt(st, 'nrl')} | {v} |"
+        )
     print("\n## Termite trend (1 -> 20 m/s)\n")
     print("| metric | 1 m/s | 20 m/s | difference (Welch 95 % CI) |")
     print("|---|---|---|---|")
     for name, a1, a20, (dd, lo, hi) in termite_trend(a.gen, a.dir):
         print(f"| {name} | {a1:.2f} | {a20:.2f} | {dd:+.2f} [{lo:+.2f}, {hi:+.2f}] |")
     print("\n## Family comparison\n")
-    print("| family | cell | arm | reference | arm PDR % | ref PDR % | dPDR (pp) "
-          "| d delay99 (ms) | d NRL | verdict |")
+    print(
+        "| family | cell | arm | reference | arm PDR % | ref PDR % | dPDR (pp) "
+        "| d delay99 (ms) | d NRL | verdict |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|")
     for family, cell, arm, ref, pa, pr, st, v in family_rows(a.gen, a.control, a.dir):
-        print(f"| {family} | {cell} | {arm} | {ref} | {pa:.2f} | {pr:.2f} | {fmt(st, 'pdr')} "
-              f"| {fmt(st, 'delay99')} | {fmt(st, 'nrl')} | {v} |")
+        print(
+            f"| {family} | {cell} | {arm} | {ref} | {pa:.2f} | {pr:.2f} | {fmt(st, 'pdr')} "
+            f"| {fmt(st, 'delay99')} | {fmt(st, 'nrl')} | {v} |"
+        )
     return 0
 
 

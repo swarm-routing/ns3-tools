@@ -64,6 +64,7 @@ recomputed from the columns this parser believes are that metric and compared
 against the harness's own number; a disagreement prints MAPPING FAIL and the
 script exits non-zero. Do not trust any number from a cell that failed.
 """
+
 import argparse
 import math
 import re
@@ -89,8 +90,7 @@ BENCH = re.compile(r"##BENCH##\s+(.+)$")
 # field-aligned): pdr delay delay99 thrput nrl jitter off50 off90 nrl_bytes;
 # off50/off90 may print "inf".
 RUN = re.compile(r"##RUN##\s+(\d+)\s+([A-Za-z][\w-]*)\s+(.+?)\s*$")
-RUN_METRICS = ["pdr", "delay", "delay99", "thrput", "nrl",
-               "jitter", "off50", "off90", "nrl_bytes"]
+RUN_METRICS = ["pdr", "delay", "delay99", "thrput", "nrl", "jitter", "off50", "off90", "nrl_bytes"]
 # The harness's independent dispersion line (#28):
 # "# stddev <proto> pdr=.. delay=.. delay99=.. nrl=.. nrl_bytes=.."
 STDDEV = re.compile(r"^#\s+stddev\s+([A-Za-z][\w-]*)\s+(.+)$")
@@ -103,10 +103,8 @@ PERF = re.compile(r"##PERF##.*")
 # setprecision), so a recomputed sd can differ from the reported one by the
 # rounding alone. run-row: pdr/delay/delay99 .1f, nrl .2f, nrl_bytes .4f;
 # stddev line: pdr .2f, delay/delay99 .1f, nrl/nrl_bytes .3f.
-ULP_RUN = {"pdr": .05, "delay": .05, "delay99": .05,
-           "nrl": .005, "nrl_bytes": .00005}
-ULP_SD = {"pdr": .005, "delay": .05, "delay99": .05,
-          "nrl": .0005, "nrl_bytes": .0005}
+ULP_RUN = {"pdr": 0.05, "delay": 0.05, "delay99": 0.05, "nrl": 0.005, "nrl_bytes": 0.00005}
+ULP_SD = {"pdr": 0.005, "delay": 0.05, "delay99": 0.05, "nrl": 0.0005, "nrl_bytes": 0.0005}
 
 
 def parse_cell(text):
@@ -128,16 +126,17 @@ def parse_cell(text):
             d = dict(zip(isl_cols, s.split(",")))
             try:
                 rows[d["protocol"]] = {
-                    "pdr": float(d["pdr_pct"]), "delay": float(d["delay_ms"]),
+                    "pdr": float(d["pdr_pct"]),
+                    "delay": float(d["delay_ms"]),
                     "delay99": float(d["delay99_ms"]),
                     "thrput": float(d["throughput_kbps"]),
-                    "nrl": float(d["nrl"])}
+                    "nrl": float(d["nrl"]),
+                }
             except (KeyError, ValueError):
                 pass
             continue
         m = BENCH.search(line) or ROW.match(line)
-        parts = (m.group(1).split() if m and m.re is BENCH
-                 else (m.groups() if m else None))
+        parts = m.group(1).split() if m and m.re is BENCH else (m.groups() if m else None)
         if not parts:
             continue
         proto = parts[0]
@@ -242,8 +241,7 @@ def mapping_check(runs, sds):
             if len(vals) < 2:
                 continue
             sd = stats_util.sample_sd(vals)
-            tol = (ULP_RUN[metric] + ULP_SD[metric]
-                   + 0.01 * max(sd, reported[metric]))
+            tol = ULP_RUN[metric] + ULP_SD[metric] + 0.01 * max(sd, reported[metric])
             checks += 1
             if abs(sd - reported[metric]) > tol:
                 fails.append((proto, metric, sd, reported[metric]))
@@ -260,9 +258,14 @@ def paired(base_runs, cur_runs):
     common = sorted(set(base_runs) & set(cur_runs))
     if not common:
         return None
-    signs = ["+" if cur_runs[r]["pdr"] > base_runs[r]["pdr"] else
-             "-" if cur_runs[r]["pdr"] < base_runs[r]["pdr"] else "0"
-             for r in common]
+    signs = [
+        "+"
+        if cur_runs[r]["pdr"] > base_runs[r]["pdr"]
+        else "-"
+        if cur_runs[r]["pdr"] < base_runs[r]["pdr"]
+        else "0"
+        for r in common
+    ]
     pos, neg, n = signs.count("+"), signs.count("-"), len(signs)
     if pos * 3 > n * 2:
         call = f"{pos}/{n} positive (sign-consistent)"
@@ -291,16 +294,18 @@ def paired_stats(base_runs, cur_runs):
         return None
     stats, sig = {}, []
     for metric, good in PAIRED_METRICS:
-        diffs = [cur_runs[r][metric] - base_runs[r][metric] for r in common
-                 if metric in cur_runs[r] and metric in base_runs[r]]
+        diffs = [
+            cur_runs[r][metric] - base_runs[r][metric]
+            for r in common
+            if metric in cur_runs[r] and metric in base_runs[r]
+        ]
         if len(diffs) < 2:
             continue
         dmean = sum(diffs) / len(diffs)
         if metric == "delay99":
             lo, hi = stats_util.bootstrap_ci_mean(diffs)
         else:
-            hw = stats_util.t_halfwidth(stats_util.sample_sd(diffs),
-                                        len(diffs))
+            hw = stats_util.t_halfwidth(stats_util.sample_sd(diffs), len(diffs))
             lo, hi = dmean - hw, dmean + hw
         _, _, p, _ = stats_util.wilcoxon(diffs)
         stats[metric] = (dmean, lo, hi, p)
@@ -355,7 +360,7 @@ def verdict(base, cur):
         return (cur[k] - base[k]) / base[k] * 100 if base.get(k) else 0.0
 
     dd = pct("delay")
-    dd99 = pct("delay99")   # the paper's QoS/jitter metric — often the real signal
+    dd99 = pct("delay99")  # the paper's QoS/jitter metric — often the real signal
     dn = pct("nrl")
     # Per-metric "good" direction, only counted past a materiality threshold:
     # PDR up is good; delay99 and NRL down are good. A flat-PDR run whose tail and
@@ -425,9 +430,11 @@ def control(before_text, after_text, proto):
         if ps:
             detail += f"; {fmt_paired(ps)}"
         if p == "aodv" and multi and ps and ps[2] == "PAIRED-NOISE":
-            lines.append(f"  {p}: ORDER-ONLY ({detail}) — stock AODV's "
-                         "pointer-keyed sockets on a multi-interface cell "
-                         "(#362, #675)")
+            lines.append(
+                f"  {p}: ORDER-ONLY ({detail}) — stock AODV's "
+                "pointer-keyed sockets on a multi-interface cell "
+                "(#362, #675)"
+            )
         else:
             failed = True
             lines.append(f"  {p}: FAIL ({detail})")
@@ -435,8 +442,12 @@ def control(before_text, after_text, proto):
 
 
 # --csv column names the gates ask for by their METRICS name (#791).
-CSV_ALIAS = {"pdr": "pdr_pct", "delay": "delay_ms", "delay99": "delay99_ms",
-             "thrput": "throughput_kbps"}
+CSV_ALIAS = {
+    "pdr": "pdr_pct",
+    "delay": "delay_ms",
+    "delay99": "delay99_ms",
+    "thrput": "throughput_kbps",
+}
 TABLE_PDR = re.compile(r"^[0-9.]+$")
 # "# paths <proto> divUsed=.. hopsMean=.. ..." (routing-bench-harness.cc)
 PATHS = re.compile(r"^#\s+paths\s+([A-Za-z][\w-]*)\s+(.+)$")
@@ -509,24 +520,34 @@ def main():
     ap.add_argument("files", nargs="+")
     ap.add_argument("--all", action="store_true", help="show every protocol")
     ap.add_argument("--proto", default="anthocnet", help="protocol to compare")
-    ap.add_argument("--ab", action="store_true",
-                    help="read files as (off,on) pairs; flag cross-pair sign flips")
-    ap.add_argument("--control", action="store_true",
-                    help="BEFORE AFTER: every other protocol's ##RUN## rows "
-                         "must be identical (#675)")
-    ap.add_argument("--get", metavar="FIELD",
-                    help="print one field of --proto's result (#791): a "
-                         "##RUN## / table / csv metric, a '# paths' key, or "
-                         "'row' (whole ##RUN## rows)")
-    ap.add_argument("--from", dest="source", default="run",
-                    choices=["run", "table", "csv", "paths"],
-                    help="where --get reads from (default: run)")
+    ap.add_argument(
+        "--ab", action="store_true", help="read files as (off,on) pairs; flag cross-pair sign flips"
+    )
+    ap.add_argument(
+        "--control",
+        action="store_true",
+        help="BEFORE AFTER: every other protocol's ##RUN## rows must be identical (#675)",
+    )
+    ap.add_argument(
+        "--get",
+        metavar="FIELD",
+        help="print one field of --proto's result (#791): a "
+        "##RUN## / table / csv metric, a '# paths' key, or "
+        "'row' (whole ##RUN## rows)",
+    )
+    ap.add_argument(
+        "--from",
+        dest="source",
+        default="run",
+        choices=["run", "table", "csv", "paths"],
+        help="where --get reads from (default: run)",
+    )
     args = ap.parse_args()
 
     if args.get:
         if len(args.files) != 1:
             sys.exit("--get reads exactly one FILE (or - for stdin)")
-        with (sys.stdin if args.files[0] == "-" else open(args.files[0])) as fh:
+        with sys.stdin if args.files[0] == "-" else open(args.files[0]) as fh:
             text = fh.read()
         for v in query(text, args.proto, args.get, args.source):
             print(v)
@@ -540,25 +561,35 @@ def main():
             with open(path) as fh:
                 texts.append(fh.read())
         lines, failed = control(texts[0], texts[1], args.proto)
-        print(f"control (baselines vs {args.proto}): "
-              f"{label_of(args.files[0], texts[0])} -> "
-              f"{label_of(args.files[1], texts[1])}")
+        print(
+            f"control (baselines vs {args.proto}): "
+            f"{label_of(args.files[0], texts[0])} -> "
+            f"{label_of(args.files[1], texts[1])}"
+        )
         print("\n".join(lines))
-        print("control: FAIL — a baseline moved; the delta is NOT attributable "
-              "(#51-class)" if failed else
-              "control: OK — the delta is attributable to the change")
+        print(
+            "control: FAIL — a baseline moved; the delta is NOT attributable (#51-class)"
+            if failed
+            else "control: OK — the delta is attributable to the change"
+        )
         sys.exit(1 if failed else 0)
 
     cells = []
     for path in args.files:
-        with (sys.stdin if path == "-" else open(path)) as fh:
+        with sys.stdin if path == "-" else open(path) as fh:
             text = fh.read()
         perf = [m.group(0) for m in map(PERF.search, text.splitlines()) if m]
-        cells.append((label_of(path, text), parse_cell(text),
-                      parse_runs(text), perf, parse_stddev(text, blocks=True)))
+        cells.append(
+            (
+                label_of(path, text),
+                parse_cell(text),
+                parse_runs(text),
+                perf,
+                parse_stddev(text, blocks=True),
+            )
+        )
 
-    protos = ([args.proto] if not args.all else
-              sorted({p for _, r, _, _, _ in cells for p in r}))
+    protos = [args.proto] if not args.all else sorted({p for _, r, _, _, _ in cells for p in r})
 
     hdr = f"{'cell':<28}{'proto':<11}" + "".join(f"{m:>9}" for m in METRICS)
     print(hdr)
@@ -580,15 +611,15 @@ def main():
             checks, fails = mapping_check(runs, sds)
             if fails:
                 mapping_failed = True
-                print(f"{lbl}: ##RUN## column-mapping check FAILED "
-                      f"({len(fails)}/{checks}):")
+                print(f"{lbl}: ##RUN## column-mapping check FAILED ({len(fails)}/{checks}):")
                 for proto, metric, sd, rep in fails:
-                    print(f"  ! {proto} {metric}: recomputed sd {sd:.4g} != "
-                          f"harness '# stddev' {rep:.4g} — positional mapping "
-                          f"is wrong, numbers from this cell are unsafe")
+                    print(
+                        f"  ! {proto} {metric}: recomputed sd {sd:.4g} != "
+                        f"harness '# stddev' {rep:.4g} — positional mapping "
+                        f"is wrong, numbers from this cell are unsafe"
+                    )
             elif checks:
-                print(f"{lbl}: column mapping vs '# stddev' OK "
-                      f"({checks} checks)")
+                print(f"{lbl}: column mapping vs '# stddev' OK ({checks} checks)")
 
     if len(cells) < 2:
         sys.exit(1 if mapping_failed else 0)
@@ -609,20 +640,26 @@ def main():
             signs.append((dp > 0) - (dp < 0))
             ps = paired_stats(cells[i][2].get(p, {}), cells[i + 1][2].get(p, {}))
             shown = ps[2] if ps else v
-            print(f"  {off_lbl} -> {on_lbl:<20} dPDR={dp:+5.1f}pp  "
-                  f"d_delay={dd:+6.1f}%  d_d99={dd99:+6.1f}%  d_NRL={dn:+6.1f}%   {shown}")
+            print(
+                f"  {off_lbl} -> {on_lbl:<20} dPDR={dp:+5.1f}pp  "
+                f"d_delay={dd:+6.1f}%  d_d99={dd99:+6.1f}%  d_NRL={dn:+6.1f}%   {shown}"
+            )
             if ps:
                 print(f"    {fmt_paired(ps)}")
             pline = paired(cells[i][2].get(p, {}), cells[i + 1][2].get(p, {}))
             if pline:
                 print(f"    {pline}")
         if len({s for s in signs if s}) > 1:
-            print("\n  ! cross-pair PDR deltas disagree in sign -> run-to-run "
-                  "NOISE, not a real effect (cf. issue #47). Bump --runs.")
+            print(
+                "\n  ! cross-pair PDR deltas disagree in sign -> run-to-run "
+                "NOISE, not a real effect (cf. issue #47). Bump --runs."
+            )
         if npairs >= 5:
-            print(f"\n  note: {npairs} comparisons at alpha=0.05 — expect "
-                  f"~{npairs / 20:.1f} false positives; treat isolated "
-                  f"marginal p-values accordingly (#293).")
+            print(
+                f"\n  note: {npairs} comparisons at alpha=0.05 — expect "
+                f"~{npairs / 20:.1f} false positives; treat isolated "
+                f"marginal p-values accordingly (#293)."
+            )
         sys.exit(1 if mapping_failed else 0)
 
     print(f"\ndeltas vs first cell ({p}):")
@@ -637,17 +674,21 @@ def main():
             v, dp, dd, dd99, dn = verdict(base, cur)
             ps = paired_stats(cells[0][2].get(p, {}), runs.get(p, {}))
             shown = ps[2] if ps else v
-            print(f"  {lbl:<26} dPDR={dp:+5.1f}pp  d_delay={dd:+6.1f}%  "
-                  f"d_d99={dd99:+6.1f}%  d_NRL={dn:+6.1f}%   {shown}")
+            print(
+                f"  {lbl:<26} dPDR={dp:+5.1f}pp  d_delay={dd:+6.1f}%  "
+                f"d_d99={dd99:+6.1f}%  d_NRL={dn:+6.1f}%   {shown}"
+            )
             if ps:
                 print(f"    {fmt_paired(ps)}")
             pline = paired(cells[0][2].get(p, {}), runs.get(p, {}))
             if pline:
                 print(f"    {pline}")
         if ncmp >= 5:
-            print(f"\n  note: {ncmp} comparisons at alpha=0.05 — expect "
-                  f"~{ncmp / 20:.1f} false positives; treat isolated "
-                  f"marginal p-values accordingly (#293).")
+            print(
+                f"\n  note: {ncmp} comparisons at alpha=0.05 — expect "
+                f"~{ncmp / 20:.1f} false positives; treat isolated "
+                f"marginal p-values accordingly (#293)."
+            )
     sys.exit(1 if mapping_failed else 0)
 
 
