@@ -26,8 +26,7 @@ import sys
 def _load(name):
     """Load a module from source next to this file (same reasons as
     test_scenario_check.py: no stale __pycache__, no sys.path juggling)."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "..", "ns3_tool", name + ".py")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ns3_tool", name + ".py")
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     # bench_parse does `import stats_util`; make sure it resolves to the
@@ -52,6 +51,7 @@ def case(desc):
     def wrap(fn):
         CASES.append((desc, fn))
         return fn
+
     return wrap
 
 
@@ -60,6 +60,7 @@ def approx(a, b, tol=1e-3):
 
 
 # ---- #675 baseline control --------------------------------------------------
+
 
 def _ctl_cell(rows, harness="compare"):
     """A cell from {proto: [(pdr, delay99, nrl), ...]}, seeds 1..n."""
@@ -73,8 +74,7 @@ def _ctl_cell(rows, harness="compare"):
 
 AODV = [(98.0 + i * 0.1, 50.0 + i, 2.0 + i * 0.01) for i in range(10)]
 # The same seeds, nudged both ways: what a heap-order change does to AODV.
-AODV_REORDERED = [(p + (0.02 if i % 2 else -0.02), d, n)
-                  for i, (p, d, n) in enumerate(AODV)]
+AODV_REORDERED = [(p + (0.02 if i % 2 else -0.02), d, n) for i, (p, d, n) in enumerate(AODV)]
 
 
 @case("#675 control: identical baselines pass")
@@ -97,28 +97,33 @@ def _control_order_only():
 
 @case("#675 control: the same AODV shift on a single-interface cell FAILs")
 def _control_wifi_fails():
-    lines, failed = bp.control(_ctl_cell({"aodv": AODV}),
-                               _ctl_cell({"aodv": AODV_REORDERED}), "anthocnet")
+    lines, failed = bp.control(
+        _ctl_cell({"aodv": AODV}), _ctl_cell({"aodv": AODV_REORDERED}), "anthocnet"
+    )
     assert failed and "FAIL" in lines[0], lines
 
 
 @case("#675 control: a real AODV shift on a satellite cell still FAILs")
 def _control_real_shift():
     shifted = [(p - 1.0, d, n) for p, d, n in AODV]
-    lines, failed = bp.control(_ctl_cell({"aodv": AODV}, "isl-grid"),
-                               _ctl_cell({"aodv": shifted}, "isl-grid"), "anthocnet")
+    lines, failed = bp.control(
+        _ctl_cell({"aodv": AODV}, "isl-grid"), _ctl_cell({"aodv": shifted}, "isl-grid"), "anthocnet"
+    )
     assert failed and "PAIRED-WORSE" in lines[0], lines
 
 
 @case("#675 control: any other baseline that moves on a satellite cell FAILs")
 def _control_olsr_fails():
-    lines, failed = bp.control(_ctl_cell({"olsr": AODV}, "isl-grid"),
-                               _ctl_cell({"olsr": AODV_REORDERED}, "isl-grid"),
-                               "anthocnet")
+    lines, failed = bp.control(
+        _ctl_cell({"olsr": AODV}, "isl-grid"),
+        _ctl_cell({"olsr": AODV_REORDERED}, "isl-grid"),
+        "anthocnet",
+    )
     assert failed, lines
 
 
 # ---- t quantiles -----------------------------------------------------------
+
 
 @case("t975 matches the standard table at df=1/4/19/30")
 def _():
@@ -130,7 +135,7 @@ def _():
 
 @case("t975 interpolates sanely beyond the table and approaches 1.96")
 def _():
-    assert 2.000 < su.t975(50) < 2.021         # between df=60 and df=40 anchors
+    assert 2.000 < su.t975(50) < 2.021  # between df=60 and df=40 anchors
     assert 1.960 < su.t975(1000) < 1.965
     prev = su.t975(1)
     for df in (2, 5, 10, 20, 30, 40, 60, 120, 240, 10000):
@@ -140,6 +145,7 @@ def _():
 
 
 # ---- sd / CI ----------------------------------------------------------------
+
 
 @case("sample_sd known value and n<2 guard")
 def _():
@@ -157,6 +163,7 @@ def _():
 
 
 # ---- bootstrap --------------------------------------------------------------
+
 
 @case("bootstrap CI is deterministic, brackets the mean, and guards n<2")
 def _():
@@ -178,6 +185,7 @@ def _():
 
 
 # ---- Wilcoxon ---------------------------------------------------------------
+
 
 @case("wilcoxon exact: [1,2,3,-4] -> W+=6, p=0.875 (16-subset enumeration)")
 def _():
@@ -213,8 +221,10 @@ def _():
 
 # ---- bench_parse: per-run parsing + CI lines --------------------------------
 
-def _cell(label, base_pdr, d99_base, shift_pdr=0.0, shift_d99=0.0,
-          runs=10, stddev=True, sd_override=None):
+
+def _cell(
+    label, base_pdr, d99_base, shift_pdr=0.0, shift_d99=0.0, runs=10, stddev=True, sd_override=None
+):
     """Synthetic anthocnet-compare tail: ##RUN## rows + '# stddev' lines whose
     values are internally consistent (unless sd_override poisons one)."""
     lines = [f"# {label}"]
@@ -230,18 +240,24 @@ def _cell(label, base_pdr, d99_base, shift_pdr=0.0, shift_d99=0.0,
         cols["delay99"].append(round(d99, 1))
         cols["nrl"].append(round(nrl, 2))
         cols["nrl_bytes"].append(round(nrlb, 4))
-        lines.append(f"##RUN## {r} anthocnet {pdr:.1f} {delay:.1f} {d99:.1f} "
-                     f"5.00 {nrl:.2f} 10.00 inf inf {nrlb:.4f}")
+        lines.append(
+            f"##RUN## {r} anthocnet {pdr:.1f} {delay:.1f} {d99:.1f} "
+            f"5.00 {nrl:.2f} 10.00 inf inf {nrlb:.4f}"
+        )
     mean = {m: sum(v) / len(v) for m, v in cols.items()}
-    lines.append(f"anthocnet {mean['pdr']:.1f} {mean['delay']:.1f} "
-                 f"{mean['delay99']:.1f} 5.00 {mean['nrl']:.2f}")
+    lines.append(
+        f"anthocnet {mean['pdr']:.1f} {mean['delay']:.1f} "
+        f"{mean['delay99']:.1f} 5.00 {mean['nrl']:.2f}"
+    )
     if stddev:
         sd = {m: su.sample_sd(v) for m, v in cols.items()}
         if sd_override:
             sd[sd_override[0]] = sd_override[1]
-        lines.append(f"# stddev anthocnet pdr={sd['pdr']:.2f} "
-                     f"delay={sd['delay']:.1f} delay99={sd['delay99']:.1f} "
-                     f"nrl={sd['nrl']:.3f} nrl_bytes={sd['nrl_bytes']:.3f}")
+        lines.append(
+            f"# stddev anthocnet pdr={sd['pdr']:.2f} "
+            f"delay={sd['delay']:.1f} delay99={sd['delay99']:.1f} "
+            f"nrl={sd['nrl']:.3f} nrl_bytes={sd['nrl_bytes']:.3f}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -249,8 +265,15 @@ def _cell(label, base_pdr, d99_base, shift_pdr=0.0, shift_d99=0.0,
 def _():
     runs = bp.parse_runs(_cell("a", 80.0, 500.0))["anthocnet"]
     assert len(runs) == 10
-    assert set(runs[1]) == {"pdr", "delay", "delay99", "thrput", "nrl",
-                            "jitter", "nrl_bytes"}  # off50/off90 were inf
+    assert set(runs[1]) == {
+        "pdr",
+        "delay",
+        "delay99",
+        "thrput",
+        "nrl",
+        "jitter",
+        "nrl_bytes",
+    }  # off50/off90 were inf
 
 
 @case("ci_line emits t half-widths and a bootstrap interval for delay99")
@@ -264,8 +287,7 @@ def _():
 @case("mapping check passes on a consistent cell")
 def _():
     text = _cell("ok", 80.0, 500.0)
-    checks, fails = bp.mapping_check(bp.parse_runs(text),
-                                     bp.parse_stddev(text))
+    checks, fails = bp.mapping_check(bp.parse_runs(text), bp.parse_stddev(text))
     assert checks == 5 and not fails, (checks, fails)
 
 
@@ -274,8 +296,7 @@ def _():
     # delay sd reported where delay99's belongs — the plausible-but-wrong
     # positional shift the #110 campaign's 40 checks were guarding against.
     text = _cell("bad", 80.0, 500.0, sd_override=("delay99", 0.30))
-    _checks, fails = bp.mapping_check(bp.parse_runs(text),
-                                      bp.parse_stddev(text))
+    _checks, fails = bp.mapping_check(bp.parse_runs(text), bp.parse_stddev(text))
     assert any(f[1] == "delay99" for f in fails), fails
 
 
@@ -285,9 +306,12 @@ def _():
     # sd(10, 20) = 7.07 and sd(60, 80) = 14.14. Over all four seeds the sd is
     # 32.27, which matches neither line, so a whole-cell recompute fails both.
     def block(r0, a, b, sd):
-        return (f"##RUN## {r0} anthocnet {a} 100.0 200.0 5.0 1.0 1.0 1.0 1.0 1.0\n"
-                f"##RUN## {r0 + 1} anthocnet {b} 100.0 200.0 5.0 1.0 1.0 1.0 1.0 1.0\n"
-                f"# stddev anthocnet pdr={sd:.2f}\n")
+        return (
+            f"##RUN## {r0} anthocnet {a} 100.0 200.0 5.0 1.0 1.0 1.0 1.0 1.0\n"
+            f"##RUN## {r0 + 1} anthocnet {b} 100.0 200.0 5.0 1.0 1.0 1.0 1.0 1.0\n"
+            f"# stddev anthocnet pdr={sd:.2f}\n"
+        )
+
     text = block(1, 10.0, 20.0, 7.0711) + block(3, 60.0, 80.0, 14.1421)
     runs = bp.parse_runs(text)
     checks, fails = bp.mapping_check(runs, bp.parse_stddev(text, blocks=True))
@@ -299,8 +323,7 @@ def _():
 @case("paired_stats: consistent shift -> PAIRED-IMPROVED with tight CIs")
 def _():
     base = bp.parse_runs(_cell("off", 80.0, 500.0))["anthocnet"]
-    cur = bp.parse_runs(_cell("on", 80.0, 500.0,
-                              shift_pdr=2.0, shift_d99=-50.0))["anthocnet"]
+    cur = bp.parse_runs(_cell("on", 80.0, 500.0, shift_pdr=2.0, shift_d99=-50.0))["anthocnet"]
     n, stats, v = bp.paired_stats(base, cur)
     assert n == 10 and v == "PAIRED-IMPROVED", (n, v, stats)
     _dmean, lo, _hi, p = stats["pdr"]
@@ -327,6 +350,7 @@ def _():
 
 # ---- sweep_summary: CI column ------------------------------------------------
 
+
 @case("pdr_hw: t half-width from aggregate sd/runs; blank when absent")
 def _():
     row = {"pdr_sd": "1.0", "runs": "20"}
@@ -339,14 +363,38 @@ def _():
 def _():
     import csv as _csv
     import tempfile
-    cols = ["kind", "group", "x", "protocol", "runs", "pdr_pct", "delay_ms",
-            "delay99_ms", "nrl", "pdr_sd", "delay_sd", "delay99_sd"]
+
+    cols = [
+        "kind",
+        "group",
+        "x",
+        "protocol",
+        "runs",
+        "pdr_pct",
+        "delay_ms",
+        "delay99_ms",
+        "nrl",
+        "pdr_sd",
+        "delay_sd",
+        "delay99_sd",
+    ]
     agg = [
-        {"kind": "sweep", "group": "pause", "x": "0", "protocol": p,
-         "runs": "10", "pdr_pct": "80.0", "delay_ms": "50.0",
-         "delay99_ms": "900.0", "nrl": "3.0", "pdr_sd": "1.0",
-         "delay_sd": "5.0", "delay99_sd": "100.0"}
-        for p in ("anthocnet", "aodv")]
+        {
+            "kind": "sweep",
+            "group": "pause",
+            "x": "0",
+            "protocol": p,
+            "runs": "10",
+            "pdr_pct": "80.0",
+            "delay_ms": "50.0",
+            "delay99_ms": "900.0",
+            "nrl": "3.0",
+            "pdr_sd": "1.0",
+            "delay_sd": "5.0",
+            "delay99_sd": "100.0",
+        }
+        for p in ("anthocnet", "aodv")
+    ]
     # skewed per-run p99s for anthocnet ONLY -> bootstrap path fires for it,
     # aodv (no sibling rows) falls back to the aggregate t-CI.
     d99 = [850.0] * 9 + [1350.0]
@@ -357,17 +405,24 @@ def _():
             w.writeheader()
             w.writerows(agg)
         with open(os.path.join(td, "camp-runs.csv"), "w", newline="") as fh:
-            w = _csv.DictWriter(fh, fieldnames=["kind", "group", "x",
-                                                "scenario", "protocol", "run",
-                                                "delay99_ms"])
+            w = _csv.DictWriter(
+                fh, fieldnames=["kind", "group", "x", "scenario", "protocol", "run", "delay99_ms"]
+            )
             w.writeheader()
             for i, v in enumerate(d99, 1):
-                w.writerow({"kind": "sweep", "group": "pause", "x": "0",
-                            "scenario": "pause=0", "protocol": "anthocnet",
-                            "run": i, "delay99_ms": v})
+                w.writerow(
+                    {
+                        "kind": "sweep",
+                        "group": "pause",
+                        "x": "0",
+                        "scenario": "pause=0",
+                        "protocol": "anthocnet",
+                        "run": i,
+                        "delay99_ms": v,
+                    }
+                )
         outp = os.path.join(td, "sweeps.csv")
-        argv, sys.argv = sys.argv, ["sweep_summary.py", aggp,
-                                    "--export-sweeps", outp]
+        argv, sys.argv = sys.argv, ["sweep_summary.py", aggp, "--export-sweeps", outp]
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
@@ -391,10 +446,20 @@ def _vs_pair(td, pdr_shift, with_siblings):
     per-seed siblings. anthocnet gains `pdr_shift` pp on every seed; the aodv
     control is identical in both generations. Returns (before, after) paths."""
     import csv as _csv
-    agg_cols = ["kind", "group", "x", "protocol", "runs", "pdr_pct",
-                "delay_ms", "delay99_ms", "nrl", "pdr_sd"]
-    sib_cols = ["kind", "group", "x", "scenario", "protocol", "run",
-                "pdr_pct", "delay99_ms", "nrl"]
+
+    agg_cols = [
+        "kind",
+        "group",
+        "x",
+        "protocol",
+        "runs",
+        "pdr_pct",
+        "delay_ms",
+        "delay99_ms",
+        "nrl",
+        "pdr_sd",
+    ]
+    sib_cols = ["kind", "group", "x", "scenario", "protocol", "run", "pdr_pct", "delay99_ms", "nrl"]
     # Per-seed noise big enough that the unpaired sd gate cannot resolve a
     # 0.5 pp shift, but common to both arms so the paired differences are tight
     # — the exact situation the #179 arms kept landing in.
@@ -406,11 +471,20 @@ def _vs_pair(td, pdr_shift, with_siblings):
             w = _csv.DictWriter(fh, fieldnames=agg_cols)
             w.writeheader()
             for proto, base in (("anthocnet", 90.0), ("aodv", 80.0)):
-                w.writerow({"kind": "discrete", "group": "paper-base", "x": "",
-                            "protocol": proto, "runs": "10",
-                            "pdr_pct": f"{base + (shift if proto == 'anthocnet' else 0):.4f}",
-                            "delay_ms": "50.0", "delay99_ms": "900.0",
-                            "nrl": "3.0", "pdr_sd": "1.6"})
+                w.writerow(
+                    {
+                        "kind": "discrete",
+                        "group": "paper-base",
+                        "x": "",
+                        "protocol": proto,
+                        "runs": "10",
+                        "pdr_pct": f"{base + (shift if proto == 'anthocnet' else 0):.4f}",
+                        "delay_ms": "50.0",
+                        "delay99_ms": "900.0",
+                        "nrl": "3.0",
+                        "pdr_sd": "1.6",
+                    }
+                )
         if with_siblings:
             with open(os.path.join(td, f"{gen}-runs.csv"), "w", newline="") as fh:
                 w = _csv.DictWriter(fh, fieldnames=sib_cols)
@@ -418,11 +492,19 @@ def _vs_pair(td, pdr_shift, with_siblings):
                 for proto, base in (("anthocnet", 90.0), ("aodv", 80.0)):
                     s = shift if proto == "anthocnet" else 0.0
                     for i, nz in enumerate(noise, 1):
-                        w.writerow({"kind": "discrete", "group": "paper-base",
-                                    "x": "", "scenario": "paper-base",
-                                    "protocol": proto, "run": i,
-                                    "pdr_pct": f"{base + s + nz:.4f}",
-                                    "delay99_ms": "900.0", "nrl": "3.0"})
+                        w.writerow(
+                            {
+                                "kind": "discrete",
+                                "group": "paper-base",
+                                "x": "",
+                                "scenario": "paper-base",
+                                "protocol": proto,
+                                "run": i,
+                                "pdr_pct": f"{base + s + nz:.4f}",
+                                "delay99_ms": "900.0",
+                                "nrl": "3.0",
+                            }
+                        )
         paths.append(agg)
     return paths
 
@@ -431,8 +513,7 @@ def _run_vs(before, after):
     argv, sys.argv = sys.argv, ["sweep_summary.py", after, "--vs", before]
     out = io.StringIO()
     try:
-        with contextlib.redirect_stdout(out), \
-             contextlib.suppress(SystemExit):
+        with contextlib.redirect_stdout(out), contextlib.suppress(SystemExit):
             sw.main()
     finally:
         sys.argv = argv
@@ -442,6 +523,7 @@ def _run_vs(before, after):
 @case("#319 --vs: siblings present -> paired CI + Wilcoxon replace the verdict")
 def _():
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         before, after = _vs_pair(td, 0.5, with_siblings=True)
         out = _run_vs(before, after)
@@ -457,6 +539,7 @@ def _():
 @case("#319 --vs: no siblings -> materiality verdict, no paired line")
 def _():
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         before, after = _vs_pair(td, 0.5, with_siblings=False)
         out = _run_vs(before, after)
@@ -467,36 +550,83 @@ def _():
 
 # ---- pool_runs (#126) --------------------------------------------------------
 
-AGG_COLS = ["kind", "group", "x", "scenario", "class", "protocol", "runs",
-            "pdr_pct", "delay_ms", "delay99_ms", "nrl", "pdr_sd",
-            "delay99_sd", "energy_j", "run_first"]
-RUN_COLS = ["kind", "group", "x", "scenario", "protocol", "run", "pdr_pct",
-            "delay_ms", "delay99_ms", "nrl"]
+AGG_COLS = [
+    "kind",
+    "group",
+    "x",
+    "scenario",
+    "class",
+    "protocol",
+    "runs",
+    "pdr_pct",
+    "delay_ms",
+    "delay99_ms",
+    "nrl",
+    "pdr_sd",
+    "delay99_sd",
+    "energy_j",
+    "run_first",
+]
+RUN_COLS = [
+    "kind",
+    "group",
+    "x",
+    "scenario",
+    "protocol",
+    "run",
+    "pdr_pct",
+    "delay_ms",
+    "delay99_ms",
+    "nrl",
+]
 
 
 def _write_split(td, name, first, pdrs, energy):
     """One split: aggregate row + per-run sibling for scale/2.0/anthocnet."""
     import csv as _csv
+
     n = len(pdrs)
     aggp = os.path.join(td, name)
     with open(aggp, "w", newline="") as fh:
         w = _csv.DictWriter(fh, fieldnames=AGG_COLS)
         w.writeheader()
-        w.writerow({"kind": "sweep", "group": "scale", "x": "2.0",
-                    "scenario": "scale=2.0", "class": "scale factor",
-                    "protocol": "anthocnet", "runs": n,
-                    "pdr_pct": f"{sum(pdrs) / n:.4f}", "delay_ms": "50.0",
-                    "delay99_ms": "900.0", "nrl": "3.0",
-                    "pdr_sd": "9.99", "delay99_sd": "9.99",
-                    "energy_j": energy, "run_first": first})
+        w.writerow(
+            {
+                "kind": "sweep",
+                "group": "scale",
+                "x": "2.0",
+                "scenario": "scale=2.0",
+                "class": "scale factor",
+                "protocol": "anthocnet",
+                "runs": n,
+                "pdr_pct": f"{sum(pdrs) / n:.4f}",
+                "delay_ms": "50.0",
+                "delay99_ms": "900.0",
+                "nrl": "3.0",
+                "pdr_sd": "9.99",
+                "delay99_sd": "9.99",
+                "energy_j": energy,
+                "run_first": first,
+            }
+        )
     with open(aggp.removesuffix(".csv") + "-runs.csv", "w", newline="") as fh:
         w = _csv.DictWriter(fh, fieldnames=RUN_COLS)
         w.writeheader()
         for i, p in enumerate(pdrs):
-            w.writerow({"kind": "sweep", "group": "scale", "x": "2.0",
-                        "scenario": "scale=2.0", "protocol": "anthocnet",
-                        "run": first + i, "pdr_pct": p, "delay_ms": "50.0",
-                        "delay99_ms": "900.0", "nrl": "3.0"})
+            w.writerow(
+                {
+                    "kind": "sweep",
+                    "group": "scale",
+                    "x": "2.0",
+                    "scenario": "scale=2.0",
+                    "protocol": "anthocnet",
+                    "run": first + i,
+                    "pdr_pct": p,
+                    "delay_ms": "50.0",
+                    "delay99_ms": "900.0",
+                    "nrl": "3.0",
+                }
+            )
     return aggp
 
 
@@ -519,6 +649,7 @@ def _run_pool(argv):
 def _():
     import csv as _csv
     import tempfile
+
     pdrs_a, pdrs_b = [80.0, 82.0, 84.0], [70.0, 72.0]
     with tempfile.TemporaryDirectory() as td:
         a = _write_split(td, "a.csv", 1, pdrs_a, "500.0")
@@ -542,6 +673,7 @@ def _():
 @case("#126 pooling FAILs on duplicate seeds and on a missing sibling")
 def _():
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         a = _write_split(td, "a.csv", 1, [80.0, 82.0], "500.0")
         b = _write_split(td, "b.csv", 2, [70.0, 72.0], "600.0")  # seed 2 dup
@@ -555,9 +687,11 @@ def _():
 
 # ---- end-to-end through main() ----------------------------------------------
 
+
 @case("bench_parse main: paired verdict replaces materiality verdict")
 def _():
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         off = os.path.join(td, "off.txt")
         on = os.path.join(td, "on.txt")
@@ -584,6 +718,7 @@ def _():
 @case("bench_parse main: mapping failure exits non-zero")
 def _():
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         bad = os.path.join(td, "bad.txt")
         with open(bad, "w") as fh:
@@ -600,8 +735,9 @@ def _():
         finally:
             sys.argv = argv
         assert code == 1, out.getvalue()
-        assert "MAPPING" in out.getvalue().upper() or \
-               "mapping check FAILED" in out.getvalue(), out.getvalue()
+        assert "MAPPING" in out.getvalue().upper() or "mapping check FAILED" in out.getvalue(), (
+            out.getvalue()
+        )
 
 
 def main():

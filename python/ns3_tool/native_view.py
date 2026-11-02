@@ -42,17 +42,22 @@ bp = _load("bench_parse")
 # (family, cell, native baselines). The sets are ADR-0026's table as the
 # v2.4.0 plan runs them; the bound is always "oracle".
 FAMILIES = [
-    ("MANET grid", [f"grid-{m}-{c}" for m in ("rwp", "ssrwp", "gaussmarkov")
-                    for c in ("tworay", "nakagami")], ["aodv", "olsr", "dsdv", "aomdv"]),
+    (
+        "MANET grid",
+        [f"grid-{m}-{c}" for m in ("rwp", "ssrwp", "gaussmarkov") for c in ("tworay", "nakagami")],
+        ["aodv", "olsr", "dsdv", "aomdv"],
+    ),
     ("static mesh", ["static-mesh"], ["olsr", "hwmp"]),
     ("FANET", ["fanet-main", "fanet-sparse"], ["aodv", "olsr", "gpsr3d"]),
     ("VANET", ["vanet-main", "vanet-sparse"], ["aodv", "gpsr", "gpcr"]),
     ("ISL grid", ["sat-base", "sat-failcell", "sat-corridor", "sat-seam"], []),
-    ("LEO", ["leo-walker16", "leo-starlink1", "leo-starlink1-storm"],
-     ["opspf", "geo-greedy"]),
+    ("LEO", ["leo-walker16", "leo-starlink1", "leo-starlink1-storm"], ["opspf", "geo-greedy"]),
     ("disaster", ["disaster-main"], ["aodv", "olsr"]),
-    ("SAGIN", ["sagin-walker16", "sagin-starlink1", "sagin-starlink1-storm"],
-     ["opspf", "geo-greedy", "gpsr3d"]),
+    (
+        "SAGIN",
+        ["sagin-walker16", "sagin-starlink1", "sagin-starlink1-storm"],
+        ["opspf", "geo-greedy", "gpsr3d"],
+    ),
 ]
 LEO_PROTOS = ["anthocnet", "opspf", "geo-greedy", "gpsr3d", "oracle", "oracle-delay"]
 
@@ -89,9 +94,13 @@ def readings(gen, d):
             runs = load_cell(cell, gen, d)
             a = runs.get("anthocnet")
             o = runs.get("oracle")
-            row = {"family": family, "cell": cell, "n": len(a or {}),
-                   "anthocnet_pdr": mean(a, "pdr") if a else None,
-                   "oracle_pdr": mean(o, "pdr") if o else None}
+            row = {
+                "family": family,
+                "cell": cell,
+                "n": len(a or {}),
+                "anthocnet_pdr": mean(a, "pdr") if a else None,
+                "oracle_pdr": mean(o, "pdr") if o else None,
+            }
             if a and o:
                 _, st, _ = bp.paired_stats(o, a)
                 row.update(gap=st["pdr"][0], gap_lo=st["pdr"][1], gap_hi=st["pdr"][2])
@@ -121,25 +130,47 @@ def main():
     ap.add_argument("--csv")
     a = ap.parse_args()
     rows = readings(a.gen, a.dir)
-    print("| family | cell | AntHocNet PDR % | oracle PDR % | AntHocNet − oracle (pp) "
-          "| best native | its PDR % | dPDR (pp) | d delay99 (ms) | d NRL | verdict |")
+    print(
+        "| family | cell | AntHocNet PDR % | oracle PDR % | AntHocNet − oracle (pp) "
+        "| best native | its PDR % | dPDR (pp) | d delay99 (ms) | d NRL | verdict |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
-        print(f"| {r['family']} | {r['cell']} | {r['anthocnet_pdr']:.2f} | "
-              f"{r['oracle_pdr']:.2f} | {fmt_ci(r, 'gap')} | {r['best'] or '—'} | "
-              + (f"{r['best_pdr']:.2f}" if r["best"] else "—")
-              + f" | {fmt_ci(r, 'd_pdr')} | {fmt_ci(r, 'd_delay99')} | {fmt_ci(r, 'd_nrl')} | "
-              f"{r.get('verdict', '—')} |")
+        print(
+            f"| {r['family']} | {r['cell']} | {r['anthocnet_pdr']:.2f} | "
+            f"{r['oracle_pdr']:.2f} | {fmt_ci(r, 'gap')} | {r['best'] or '—'} | "
+            + (f"{r['best_pdr']:.2f}" if r["best"] else "—")
+            + f" | {fmt_ci(r, 'd_pdr')} | {fmt_ci(r, 'd_delay99')} | {fmt_ci(r, 'd_nrl')} | "
+            f"{r.get('verdict', '—')} |"
+        )
     if a.csv:
-        keys = ["family", "cell", "n", "anthocnet_pdr", "oracle_pdr", "gap", "gap_lo", "gap_hi",
-                "best", "best_pdr", "d_pdr", "d_pdr_lo", "d_pdr_hi", "d_delay99",
-                "d_delay99_lo", "d_delay99_hi", "d_nrl", "d_nrl_lo", "d_nrl_hi", "verdict"]
+        keys = [
+            "family",
+            "cell",
+            "n",
+            "anthocnet_pdr",
+            "oracle_pdr",
+            "gap",
+            "gap_lo",
+            "gap_hi",
+            "best",
+            "best_pdr",
+            "d_pdr",
+            "d_pdr_lo",
+            "d_pdr_hi",
+            "d_delay99",
+            "d_delay99_lo",
+            "d_delay99_hi",
+            "d_nrl",
+            "d_nrl_lo",
+            "d_nrl_hi",
+            "verdict",
+        ]
         with open(a.csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
             w.writeheader()
             for r in rows:
-                w.writerow({k: (f"{v:.4f}" if isinstance(v, float) else v)
-                            for k, v in r.items()})
+                w.writerow({k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in r.items()})
     return 0
 
 

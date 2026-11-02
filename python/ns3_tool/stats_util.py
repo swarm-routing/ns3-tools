@@ -23,6 +23,7 @@ Provides the 95% confidence-interval and paired-test primitives that
 The choice of methods is recorded in docs/benchmarks/methodology.md (#293
 items 4/5); change them there and here together.
 """
+
 import math
 import random
 
@@ -30,11 +31,36 @@ import random
 # (standard tables); beyond 30, linear interpolation in 1/df between the
 # anchors below is accurate to <0.002.
 _T975 = {
-    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160,
-    14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
-    20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
-    26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    11: 2.201,
+    12: 2.179,
+    13: 2.160,
+    14: 2.145,
+    15: 2.131,
+    16: 2.120,
+    17: 2.110,
+    18: 2.101,
+    19: 2.093,
+    20: 2.086,
+    21: 2.080,
+    22: 2.074,
+    23: 2.069,
+    24: 2.064,
+    25: 2.060,
+    26: 2.056,
+    27: 2.052,
+    28: 2.048,
+    29: 2.045,
+    30: 2.042,
 }
 _T975_ANCHORS = [(30, 2.042), (40, 2.021), (60, 2.000), (120, 1.980)]
 _T975_INF = 1.960
@@ -100,9 +126,7 @@ def bootstrap_ci_mean(xs, resamples=BOOTSTRAP_RESAMPLES, seed=BOOTSTRAP_SEED):
     if n < 2:
         return None, None
     rng = random.Random(seed)
-    means = sorted(
-        sum(xs[rng.randrange(n)] for _ in range(n)) / n
-        for _ in range(resamples))
+    means = sorted(sum(xs[rng.randrange(n)] for _ in range(n)) / n for _ in range(resamples))
     lo = means[int(0.025 * resamples)]
     hi = means[min(int(0.975 * resamples), resamples - 1)]
     return lo, hi
@@ -142,7 +166,7 @@ def wilcoxon(diffs):
             for s in range(total, r - 1, -1):
                 counts[s] += counts[s - r]
         m = int(min(w_plus, total - w_plus))
-        p = min(1.0, 2.0 * sum(counts[: m + 1]) / float(2 ** n))
+        p = min(1.0, 2.0 * sum(counts[: m + 1]) / float(2**n))
         return n, w_plus, p, "exact"
 
     mu = n * (n + 1) / 4.0
@@ -153,7 +177,7 @@ def wilcoxon(diffs):
         while j < n and vals[j] == vals[i]:
             j += 1
         t = j - i
-        tie_term += t ** 3 - t
+        tie_term += t**3 - t
         i = j
     var = n * (n + 1) * (2 * n + 1) / 24.0 - tie_term / 48.0
     if var <= 0:

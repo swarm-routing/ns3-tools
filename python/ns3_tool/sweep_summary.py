@@ -44,6 +44,7 @@ additionally prints a paired-difference line per point — per-seed 95% CIs
 over the seeds common to both arms — and that PAIRED-* verdict replaces the
 materiality one. Inputs without the sibling keep the old behaviour.
 """
+
 import argparse
 import csv
 import math
@@ -59,8 +60,7 @@ try:  # as the ns3_tool package, or as a script beside its siblings
 except ImportError:
     import stats_util
 
-REQUIRED = ["kind", "group", "x", "protocol", "runs",
-            "pdr_pct", "delay_ms", "delay99_ms", "nrl"]
+REQUIRED = ["kind", "group", "x", "protocol", "runs", "pdr_pct", "delay_ms", "delay99_ms", "nrl"]
 
 
 def pdr_hw(row):
@@ -84,8 +84,7 @@ def load(path):
         sys.exit(f"FAIL {path}: empty CSV")
     missing = [c for c in REQUIRED if c not in rows[0]]
     if missing:
-        sys.exit(f"FAIL {path}: missing columns {missing} — not a "
-                 f"run-scenarios.py classified CSV")
+        sys.exit(f"FAIL {path}: missing columns {missing} — not a run-scenarios.py classified CSV")
     return rows
 
 
@@ -104,10 +103,12 @@ def key(row):
 def verdict(a, b):
     """AntHocNet row a vs baseline row b -> (tag, dPDR, d99%, dNRL%)."""
     dp = f(a, "pdr_pct", 0) - f(b, "pdr_pct", 0)
-    d99 = ((f(a, "delay99_ms", 0) - f(b, "delay99_ms", 0))
-           / f(b, "delay99_ms", 1) * 100 if f(b, "delay99_ms") else 0.0)
-    dn = ((f(a, "nrl", 0) - f(b, "nrl", 0))
-          / f(b, "nrl", 1) * 100 if f(b, "nrl") else 0.0)
+    d99 = (
+        (f(a, "delay99_ms", 0) - f(b, "delay99_ms", 0)) / f(b, "delay99_ms", 1) * 100
+        if f(b, "delay99_ms")
+        else 0.0
+    )
+    dn = (f(a, "nrl", 0) - f(b, "nrl", 0)) / f(b, "nrl", 1) * 100 if f(b, "nrl") else 0.0
     sig = []
     if abs(dp) >= 1.0:
         sig.append(1 if dp > 0 else -1)
@@ -161,8 +162,9 @@ def collect_runs(paths, metric="delay99_ms"):
                 v = f(row, metric)
                 if v is None or v < 0:
                     continue
-                vals.setdefault((row["kind"], row["group"], f(row, "x", 0.0),
-                                 row["protocol"]), []).append(v)
+                vals.setdefault(
+                    (row["kind"], row["group"], f(row, "x", 0.0), row["protocol"]), []
+                ).append(v)
     return vals
 
 
@@ -194,14 +196,12 @@ def collect_paired_runs(paths):
                         vals[metric] = v
                 if not vals:
                     continue
-                k = (row["kind"], row["group"], f(row, "x", 0.0),
-                     row["protocol"])
+                k = (row["kind"], row["group"], f(row, "x", 0.0), row["protocol"])
                 out.setdefault(k, {})[row["run"]] = vals
     return out
 
 
-def generation_diff(before, after, proto, baseline,
-                    before_runs=None, after_runs=None):
+def generation_diff(before, after, proto, baseline, before_runs=None, after_runs=None):
     """Print after-vs-before for `proto`, plus the untouched-baseline control.
 
     When both generations carry per-seed sibling rows (#319), each point also
@@ -213,37 +213,43 @@ def generation_diff(before, after, proto, baseline,
 
     Returns the exit status: non-zero if the control failed.
     """
-    print(f"{'group':<10}{'x':>8}  {'runs':>4}  "
-          f"{'after':>6}{'±95':>5}{'before':>7}{'±95':>5}  "
-          f"{'dPDR':>7}{'d99%':>8}{'dNRL%':>8}  verdict")
+    print(
+        f"{'group':<10}{'x':>8}  {'runs':>4}  "
+        f"{'after':>6}{'±95':>5}{'before':>7}{'±95':>5}  "
+        f"{'dPDR':>7}{'d99%':>8}{'dNRL%':>8}  verdict"
+    )
     shared = sorted(k for k in after if k in before)
     for k in shared:
         kind, group, x = k
         a, b = after[k].get(proto), before[k].get(proto)
         if a is None or b is None:
-            print(f"{group:<10}{x:>8g}  -- {proto} missing in "
-                  f"{'after' if a is None else 'before'}")
+            print(f"{group:<10}{x:>8g}  -- {proto} missing in {'after' if a is None else 'before'}")
             continue
         tag, dp, d99, dn = verdict(a, b)
         pstats = None
         if before_runs and after_runs:
             pstats = bench_parse.paired_stats(
                 before_runs.get((kind, group, x, proto), {}),
-                after_runs.get((kind, group, x, proto), {}))
+                after_runs.get((kind, group, x, proto), {}),
+            )
         if pstats:
             tag = pstats[2]
-        print(f"{group:<10}{x:>8g}  {f(a,'runs',0):>4.0f}  "
-              f"{f(a,'pdr_pct',0):>6.1f}{pdr_hw(a):>5}"
-              f"{f(b,'pdr_pct',0):>7.1f}{pdr_hw(b):>5}  "
-              f"{dp:>+7.1f}{d99:>+8.1f}{dn:>+8.1f}  {tag}")
+        print(
+            f"{group:<10}{x:>8g}  {f(a, 'runs', 0):>4.0f}  "
+            f"{f(a, 'pdr_pct', 0):>6.1f}{pdr_hw(a):>5}"
+            f"{f(b, 'pdr_pct', 0):>7.1f}{pdr_hw(b):>5}  "
+            f"{dp:>+7.1f}{d99:>+8.1f}{dn:>+8.1f}  {tag}"
+        )
         if pstats:
             print(f"{'':<19} {bench_parse.fmt_paired(pstats)}")
 
     only_a = len(after) - len(shared)
     only_b = len(before) - len(shared)
     if only_a or only_b:
-        print(f"note: {only_a} point(s) only in after, {only_b} only in before "
-              f"— compared the {len(shared)} shared point(s)")
+        print(
+            f"note: {only_a} point(s) only in after, {only_b} only in before "
+            f"— compared the {len(shared)} shared point(s)"
+        )
 
     # Control: baselines are untouched code on identical seeds.
     protos = {p for cell in after.values() for p in cell} - {proto}
@@ -262,13 +268,17 @@ def generation_diff(before, after, proto, baseline,
         print("control: no baseline protocols in these CSVs — not checked")
         return 0
     if not moved:
-        print(f"control: {', '.join(sorted(protos))} identical across "
-              f"generations on {len(shared)} point(s) x {len(CONTROL_COLS)} "
-              f"metrics — delta is attributable to the {proto} change")
+        print(
+            f"control: {', '.join(sorted(protos))} identical across "
+            f"generations on {len(shared)} point(s) x {len(CONTROL_COLS)} "
+            f"metrics — delta is attributable to the {proto} change"
+        )
         return 0
-    print(f"control: FAIL — {len(moved)} baseline metric(s) moved; the "
-          f"harness is not held constant, so the {proto} delta is NOT "
-          f"attributable to the code change (#51-class). First few:")
+    print(
+        f"control: FAIL — {len(moved)} baseline metric(s) moved; the "
+        f"harness is not held constant, so the {proto} delta is NOT "
+        f"attributable to the code change (#51-class). First few:"
+    )
     for group, x, p, col, vb, va in moved[:6]:
         print(f"  {group} x={x:g} {p}.{col}: {vb:g} -> {va:g}")
     return 1
@@ -280,17 +290,23 @@ def main():
     ap.add_argument("--baseline", default="aodv")
     ap.add_argument("--proto", default="anthocnet")
     ap.add_argument("--group", help="only this group (e.g. area, pause, scale)")
-    ap.add_argument("--vs", metavar="BEFORE", nargs="+",
-                    help="compare the same sweep across two code generations: "
-                         "these are the BEFORE CSVs, the positional files are "
-                         "AFTER. Prints per-point deltas for --proto plus a "
-                         "control that the baselines did not move.")
-    ap.add_argument("--export-sweeps", metavar="OUT",
-                    help="write the papers-repo sweeps.csv schema "
-                         "(sweep rows, anthocnet+baseline only)")
+    ap.add_argument(
+        "--vs",
+        metavar="BEFORE",
+        nargs="+",
+        help="compare the same sweep across two code generations: "
+        "these are the BEFORE CSVs, the positional files are "
+        "AFTER. Prints per-point deltas for --proto plus a "
+        "control that the baselines did not move.",
+    )
+    ap.add_argument(
+        "--export-sweeps",
+        metavar="OUT",
+        help="write the papers-repo sweeps.csv schema (sweep rows, anthocnet+baseline only)",
+    )
     args = ap.parse_args()
 
-    cells = collect(args.files, args.group)   # (kind, group, x) -> {proto: row}
+    cells = collect(args.files, args.group)  # (kind, group, x) -> {proto: row}
     if not cells:
         sys.exit("FAIL: no rows matched")
 
@@ -298,27 +314,37 @@ def main():
         before = collect(args.vs, args.group)
         if not before:
             sys.exit("FAIL: no rows matched in the --vs (before) files")
-        sys.exit(generation_diff(before, cells, args.proto, args.baseline,
-                                 collect_paired_runs(args.vs),
-                                 collect_paired_runs(args.files)))
+        sys.exit(
+            generation_diff(
+                before,
+                cells,
+                args.proto,
+                args.baseline,
+                collect_paired_runs(args.vs),
+                collect_paired_runs(args.files),
+            )
+        )
 
-    print(f"{'group':<10}{'x':>8}  {'runs':>4}  "
-          f"{'PDR':>6}{'±95':>5}{'vs':>7}{'±95':>5}  "
-          f"{'dPDR':>7}{'d99%':>8}{'dNRL%':>8}  verdict")
+    print(
+        f"{'group':<10}{'x':>8}  {'runs':>4}  "
+        f"{'PDR':>6}{'±95':>5}{'vs':>7}{'±95':>5}  "
+        f"{'dPDR':>7}{'d99%':>8}{'dNRL%':>8}  verdict"
+    )
     for k in sorted(cells):
         kind, group, x = k
         a = cells[k].get(args.proto)
         b = cells[k].get(args.baseline)
         if a is None or b is None:
             have = ",".join(sorted(cells[k]))
-            print(f"{group:<10}{x:>8g}  -- missing {args.proto}/"
-                  f"{args.baseline} (have: {have})")
+            print(f"{group:<10}{x:>8g}  -- missing {args.proto}/{args.baseline} (have: {have})")
             continue
         tag, dp, d99, dn = verdict(a, b)
-        print(f"{group:<10}{x:>8g}  {f(a,'runs',0):>4.0f}  "
-              f"{f(a,'pdr_pct',0):>6.1f}{pdr_hw(a):>5}"
-              f"{f(b,'pdr_pct',0):>7.1f}{pdr_hw(b):>5}  "
-              f"{dp:>+7.1f}{d99:>+8.1f}{dn:>+8.1f}  {tag}")
+        print(
+            f"{group:<10}{x:>8g}  {f(a, 'runs', 0):>4.0f}  "
+            f"{f(a, 'pdr_pct', 0):>6.1f}{pdr_hw(a):>5}"
+            f"{f(b, 'pdr_pct', 0):>7.1f}{pdr_hw(b):>5}  "
+            f"{dp:>+7.1f}{d99:>+8.1f}{dn:>+8.1f}  {tag}"
+        )
 
     if args.export_sweeps:
         # #293: the papers schema's optional *_ci columns are 95% CI
@@ -348,8 +374,19 @@ def main():
 
         with open(args.export_sweeps, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["sweep", "x", "proto", "pdr", "delay_ms", "delay99_ms",
-                        "pdr_ci", "delay_ci", "delay99_ci"])
+            w.writerow(
+                [
+                    "sweep",
+                    "x",
+                    "proto",
+                    "pdr",
+                    "delay_ms",
+                    "delay99_ms",
+                    "pdr_ci",
+                    "delay_ci",
+                    "delay99_ci",
+                ]
+            )
             n = 0
             boot = 0
             for k in sorted(cells):
@@ -362,13 +399,24 @@ def main():
                         continue
                     if (kind, group, x, proto) in run_vals:
                         boot += 1
-                    w.writerow([group, f"{x:g}", proto,
-                                row["pdr_pct"], row["delay_ms"],
-                                row["delay99_ms"], hw(row, "pdr_sd"),
-                                hw(row, "delay_sd"), hw99(row, k, proto)])
+                    w.writerow(
+                        [
+                            group,
+                            f"{x:g}",
+                            proto,
+                            row["pdr_pct"],
+                            row["delay_ms"],
+                            row["delay99_ms"],
+                            hw(row, "pdr_sd"),
+                            hw(row, "delay_sd"),
+                            hw99(row, k, proto),
+                        ]
+                    )
                     n += 1
-        print(f"exported {n} sweep rows -> {args.export_sweeps} "
-              f"({boot} with bootstrap delay99_ci, {n - boot} t-fallback)")
+        print(
+            f"exported {n} sweep rows -> {args.export_sweeps} "
+            f"({boot} with bootstrap delay99_ci, {n - boot} t-fallback)"
+        )
 
 
 if __name__ == "__main__":
