@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
 # SPDX-License-Identifier: MIT OR GPL-2.0-only
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # 77: PEP 639 SPDX `license` expressions
 build-backend = "setuptools.build_meta"
 
 [project]
