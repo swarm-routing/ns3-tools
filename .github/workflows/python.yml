@@ -50,8 +50,3 @@ jobs:
           persist-credentials: false
       - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
 
-  licence:
-    uses: swarm-routing/.github/.github/workflows/reusable-licence-check.yml@main
-    with:
-      dual-roots: 'python/ tools/'
-      core-roots: ''

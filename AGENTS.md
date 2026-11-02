@@ -7,7 +7,7 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: being populated (Phase 4).** `python/` holds the readers ported from AntHocNet (#3); the rest of the layout below is the plan; update this file in the PR that adds each part.
+**Status: being populated (Phase 4).** Moved from AntHocNet so far: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3). Probes, arenas and the `ns3-tool` subcommands below are still the plan; update this file in the PR that adds each part.
 
 Protocol-agnostic diagnostics and comparison tooling: non-intrusive C++20
 probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
@@ -18,7 +18,9 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 `run-scenarios.py` / `bench_parse.py`.
 
 ```
-ns3/                contrib module (probes, emitters, arenas, tests) — GPL-2.0-only
+ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
+ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
+tools/checks/       CI scripts (check-stock-arms.sh) — MIT OR GPL-2.0-only
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), stdlib only — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only)
 docs/               marker-line contract, arena reference
@@ -36,11 +38,19 @@ CONTRIBUTING invariant 7). The
 same locally:
 
 ```bash
-docker run --rm -v "$PWD:/src/swarm-tools:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
-    ns3-build-contrib --test swarm-tools=/src/swarm-tools/ns3
+docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug bash -c \
+    'ns3-build-contrib --test routing-bench=/src/ns3/routing-bench &&
+     bash /src/tools/checks/check-stock-arms.sh /opt/ns-3 "olsr dsdv hwmp"'
 ```
 
-(`swarm-tools` is the working module name; confirm it in the Phase 4 PR.)
+The module is named `routing-bench`, as in AntHocNet: every arm module that
+ships `helper/<module>-bench-arms.cc` keeps registering against it. CI
+(`.github/workflows/ns3.yml`) also checks that each stock arm delivers.
+**Temporary exception (ns3-containers#35, option A):** ns-3.49's stock AODV
+livelocks, so the `aodv` arm's check runs on `ns3-dev:3.48`; move it back to
+`latest` when a fixed ns-3 release reaches it. Formatting is not checked yet:
+the harness keeps AntHocNet's style until a restyle PR adopts the org
+`.clang-format`.
 
 Python (no pytest dependency; each test exits non-zero on its first failure):
 

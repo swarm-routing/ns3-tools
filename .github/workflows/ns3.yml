@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+name: ns-3
+
+# The routing-bench harness (ns3/routing-bench, moved from AntHocNet, #2) in
+# ghcr.io/swarm-routing/ns3-dev: build + test.py on the release ns-3 supports
+# (`latest`, debug and sanitized), then the stock arms must each deliver.
+#
+# TEMPORARY EXCEPTION (ns3-containers#35, AntHocNet#843, option A): on
+# ns-3.49 stock AODV livelocks, so the aodv arm's delivery check runs on
+# ns3-dev:3.48 until the first ns-3 release with the fix reaches `latest`;
+# then move `aodv` into the latest leg and drop the 3.48 one.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ns3-versions:
+        description: 'On demand: JSON list of older ns-3 releases for the module build, e.g. ["3.42"]'
+        default: ''
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  module:
+    uses: swarm-routing/.github/.github/workflows/reusable-ns3-ci.yml@main
+    with:
+      modules: routing-bench=ns3/routing-bench
+      ns3-versions: ${{ inputs.ns3-versions || '["latest"]' }}
+      # The harness keeps AntHocNet's formatting while it moves (a restyle would
+      # hide the move in the diff); adopting the org .clang-format is its own PR.
+      format: false
+      dual-roots: 'python/ tools/'
+      core-roots: ''
+
+  stock-arms:
+    name: stock arms deliver (${{ matrix.arms }} on ns-${{ matrix.version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/swarm-routing/ns3-dev:${{ matrix.version }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: latest
+            arms: olsr dsdv hwmp
+          - version: '3.48'  # aodv: 'latest' once ns3-containers#35 is fixed
+            arms: aodv
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build routing-bench alone (stock ns-3 only) and run its suite
+        run: ns3-build-contrib --test "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench"
+      - name: Every listed arm delivers; an unknown arm aborts
+        run: bash tools/checks/check-stock-arms.sh /opt/ns-3 "${{ matrix.arms }}"
