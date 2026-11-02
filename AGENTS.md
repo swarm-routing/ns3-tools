@@ -7,7 +7,7 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: empty, populated in Phase 4.** The layout below is the plan; update this file in the PR that creates it.
+**Status: being populated (Phase 4).** `python/` holds the readers ported from AntHocNet (#3); the rest of the layout below is the plan; update this file in the PR that adds each part.
 
 Protocol-agnostic diagnostics and comparison tooling: non-intrusive C++20
 probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
@@ -19,7 +19,8 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 
 ```
 ns3/                contrib module (probes, emitters, arenas, tests) — GPL-2.0-only
-python/ns3_tool/    the ns3-tool CLI (stdlib-first), tests alongside — MIT OR GPL-2.0-only
+python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), stdlib only — MIT OR GPL-2.0-only
+python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only)
 docs/               marker-line contract, arena reference
 ```
 
@@ -41,8 +42,16 @@ docker run --rm -v "$PWD:/src/swarm-tools:ro" ghcr.io/swarm-routing/ns3-dev:late
 
 (`swarm-tools` is the working module name; confirm it in the Phase 4 PR.)
 
-Python: `python3 -m pytest python/` (port AntHocNet's `tools/bench/test_*.py`
-with the code they test).
+Python (no pytest dependency; each test exits non-zero on its first failure):
+
+```bash
+for t in python/tests/test_*.py; do python3 "$t"; done
+NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_parse_query.py  # the full corpus, as CI
+pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary
+```
+
+A reader change must keep its output byte-identical on the fixtures unless the
+change is the point (then say so in the PR and update AntHocNet's callers).
 
 ## Golden rules (invariants — do not break)
 

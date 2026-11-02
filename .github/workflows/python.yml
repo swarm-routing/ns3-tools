@@ -1,0 +1,57 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+name: Python
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ns3-tool tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Self-tests (fixtures)
+        run: for t in python/tests/test_*.py; do echo "== $t"; python3 "$t"; done
+      - name: Install the package; console scripts run
+        run: |
+          python3 -m pip install ./python
+          cd "$RUNNER_TEMP"
+          ns3-bench-parse "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/fanet-main-6arm.txt | grep -q '95% CI'
+
+  corpus:
+    name: query equivalence on AntHocNet's committed cells
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: danieljoppi/AntHocNet
+          path: anthocnet
+          sparse-checkout: results/cells
+          persist-credentials: false
+      - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
+
+  licence:
+    uses: swarm-routing/.github/.github/workflows/reusable-licence-check.yml@main
+    with:
+      dual-roots: 'python/ tools/'
+      core-roots: ''

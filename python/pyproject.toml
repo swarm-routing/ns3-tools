@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ns3-tool"
+version = "0.1.0"
+description = "Readers and paired statistics for ns-3 routing-harness marker lines (##RUN##, ##BENCH##, ...)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR GPL-2.0-only"
+dependencies = []
+
+[project.scripts]
+ns3-bench-parse = "ns3_tool.bench_parse:main"
+ns3-native-view = "ns3_tool.native_view:main"
+ns3-comparator-view = "ns3_tool.comparator_view:main"
+ns3-pool-runs = "ns3_tool.pool_runs:main"
+ns3-sweep-summary = "ns3_tool.sweep_summary:main"
+
+[tool.setuptools]
+packages = ["ns3_tool"]
