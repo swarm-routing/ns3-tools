@@ -13,8 +13,12 @@ so in one line. -->
 The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
 lines and campaign CSVs (`python/ns3_tool/`). Their input is log output that
 may come from someone else's run (a pull request's artifact, a downloaded
-dataset): they reject malformed lines and never execute what they read (no
-`eval`, no pickle, no shell), stdlib only.
+dataset). They never execute what they read (no `eval`, no pickle, no
+shell; stdlib only). They do not yet reject every malformed line: a field
+that does not parse is skipped, so a `##RUN##` row with a readable PDR is
+kept with that metric missing for that seed, and a summary can treat an
+unreadable CSV value as missing. Malformed input can therefore change a
+verdict instead of failing; a strict default is #58.
 
 ## Known, by-design limitations (out of scope)
 
