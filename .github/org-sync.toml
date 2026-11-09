@@ -1,0 +1,25 @@
+# org-sync configuration (swarm-routing/.github tools/org-sync).
+kind = "protocol"
+title = "ns3-tools"
+module = "routing-bench"
+dual = ["python/", "tools/"]
+ci_workflow = "ns3.yml"
+badges = ["ci", "licence", "conventional", "cxx", "ns3", "python"]
+trust_boundary = """
+The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
+lines and campaign CSVs (`python/ns3_tool/`). Their input is log output that
+may come from someone else's run (a pull request's artifact, a downloaded
+dataset). They never execute what they read (no `eval`, no pickle, no
+shell; stdlib only). They do not yet reject every malformed line: a field
+that does not parse is skipped, so a `##RUN##` row with a readable PDR is
+kept with that metric missing for that seed, and a summary can treat an
+unreadable CSV value as missing. Malformed input can therefore change a
+verdict instead of failing; a strict default is #58."""
+limitations = """
+- The probes, arenas and the `routing-bench` harness are simulation code: a
+  probe trusts the simulator it is attached to.
+- A comparator arm here is a model of a published protocol for ns-3, not an
+  implementation for real networks."""
+[make]
+build = 'docker run --rm -v "$(CURDIR):/src:ro" $(NS3_IMAGE) ns3-build-contrib routing-bench=/src/ns3/routing-bench'
+test = 'for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done'

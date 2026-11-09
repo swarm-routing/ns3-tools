@@ -1,5 +1,14 @@
 # ns3-tools
 
+<!-- org-sync:begin badges -->
+[![CI](https://github.com/swarm-routing/ns3-tools/actions/workflows/ns3.yml/badge.svg)](https://github.com/swarm-routing/ns3-tools/actions/workflows/ns3.yml)
+[![Licence: GPL-2.0-only, python/ tools/ MIT OR GPL-2.0-only](https://img.shields.io/badge/licence-GPL--2.0--only%2C%20python%2F%20tools%2F%20MIT%20OR%20GPL--2.0--only-blue)](LICENSING.md)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow)](https://www.conventionalcommits.org)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus)](AGENTS.md)
+[![Runs on ns-3](https://img.shields.io/badge/runs%20on-ns--3-informational)](https://www.nsnam.org)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](AGENTS.md)
+<!-- org-sync:end badges -->
+
 Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 `routing-bench` comparison harness (`ns3/routing-bench/`), the result readers
 and statistics (`python/`), and, planned, non-intrusive probes, universal
