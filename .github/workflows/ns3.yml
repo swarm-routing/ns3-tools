@@ -41,8 +41,30 @@ jobs:
       # "seed 2 differs" has to come from the results (swarm-routing/.github#40).
       determinism-normalize: 's/firstRun=[0-9]+//; s/^(##[A-Z]+##) [0-9]+ /\1 /'
       # strict-warnings stays off until the harness is clean under it (#31).
+      # SonarQube Cloud CI analysis with gcovr coverage of the harness on the
+      # automatic `latest` debug leg (swarm-routing/.github CONTRIBUTING
+      # § Quality gates; report-only). Skipped on fork PRs (no token) and while
+      # the project is on Automatic Analysis.
+      coverage: ${{ inputs.ns3-versions == '' }}
+      sonar: ${{ inputs.ns3-versions == '' }}
       dual-roots: 'python/ tools/'
       core-roots: ''
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # The module's coverage report to Codecov (report-only; OIDC, or the
+  # CODECOV_TOKEN secret when set).
+  codecov:
+    needs: module
+    if: inputs.ns3-versions == ''
+    permissions:
+      contents: read
+      id-token: write
+    uses: swarm-routing/.github/.github/workflows/reusable-codecov.yml@main
+    with:
+      flags: ns3
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   stock-arms:
     name: stock arms deliver (${{ matrix.arms }} on ns-${{ matrix.version }})
