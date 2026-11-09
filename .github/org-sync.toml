@@ -4,7 +4,7 @@ title = "ns3-tools"
 module = "routing-bench"
 dual = ["python/", "tools/"]
 ci_workflow = "ns3.yml"
-badges = ["ci", "licence", "conventional", "cxx", "ns3", "python"]
+badges = ["ci", "licence", "conventional", "arena", "cxx", "ns3", "ns3dev", "python"]
 trust_boundary = """
 The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
 lines and campaign CSVs (`python/ns3_tool/`). Their input is log output that
