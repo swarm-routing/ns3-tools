@@ -52,8 +52,8 @@ jobs:
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # The module's coverage report to Codecov (report-only; OIDC, or the
-  # CODECOV_TOKEN secret when set).
+  # The module's coverage report to Codecov (report-only; GitHub OIDC,
+  # no Codecov token).
   codecov:
     needs: module
     if: inputs.ns3-versions == ''
@@ -63,8 +63,6 @@ jobs:
     uses: swarm-routing/.github/.github/workflows/reusable-codecov.yml@main
     with:
       flags: ns3
-    secrets:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   stock-arms:
     name: stock arms deliver (${{ matrix.arms }} on ns-${{ matrix.version }})
