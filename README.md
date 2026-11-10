@@ -9,6 +9,12 @@
 [![Runs on ns-3](https://img.shields.io/badge/runs%20on-ns--3-informational)](https://www.nsnam.org)
 [![Built on: ns3-dev](https://img.shields.io/badge/built%20on-ns3--dev%20image-blue?logo=docker)](https://github.com/orgs/swarm-routing/packages/container/package/ns3-dev)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](AGENTS.md)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=bugs)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
+[![codecov](https://codecov.io/gh/swarm-routing/ns3-tools/graph/badge.svg)](https://codecov.io/gh/swarm-routing/ns3-tools)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/swarm-routing/ns3-tools?utm_source=oss&utm_medium=github&utm_campaign=swarm-routing%2Fns3-tools&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 <!-- org-sync:end badges -->
 
 Protocol-agnostic diagnostics and comparison tooling for ns-3: the
