@@ -90,8 +90,9 @@ Org-wide (1–9), then this repo's own.
    parts; dual code never pulls GPL-only code in: a `core/` file includes only
    the C++ standard library, other `core/` files and the dual-licensed `core/`
    of a dependency pinned by commit and declared in the repo's `licence.yml`
-   `core-deps` (a protocol's `core/` on swarm-core's; CI checks it,
-   `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
+   `core-deps`, with `core-roots` naming the repo's own `core/` (without it
+   the check skips core includes; a protocol's `core/` on swarm-core's; CI
+   checks it, `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
    licence: its `core/`/`tools/` (dual) may land in dual or GPL paths here; its
    `ns3/` modules and `web/` (GPL-2.0-only) only in GPL paths. Third-party code
    (AntHocNet's vendored `aomdv`/`gpsr`, IITP RAS) lands only in GPL paths with
@@ -116,7 +117,8 @@ Org-wide (1–9), then this repo's own.
    carry a configured cap).
 8. **CI hygiene.** Actions pinned by full commit SHA with a `# vX.Y.Z` comment;
    buildx caches scoped per profile; transient artifacts `retention-days` <= 7.
-   Every job has a `timeout-minutes` cap, and every apt, npm or installer step
+   Every job that runs steps has a `timeout-minutes` cap (a job that only
+   calls a reusable workflow cannot take one: the called workflow's jobs carry it), and every apt, npm or installer step
    its own, sized from recent green runs; `apt-get update` runs with
    `--error-on=any` inside a shell retry. Ubuntu mirror outages are the usual
    cause of a red run.
