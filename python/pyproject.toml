@@ -11,6 +11,8 @@ description = "Readers, paired statistics and the campaign driver for ns-3 routi
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib (campaign plans)
 license = "MIT OR GPL-2.0-only"
+# Symlinks to the root texts (one copy in git); sdist and wheel carry them as files (#14).
+license-files = ["LICENSE", "LICENSE-MIT"]
 dependencies = []
 
 [project.scripts]

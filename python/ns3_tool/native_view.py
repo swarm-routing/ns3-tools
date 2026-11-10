@@ -59,6 +59,7 @@ FAMILIES = [
         ["opspf", "geo-greedy", "gpsr3d"],
     ),
 ]
+NO_PAIRS = "n/a (<2 common seeds)"
 LEO_PROTOS = ["anthocnet", "opspf", "geo-greedy", "gpsr3d", "oracle", "oracle-delay"]
 
 
@@ -101,20 +102,31 @@ def readings(gen, d):
                 "anthocnet_pdr": mean(a, "pdr") if a else None,
                 "oracle_pdr": mean(o, "pdr") if o else None,
             }
-            if a and o:
-                _, st, _ = bp.paired_stats(o, a)
+            # paired_stats() is None below 2 common seeds (a truncated cell, #14).
+            ps = bp.paired_stats(o, a) if a and o else None
+            if ps and "pdr" in ps[1]:
+                st = ps[1]
                 row.update(gap=st["pdr"][0], gap_lo=st["pdr"][1], gap_hi=st["pdr"][2])
             b = best_native(runs, natives)
             row["best"] = b
             if b:
                 row["best_pdr"] = mean(runs[b], "pdr")
-                _, st, v = bp.paired_stats(runs[b], a)
-                for m in ("pdr", "delay99", "nrl"):
-                    if m in st:
-                        row[f"d_{m}"], row[f"d_{m}_lo"], row[f"d_{m}_hi"] = st[m][:3]
-                row["verdict"] = v
+                ps = bp.paired_stats(runs[b], a) if a else None
+                if ps is None:
+                    row["verdict"] = NO_PAIRS
+                else:
+                    _, st, v = ps
+                    for m in ("pdr", "delay99", "nrl"):
+                        if m in st:
+                            row[f"d_{m}"], row[f"d_{m}_lo"], row[f"d_{m}_hi"] = st[m][:3]
+                    row["verdict"] = v
             out.append(row)
     return out
+
+
+def fmt_pdr(v):
+    """A mean PDR, or "—" when the protocol has no rows (a missing LEO job, #14)."""
+    return "—" if v is None else f"{v:.2f}"
 
 
 def fmt_ci(r, k, unit=""):
@@ -137,8 +149,8 @@ def main():
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         print(
-            f"| {r['family']} | {r['cell']} | {r['anthocnet_pdr']:.2f} | "
-            f"{r['oracle_pdr']:.2f} | {fmt_ci(r, 'gap')} | {r['best'] or '—'} | "
+            f"| {r['family']} | {r['cell']} | {fmt_pdr(r['anthocnet_pdr'])} | "
+            f"{fmt_pdr(r['oracle_pdr'])} | {fmt_ci(r, 'gap')} | {r['best'] or '—'} | "
             + (f"{r['best_pdr']:.2f}" if r["best"] else "—")
             + f" | {fmt_ci(r, 'd_pdr')} | {fmt_ci(r, 'd_delay99')} | {fmt_ci(r, 'd_nrl')} | "
             f"{r.get('verdict', '—')} |"

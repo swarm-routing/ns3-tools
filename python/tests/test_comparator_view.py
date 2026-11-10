@@ -7,13 +7,28 @@ one file; the Termite trend reads s20 minus s1 from the ##RUN## PDR and the
 AntHocNet, oracle and best-native rows by seed, with the sign arm minus
 reference."""
 
+import contextlib
+import io
 import os
-import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "ns3_tool", "comparator_view.py")
+sys.path.insert(0, os.path.dirname(TOOL))
+import comparator_view as cv  # noqa: E402 (after the sys.path insert)
+
+
+def run(d):
+    """comparator_view --dir D, in-process so coverage sees it: (exit code, stdout)."""
+    argv, sys.argv = sys.argv, [TOOL, "--dir", d]
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            code = cv.main()
+    finally:
+        sys.argv = argv
+    return code, out.getvalue()
 
 
 def rows(proto, pdrs, nrl):
@@ -42,9 +57,8 @@ def main():
             f.write(ctrl)
         with open(os.path.join(d, "grid-rwp-tworay-v250c.txt"), "w") as f:
             f.write(rows("qrouting", [88, 88, 88], 6.0))
-        out = subprocess.run(
-            [sys.executable, TOOL, "--dir", d], capture_output=True, text=True, check=True
-        ).stdout
+        code, out = run(d)
+        assert code == 0, code
     trend = [ln for ln in out.splitlines() if ln.startswith(("| pdr |", "| data hops |"))]
     assert trend[0].startswith("| pdr | 96.00 | 80.00 | -16.00 ["), trend
     assert trend[1].startswith("| data hops | 3.20 | 6.20 | +3.00 [+2.77, +3.23]"), (
@@ -63,6 +77,17 @@ def main():
     assert set(fam) == {"anthocnet", "oracle", "best native (aodv)"}, fam
     assert "| -10.00 [-10.00, -10.00]" in fam["anthocnet"], fam["anthocnet"]
     assert "| +1.00 [" in fam["best native (aodv)"], fam  # 88 - mean(88, 87, 86)
+    # #14: an anchor whose arm and reference share fewer than 2 seeds (a
+    # truncated cell) reads n/a instead of raising on paired_stats() is None.
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "anchor-ara-p0-v250c.txt"), "w") as f:
+            f.write(rows("ara", [90, 92, 94], 5.0) + "##RUN## 9 aodv 80 10.0 100.0 13.0 9.0\n")
+        code, out = run(d)
+    assert code == 0, code
+    row = [ln for ln in out.splitlines() if ln.startswith("| anchor-ara-p0 |")]
+    assert row == [
+        "| anchor-ara-p0 | ara | aodv | 3 | 92.00 | 80.00 | — | — | — | n/a (<2 common seeds) |"
+    ], row
     print("comparator_view self-test: OK")
     return 0
 

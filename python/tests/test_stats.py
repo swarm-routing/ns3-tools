@@ -62,11 +62,11 @@ def approx(a, b, tol=1e-3):
 # ---- #675 baseline control --------------------------------------------------
 
 
-def _ctl_cell(rows, harness="compare"):
-    """A cell from {proto: [(pdr, delay99, nrl), ...]}, seeds 1..n."""
+def _ctl_cell(rows, harness="compare", first=1):
+    """A cell from {proto: [(pdr, delay99, nrl), ...]}, seeds first..first+n-1."""
     out = []
     for proto, vals in rows.items():
-        for seed, (pdr, d99, nrl) in enumerate(vals, 1):
+        for seed, (pdr, d99, nrl) in enumerate(vals, first):
             out.append(f"##RUN## {seed} {proto} {pdr} 10.0 {d99} 9.0 {nrl}")
     out.append(f"##PROV## commit=0123456 harness={harness}")
     return "\n".join(out) + "\n"
@@ -120,6 +120,35 @@ def _control_olsr_fails():
         "anthocnet",
     )
     assert failed, lines
+
+
+@case("#14 control: a baseline sharing no seeds FAILs instead of 'identical on 0'")
+def _control_no_common_seeds():
+    before = _ctl_cell({"aodv": AODV})
+    # The same baseline, but only on seeds the before cell never ran (a
+    # truncated or timed-out cell): nothing can be compared.
+    after = _ctl_cell({"aodv": AODV}, first=11)
+    lines, failed = bp.control(before, after, "anthocnet")
+    assert failed, lines
+    assert lines == ["  aodv: FAIL (no common seeds: 10 before, 10 after)"], lines
+    # The CLI exits 1 on it, so a gate calling --control stops.
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for name, text in (("before", before), ("after", after)):
+            paths.append(os.path.join(td, name + ".txt"))
+            with open(paths[-1], "w") as fh:
+                fh.write(text)
+        tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ns3_tool")
+        run = subprocess.run(
+            [sys.executable, os.path.join(tool, "bench_parse.py"), "--control", *paths],
+            capture_output=True,
+            text=True,
+        )
+    assert run.returncode == 1, run
+    assert "aodv: FAIL (no common seeds" in run.stdout, run.stdout
 
 
 # ---- t quantiles -----------------------------------------------------------
