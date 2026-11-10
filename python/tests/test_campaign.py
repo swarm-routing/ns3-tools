@@ -255,8 +255,9 @@ def toml(plan):
 class FakeGitHub:
     """The endpoints campaign.py calls, over in-memory runs and artifacts."""
 
-    def __init__(self, plan, image=IMAGE, active=0, wrong=()):
+    def __init__(self, plan, image=IMAGE, active=0, wrong=(), failed=(), partial=()):
         self.plan, self.image, self.active, self.wrong = plan, image, active, set(wrong)
+        self.failed, self.partial = tuple(failed), tuple(partial)
         self.runs, self.artifacts, self.dispatched = {}, {}, []
         self.next_id = 1000
 
@@ -274,7 +275,9 @@ class FakeGitHub:
         rng = random.Random(first)
         out = [f"##CONFIG## scenario=paper runs={n} firstRun={first}"]
         for arm in args["protocols"].split(","):
-            for s in range(first, first + n):
+            # A partial run (a crash or timeout): aodv lost its last seed.
+            last = first + n - (arm == "aodv" and inputs["label"].endswith(self.partial or ("\0",)))
+            for s in range(first, last):
                 pdr = (90.0 if arm == "anthocnet" else 80.0) + rng.uniform(-2, 2)
                 d99 = 200.0 + rng.uniform(-20, 20)
                 nrl = 5.0 + rng.uniform(-0.5, 0.5)
@@ -304,7 +307,9 @@ class FakeGitHub:
                 "display_title": title,
                 "wf": wf,
                 "status": "completed",
-                "conclusion": "success",
+                "conclusion": "failure"
+                if self.failed and title.endswith(self.failed)
+                else "success",
             }
             self.dispatched.append((wf, body))
             if wf == cp.IMAGE_WORKFLOW:
@@ -450,6 +455,29 @@ def test_campaign():
                 code and "not the campaign image" in code,
                 "collect: refuses a cell from another image",
             )
+            for kind, needle in (
+                ("failed", "is failure, not success"),
+                (
+                    "partial",
+                    "arm aodv lacks seeds [20] of its block 11..20",
+                ),
+            ):
+                work4 = os.path.join(d, f"work-{kind}")
+                label = "static-mesh-s1" if kind == "failed" else "static-mesh-s11"
+                cp.gh = FakeGitHub(plan, **{kind: [label]})
+                run(["build", plan_path, "--work", work4])
+                run(["dispatch", plan_path, "--work", work4])
+                code, _o, _e = run(
+                    ["collect", plan_path, "--work", work4, "--out", work4 + "-runs"]
+                )
+                check(
+                    code and needle in code and f"{label}: run" in code,
+                    f"collect: refuses a {kind} run, naming the cell ({code})",
+                )
+                check(
+                    not os.path.exists(work4 + "-runs"),
+                    f"collect: writes nothing after a {kind} run",
+                )
             bad = copy.deepcopy(plan)
             bad["modules"][0] = bad["modules"][0][:-1] + "0"
             cp.gh = FakeGitHub(bad)

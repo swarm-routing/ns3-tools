@@ -552,17 +552,31 @@ def prov_of(text):
     return dict(t.split("=", 1) for t in lines[-1].split()[1:] if "=" in t)
 
 
-def cell_text(plan, work, label, rid):
-    """One job's results.txt, checked to have ##RUN## rows and the campaign's ##PROV##."""
+def cell_text(plan, work, label, rid, args):
+    """One job's results.txt: a successful run, every arm on exactly the job's
+    seed block, and the campaign's ##PROV##."""
     state = load_state(work)
+    if (s := run_state(rid)) != "success":
+        raise RuntimeError(f"{label}: run {rid} is {s}, not success")
     src = os.path.join(work, "artifacts", str(rid))
     path = os.path.join(src, "results.txt")
     if not os.path.exists(path):
         fetch(rid, src, "campaign-cell")
     with open(path) as f:
         text = f.read()
-    if "##RUN##" not in text:
-        raise RuntimeError(f"{label}: run {rid} has no ##RUN## rows (a failed or timed-out run)")
+    # A crashed or timed-out harness still uploads a partial results.txt with
+    # ##PROV## stamped on it: every arm must carry the whole seed block.
+    p = parameters(args)
+    block = set(range(p["firstRun"], p["firstRun"] + p["runs"]))
+    runs = bench_parse.parse_runs(text)
+    for arm in plan["arms"]:
+        got_seeds = set(runs.get(arm, {}))
+        if got_seeds != block:
+            missing = sorted(block - got_seeds)
+            raise RuntimeError(
+                f"{label}: run {rid} arm {arm} lacks seeds {missing} of its block "
+                f"{min(block)}..{max(block)} (a failed or timed-out run)"
+            )
     prov = prov_of(text)
     if prov is None:
         raise RuntimeError(f"{label}: run {rid} has no ##PROV## line")
@@ -590,7 +604,7 @@ def cmd_collect(plan, a):
             errs.append(f"{label}: not dispatched")
             continue
         try:
-            text, prov = cell_text(plan, work, label, rid)
+            text, prov = cell_text(plan, work, label, rid, args)
         except RuntimeError as e:
             errs.append(str(e))
             continue
