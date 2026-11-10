@@ -1,0 +1,103 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+name: Campaign image
+run-name: image ${{ inputs.plan }}
+
+# One campaign image per plan's modules (#66, swarm-routing/.github#107
+# option B): `ns3-campaign build` dispatches this, waits, and reads the
+# `campaign-image` artifact. The plan (campaigns/<name>.toml at the dispatched
+# ref) gives every module at a pinned commit; reusable-ns3-image.yml resolves
+# ns3-dev:<base> to its digest once, builds FROM it, runs the suites, pushes,
+# signs and attests ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<commit7>-<base7>-optimized
+# (commit7: the plan's first module). skip-existing reuses an image of that tag,
+# which another plan may have built with other commits of the other modules, so
+# `record` checks the image holds exactly the plan's module commits.
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: 'The campaign plan, campaigns/<name>.toml'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      dependencies: ${{ steps.plan.outputs.dependencies }}
+      modules: ${{ steps.plan.outputs.modules }}
+      stage: ${{ steps.plan.outputs.stage }}
+      ns3-version: ${{ steps.plan.outputs.ns3-version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      test-suites: ${{ steps.plan.outputs.test-suites }}
+      expect: ${{ steps.plan.outputs.expect }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the plan; the image workflow's inputs
+        id: plan
+        env:
+          PLAN: ${{ inputs.plan }}
+        # image-inputs refuses a path other than campaigns/<name>.toml, so the
+        # stage command it writes holds no caller-controlled shell text.
+        run: python3 python/ns3_tool/campaign.py image-inputs "$PLAN" | tee -a "$GITHUB_OUTPUT"
+
+  image:
+    needs: inputs
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: swarm-routing/.github/.github/workflows/reusable-ns3-image.yml@main
+    with:
+      dependencies: ${{ needs.inputs.outputs.dependencies }}
+      modules: ${{ needs.inputs.outputs.modules }}
+      stage: ${{ needs.inputs.outputs.stage }}
+      ns3-version: ${{ needs.inputs.outputs.ns3-version }}
+      profiles: '["optimized"]'
+      image: ns3-tools-ns3-campaign
+      tag: ${{ needs.inputs.outputs.tag }}
+      test-suites: ${{ needs.inputs.outputs.test-suites }}
+      skip-existing: true
+
+  record:
+    needs: [inputs, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The image holds the plan's modules; campaign-image.json
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          TAG: ${{ needs.image.outputs.tag }}
+          EXPECT: ${{ needs.inputs.outputs.expect }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest: '$IMAGE'"; exit 1; }
+          # The same reading as campaign-cell.yml's ##PROV##: the dependencies
+          # label, plus /src/<name>/.swarm-module for an installed module.
+          docker pull --quiet "$IMAGE"
+          deps=$(docker inspect --format '{{ index .Config.Labels "io.github.swarm-routing.dependencies" }}' "$IMAGE" | tr ',' '\n')
+          # shellcheck disable=SC2016  # expanded inside the container
+          staged=$(docker run --rm "$IMAGE" bash -c 'cat /src/*/.swarm-module 2>/dev/null || true')
+          got=$(printf '%s\n%s\n' "$deps" "$staged" | sed -n 's/^\([^=]*\)=.*@\([0-9a-f]\{40\}\)$/\1@\2/p' | LC_ALL=C sort | paste -sd, -)
+          [ "$got" = "$EXPECT" ] || { echo "::error::$IMAGE holds $got, the plan $EXPECT (a reused tag from other commits: bump the first module's commit)"; exit 1; }
+          python3 -c 'import json,os; print(json.dumps({"image": os.environ["IMAGE"], "tag": os.environ["TAG"]}))' \
+            | tee campaign-image.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: campaign-image
+          path: campaign-image.json
+          retention-days: 7

@@ -8,7 +8,7 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=cplusplus)](AGENTS.md)
 [![Runs on ns-3](https://img.shields.io/badge/runs%20on-ns--3-informational)](https://www.nsnam.org)
 [![Built on: ns3-dev](https://img.shields.io/badge/built%20on-ns3--dev%20image-blue?logo=docker)](https://github.com/orgs/swarm-routing/packages/container/package/ns3-dev)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](AGENTS.md)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue?logo=python)](AGENTS.md)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=bugs)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=swarm-routing_ns3-tools&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=swarm-routing_ns3-tools)

@@ -10,6 +10,7 @@
 | `python/tests/fixtures/` | benchmark cells copied from AntHocNet's `results/cells/` (data) | `GPL-2.0-only` |
 | `tools/` | standalone scripts (checks, release, data handling) | `MIT OR GPL-2.0-only` |
 | `ns3/` | the ns-3 contrib module: probes, emitters, arenas | `GPL-2.0-only` |
+| `campaigns/` | campaign plans (the pre-registration, copied into each benchmarks run) | `GPL-2.0-only` |
 | `docs/`, `README.md`, `AGENTS.md`, `CLAUDE.md` | docs | `GPL-2.0-only` |
 | everything else | | `GPL-2.0-only` |
 

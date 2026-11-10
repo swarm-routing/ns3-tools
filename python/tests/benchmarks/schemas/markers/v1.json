@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "description": "The marker lines routing-bench's routing-compare prints today (swarm-routing/ns3-tools ns3/routing-bench, AntHocNet docs/benchmarks/metrics.md), plus the ##ARGS## and ##PROV## lines the dispatching workflow appends. Version 1 predates the ##HARNESS## version line (swarm-routing/ns3-tools#3): a v1 file may omit it; a later version requires it. Fields are only appended (ns3-tools golden rule 11); a removal or a change of meaning is a new version file here.",
+  "harness_line_required": false,
+  "required": ["CONFIG", "RUN", "PROV"],
+  "markers": {
+    "CONFIG": {"form": "free", "doc": "the effective configuration, key=value"},
+    "RUN": {
+      "form": "positional",
+      "doc": "##RUN## <run> <arm> pdr delay delay99 thrput nrl [jitter off50 off90 nrl_bytes ...]: the per-seed row pairing uses",
+      "fields": ["run", "arm", "pdr", "delay", "delay99", "thrput", "nrl", "jitter", "off50", "off90", "nrl_bytes"],
+      "min_fields": 7
+    },
+    "BENCH": {"form": "free", "doc": "##BENCH## <arm> <means...>: the compact summary row"},
+    "DIAG": {"form": "free", "doc": "diagnostic row (org canonical marker)"},
+    "PROV": {
+      "form": "keyvalue",
+      "doc": "provenance, written by the workflow, last line of the block; in this repo it must name the base digest, the campaign-image digest and every module commit of the manifest (spelled base=<ref>@sha256:.. image=<ref>@sha256:.. modules=<name>@<sha>,..)"
+    },
+    "ARGS": {"form": "free", "doc": "the harness command line as dispatched"},
+    "HARNESS": {"form": "keyvalue", "doc": "##HARNESS## version=<n>: the marker contract version (from version 2 on)"},
+    "AIR": {"form": "free"},
+    "COMMON": {"form": "free"},
+    "DROPID": {"form": "free"},
+    "ENERGY": {"form": "free"},
+    "GOODPUT": {"form": "free"},
+    "HOLD": {"form": "free"},
+    "INPKT": {"form": "free"},
+    "MATCH": {"form": "free"},
+    "ORACLE": {"form": "free"},
+    "PERF": {"form": "free"},
+    "REINJ": {"form": "free"},
+    "ROUTE": {"form": "free"}
+  }
+}

@@ -4,6 +4,7 @@ title = "ns3-tools"
 module = "routing-bench"
 dual = ["python/", "tools/"]
 ci_workflow = "ns3.yml"
+python = "3.11"
 badges = ["ci", "licence", "conventional", "arena", "cxx", "ns3", "ns3dev", "python", "sonar", "codecov", "coderabbit"]
 trust_boundary = """
 The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
