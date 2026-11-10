@@ -24,3 +24,14 @@ limitations = """
 [make]
 build = 'docker run --rm -v "$(CURDIR):/src:ro" $(NS3_IMAGE) ns3-build-contrib routing-bench=/src/ns3/routing-bench'
 test = 'for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done'
+
+[settings]
+# GitHub settings as code: swarm-routing/.github tools/repo-settings (swarm-routing/.github#117).
+description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench harness every protocol arm registers with, the readers and paired statistics for its marker lines, and (planned) probes, universal arenas and the ns3-tool CLI."
+homepage = "https://swarm-routing.github.io/arena/ns3-tools/"
+topics = ["ns-3", "benchmarking", "routing-protocol", "manet", "network-simulation", "statistics", "reproducibility", "aodv", "olsr"]
+ruleset = "tooling"
+# Not `stock arms deliver (...)`: their names carry the temporary ns-3.48 pin
+# (ns3-containers#35) and change when it moves. Not `module / format` (skipped until
+# formatting is checked).
+required_checks = ["module / ns-latest debug", "module / ns-latest sanitized", "module / headers / licence", "python-quality / python", "ns3-tool tests (Python 3.11)", "ns3-tool tests (Python 3.13)", "query equivalence on AntHocNet's committed cells", "check / org-sync", "title / title"]

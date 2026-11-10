@@ -7,7 +7,8 @@
 # routing-bench alone, with stock ns-3 only (AntHocNet's routing-bench-alone
 # job, moved with the harness, ns3-tools#2):
 #   - routing-compare offers exactly the stock arms;
-#   - every arm in ARMS delivers (a ##RUN## row with pdr > 0);
+#   - every arm in ARMS delivers (a ##RUN## row with pdr > 0, read through
+#     the readers by arm-delivers.sh, not by awk column position, #6);
 #   - an arm that is not installed aborts with "unknown protocol" (#448).
 # Each run has a wall-clock budget, so a hang (ns-3.49's AODV, #843 /
 # ns3-containers#35) fails the check instead of running to the job timeout.
@@ -15,6 +16,7 @@ set -euo pipefail
 ns3=$1
 arms=$2
 budget=${BUDGET:-600}
+delivers="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/arm-delivers.sh"
 cd "$ns3"
 
 help=$(./ns3 run "routing-compare --PrintHelp" 2>&1 || true)
@@ -38,8 +40,9 @@ for arm in $arms; do
     elif [ "$rc" -ne 0 ]; then
         echo "FAIL: $arm exited $rc" >&2; tail -20 <<<"$out" >&2; fails=$((fails + 1)); continue
     fi
-    row=$(awk -v a="$arm" '$1 == "##RUN##" && $3 == a' <<<"$out")
-    if awk '$4 > 0 {f = 1} END {exit !f}' <<<"$row"; then
+    rc=0
+    row=$(bash "$delivers" "$arm" <<<"$out") || rc=$?
+    if [ "$rc" -eq 0 ]; then
         echo "ok    $arm (${took} s): $row"
     else
         echo "FAIL: $arm delivered nothing: ${row:-no ##RUN## row}" >&2; fails=$((fails + 1))
