@@ -513,7 +513,7 @@ def cmd_build(plan, a):
     rid = state.get("image_run")
     if not rid:
         rid = dispatch_run(IMAGE_WORKFLOW, a.ref, {"plan": path}, f"image {path}")
-        state.update(image_run=rid, ref=a.ref)
+        state.update(image_run=rid, ref=a.ref, plan=path)
         save_state(work, state)
         print(f"dispatched {IMAGE_WORKFLOW} run {rid}", file=sys.stderr)
     while (s := run_state(rid)) in ("queued", "in_progress", "waiting", "pending", "requested"):
@@ -689,7 +689,9 @@ def cmd_collect(plan, a):
         "preregistration": {"path": "plan.toml"},
         "seeds": seeds(plan),
         "commands": [
-            dispatch_command(IMAGE_WORKFLOW, state.get("ref", "main"), {"plan": plan["_path"]}),
+            dispatch_command(
+                IMAGE_WORKFLOW, state.get("ref", "main"), {"plan": state.get("plan", plan["_path"])}
+            ),
             *commands,
         ],
         "markers": {"schema_version": MARKERS_VERSION},

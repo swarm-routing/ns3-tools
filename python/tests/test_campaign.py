@@ -26,6 +26,7 @@ import os
 import random
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -418,6 +419,16 @@ def test_campaign():
             check(
                 sent == [fake.dispatched[0][1], fake.dispatched[1][1]],
                 "manifest: the dispatch commands send exactly the requests made",
+            )
+            other = os.path.join(d, "copy.toml")
+            shutil.copyfile(plan_path, other)
+            run(["collect", other, "--work", work, "--out", runs_root + "-copy"])
+            m2 = json.load(
+                open(os.path.join(runs_root + "-copy", os.path.basename(run_dir), "manifest.json"))
+            )
+            check(
+                m2["commands"][0] == cmds[0],
+                "manifest: the image dispatch names the plan path build sent, whatever path collect reads",
             )
             check(
                 shlex.split(cmds[2])[:3] == ["docker", "run", "--rm"]
