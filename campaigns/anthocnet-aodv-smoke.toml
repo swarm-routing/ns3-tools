@@ -1,0 +1,30 @@
+# The two-arm smoke of ns3-tools#66: AntHocNet against stock AODV, 2 cells x
+# 20 seeds, on one campaign image. AODV-family arms pin ns-3.48 until
+# ns-3.49's AODV livelock is fixed (ns3-containers#35, AntHocNet#843).
+#
+#   ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml
+#   ns3-campaign build campaigns/anthocnet-aodv-smoke.toml
+#   ns3-campaign dispatch campaigns/anthocnet-aodv-smoke.toml
+#
+# routing-bench comes from this repo; AntHocNet's module copies its core/ in
+# when installed, so it is staged with its own `make install-ns3` (BASELINES=0:
+# its own copy of routing-bench and the vendored arms stay out).
+name = "anthocnet-aodv-smoke"
+base = "3.48-optimized"
+arms = ["anthocnet", "aodv"]
+reference = "aodv"
+seeds = 20
+modules = [
+  "routing-bench=swarm-routing/ns3-tools@ba986d87db91974749c580d1af76b9d0017d9f2b:ns3/routing-bench",
+  "anthocnet=swarm-routing/AntHocNet@4fe1400c98d8a1e2f053ced6b6580df3b27f1124",
+]
+
+[install]
+anthocnet = 'make -s install-ns3 NS3DIR="$NS3DIR" BASELINES=0'
+
+[cells.grid-rwp]
+args = "--scenario=paper --nNodes=50 --time=300 --areaX=1500 --areaY=300 --speed=20 --pause=30 --range=300 --propagation=range --mobility=rwp --transport=udp --diag"
+
+[cells.static-mesh]
+args = "--scenario=paper --nNodes=50 --time=300 --areaX=1500 --areaY=300 --speed=20 --pause=300 --range=300 --propagation=range --mobility=rwp --transport=udp --diag"
+blocks = 2

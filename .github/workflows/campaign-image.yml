@@ -1,0 +1,83 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+name: Campaign image
+run-name: image ${{ inputs.plan }}
+
+# One campaign image per plan's modules (#66, swarm-routing/.github#107
+# option B): `ns3-campaign build` dispatches this, waits, and reads the
+# `campaign-image` artifact. The plan (campaigns/<name>.toml at the dispatched
+# ref) gives every module at a pinned commit; reusable-ns3-image.yml resolves
+# ns3-dev:<base> to its digest once, builds FROM it, runs the suites, pushes,
+# signs and attests ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<hash7>-<base7>-optimized.
+# skip-existing: a second plan with the same modules and base reuses the image.
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: 'The campaign plan, campaigns/<name>.toml'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      dependencies: ${{ steps.plan.outputs.dependencies }}
+      modules: ${{ steps.plan.outputs.modules }}
+      stage: ${{ steps.plan.outputs.stage }}
+      ns3-version: ${{ steps.plan.outputs.ns3-version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      test-suites: ${{ steps.plan.outputs.test-suites }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the plan; the image workflow's inputs
+        id: plan
+        env:
+          PLAN: ${{ inputs.plan }}
+        # image-inputs refuses a path other than campaigns/<name>.toml, so the
+        # stage command it writes holds no caller-controlled shell text.
+        run: python3 python/ns3_tool/campaign.py image-inputs "$PLAN" | tee -a "$GITHUB_OUTPUT"
+
+  image:
+    needs: inputs
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: swarm-routing/.github/.github/workflows/reusable-ns3-image.yml@main
+    with:
+      dependencies: ${{ needs.inputs.outputs.dependencies }}
+      modules: ${{ needs.inputs.outputs.modules }}
+      stage: ${{ needs.inputs.outputs.stage }}
+      ns3-version: ${{ needs.inputs.outputs.ns3-version }}
+      profiles: '["optimized"]'
+      image: ns3-tools-ns3-campaign
+      tag: ${{ needs.inputs.outputs.tag }}
+      test-suites: ${{ needs.inputs.outputs.test-suites }}
+      skip-existing: true
+
+  record:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: campaign-image.json
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          TAG: ${{ needs.image.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest: '$IMAGE'"; exit 1; }
+          python3 -c 'import json,os; print(json.dumps({"image": os.environ["IMAGE"], "tag": os.environ["TAG"]}))' \
+            | tee campaign-image.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: campaign-image
+          path: campaign-image.json
+          retention-days: 7

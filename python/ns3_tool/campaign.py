@@ -1,0 +1,711 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+"""Multi-protocol benchmark campaigns on one campaign image (#66).
+
+A campaign pairs several repositories' ns-3 modules in one arena: the
+protocols under test, swarm-core, this repo's routing-bench and the stock or
+vendored arms. Option B of swarm-routing/.github#107: the modules are built
+once into a campaign image FROM a pinned ns3-dev digest, and every cell pulls
+that image by digest, so all cells run the same binary and none rebuilds a
+protocol.
+
+    ns3-campaign validate PLAN                  # the plan checker (also run by every command)
+    ns3-campaign plan     PLAN                  # the image and every cell's command; dispatches nothing
+    ns3-campaign build    PLAN [--ref main]     # the campaign image (campaign-image.yml), waits for it
+    ns3-campaign dispatch PLAN [--cap N] [--wait]   # every cell in that image by digest, throttled
+    ns3-campaign status   PLAN [--brief]
+    ns3-campaign collect  PLAN --out RUNS_ROOT  # runs/<date>-<name>/: cells/, plan.toml, manifest.json
+    ns3-campaign verdicts PLAN --dir RUN_DIR    # each arm minus the reference, paired per seed
+    ns3-campaign image-inputs PLAN | stage PLAN # used by campaign-image.yml
+
+State (the image, the dispatch date, the label -> run id log, downloaded
+artifacts) lives in --work, default .campaign/<name>/, so every command is
+resumable: `dispatch` dispatches until the cap and exits, and is re-run until
+every label is logged (as AntHocNet's tools/bench/campaign.py, whose shape this
+ports: throttling, the run log, collect from artifacts).
+
+Plan (TOML, committed under campaigns/ before the campaign runs: it is the
+pre-registration, copied into the run directory):
+
+    name = "anthocnet-aodv-smoke"         # the run directory is <date>-<name>
+    base = "3.48-optimized"               # ns3-dev <version>-optimized, or latest-optimized
+    program = "routing-compare"           # default; the harness program
+    harness = "routing-bench"             # default; the module that holds it
+    arms = ["anthocnet", "aodv"]          # --protocols, every cell, same seeds
+    reference = "aodv"                    # verdicts: every other arm minus this one
+    seeds = 20                            # >= 20 (org rule 6): RngRun first_seed..
+    first_seed = 1                        # default 1
+    cap = 12                              # default 12: cell runs queued or running at once
+    modules = [                           # name=owner/repo@<40-char commit>[:subdir]
+      "routing-bench=swarm-routing/ns3-tools@<commit>:ns3/routing-bench",
+      "anthocnet=swarm-routing/AntHocNet@<commit>",
+    ]
+    suites = ["routing-bench"]            # optional test.py suites; default every module
+    [install]                             # a module whose repo installs it (it copies files):
+    anthocnet = 'make -s install-ns3 NS3DIR="$NS3DIR" BASELINES=0'
+    [cells.static-mesh]                   # the harness flags; the driver adds
+    args = "--scenario=paper --nNodes=50 --time=300 --pause=300"   # --protocols, --runs, --firstRun
+    blocks = 2                            # optional: split the seeds over 2 jobs
+
+A module with an `install` command is cloned at its commit and the command
+runs in that clone with NS3DIR pointing at a scratch tree; it must leave the
+module at $NS3DIR/contrib/<name>. Every other module is passed to
+reusable-ns3-image.yml as a dependency, which clones it at its commit.
+
+The image is ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<hash7>-<base7>-optimized,
+where hash7 is the build hash (the base and the modules: two plans with the
+same modules share one image) and base7 the resolved ns3-dev digest's first
+7 hex digits (reusable-ns3-image.yml resolves the tag once and builds FROM
+that digest; skip-existing reuses an image already built).
+
+Every cell's ##PROV## line is written by campaign-cell.yml from the image
+itself (its labels and the base's): the base tag and digest, the campaign
+image and digest, and every module commit. `collect` checks each cell ran the
+campaign image and the plan's commits, then writes the run directory and
+manifest of swarm-routing/benchmarks#3.
+"""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import zipfile
+
+try:  # as the ns3_tool package, or as a script beside its siblings
+    from . import bench_parse
+except ImportError:
+    import bench_parse
+
+REPO = os.environ.get("NS3_TOOL_REPO", "swarm-routing/ns3-tools")
+GIT = os.environ.get("NS3_TOOL_GIT", "https://github.com")  # where `stage` clones from
+IMAGE_WORKFLOW = "campaign-image.yml"
+CELL_WORKFLOW = "campaign-cell.yml"
+IMAGE = "ghcr.io/swarm-routing/ns3-tools-ns3-campaign"
+MARKERS_VERSION = 1  # swarm-routing/benchmarks schemas/markers/v1.json
+POLL = float(os.environ.get("NS3_TOOL_POLL", "15"))  # seconds between GitHub polls
+
+NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+CELL = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+MODULE = re.compile(
+    r"^([a-z0-9][a-z0-9-]*)=([A-Za-z0-9-]+/[A-Za-z0-9._-]+)@([0-9a-f]{40})(?::([A-Za-z0-9._/-]+))?$"
+)
+BASE = re.compile(r"^(latest|[0-9]+\.[0-9]+(?:\.[0-9]+)?)-optimized$")
+ARM = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+PROGRAM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+PLAN_PATH = re.compile(r"^campaigns/[A-Za-z0-9._-]+\.toml$")
+RESERVED = ("--runs", "--firstRun", "--protocols")
+KEYS = {
+    "name", "base", "program", "harness", "arms", "reference", "seeds",
+    "first_seed", "cap", "modules", "suites", "install", "cells",
+}  # fmt: skip
+
+
+# --- the plan -----------------------------------------------------------------
+
+
+def modules(plan):
+    """[{name, repo, commit, subdir}] in plan order (the build order)."""
+    out = []
+    for spec in plan.get("modules", []):
+        m = MODULE.match(spec) if isinstance(spec, str) else None
+        if m:
+            out.append({"name": m[1], "repo": m[2], "commit": m[3], "subdir": m[4] or ""})
+    return out
+
+
+def validate(plan):
+    """Every problem of a plan, as a list of strings (empty: valid)."""
+    errs = [f"unknown key '{k}'" for k in sorted(set(plan) - KEYS)]
+    for key in ("name", "base", "arms", "reference", "seeds", "modules", "cells"):
+        if key not in plan:
+            errs.append(f"no '{key}'")
+    if errs:
+        return errs
+    if not isinstance(plan["name"], str) or not NAME.match(plan["name"]):
+        errs.append(f"name '{plan['name']}' is not [a-z0-9-] (the run directory <date>-<name>)")
+    if not isinstance(plan["base"], str) or not BASE.match(plan["base"]):
+        errs.append(
+            f"base '{plan['base']}' is not <version>-optimized or latest-optimized "
+            "(benchmarks run on the optimized image, benchmarks rule 13)"
+        )
+    if not PROGRAM.match(str(plan.get("program", "routing-compare"))):
+        errs.append(f"program '{plan['program']}' is not a program name")
+    arms = plan["arms"]
+    if not isinstance(arms, list) or len(arms) < 2 or len(set(arms)) != len(arms):
+        errs.append("arms: at least two distinct arms (a paired comparison, org rule 6)")
+    elif not all(isinstance(a, str) and ARM.match(a) for a in arms):
+        errs.append(f"arms: {arms} are not arm names")
+    elif plan["reference"] not in arms:
+        errs.append(f"reference '{plan['reference']}' is not one of the arms")
+    seeds, first = plan["seeds"], plan.get("first_seed", 1)
+    if not isinstance(seeds, int) or seeds < 20:
+        errs.append(f"seeds {seeds}: at least 20 (org rule 6)")
+    if not isinstance(first, int) or first < 1:
+        errs.append(f"first_seed {first}: an RngRun >= 1")
+    cap = plan.get("cap", 12)
+    if not isinstance(cap, int) or not 1 <= cap <= 20:
+        errs.append(f"cap {cap}: 1..20 (the account runs 20 jobs; leave PR CI some)")
+    specs = plan["modules"] if isinstance(plan["modules"], list) else []
+    if not specs:
+        errs.append("modules: a list of name=owner/repo@<commit>[:subdir]")
+    for spec in specs:
+        m = MODULE.match(spec) if isinstance(spec, str) else None
+        if not m:
+            errs.append(
+                f"module '{spec}' is not name=owner/repo@<40-char commit>[:subdir] "
+                "(a campaign pins commits, benchmarks rule 11)"
+            )
+        elif m[4] and ".." in m[4].split("/"):
+            errs.append(f"module '{spec}': the subdir leaves the repository")
+    names = [m["name"] for m in modules(plan)]
+    if len(set(names)) != len(names):
+        errs.append("modules: a module is named twice")
+    if plan.get("harness", "routing-bench") not in names:
+        errs.append(f"harness module '{plan.get('harness', 'routing-bench')}' is not in modules")
+    install = plan.get("install", {})
+    if not isinstance(install, dict):
+        errs.append("install: a table of module = command")
+        install = {}
+    for name, cmd in install.items():
+        mod = next((m for m in modules(plan) if m["name"] == name), None)
+        if mod is None:
+            errs.append(f"install: '{name}' is not a module")
+        elif mod["subdir"]:
+            errs.append(
+                f"install: '{name}' has a subdir; an installed module lands in contrib/{name}"
+            )
+        if not isinstance(cmd, str) or not cmd.strip():
+            errs.append(f"install: '{name}' needs a command")
+    suites = plan.get("suites", names)
+    if not isinstance(suites, list) or not all(isinstance(s, str) and s for s in suites):
+        errs.append("suites: a list of test.py suite names")
+    cells = plan["cells"]
+    if not isinstance(cells, dict) or not cells:
+        errs.append("cells: at least one [cells.<name>] table")
+        cells = {}
+    for name, cell in cells.items():
+        if not CELL.match(name):
+            errs.append(f"cell '{name}' is not [a-z0-9._-]")
+        if not isinstance(cell, dict) or set(cell) - {"args", "blocks"}:
+            errs.append(f"cell '{name}': only 'args' and 'blocks'")
+            continue
+        args = cell.get("args", "")
+        if not isinstance(args, str):
+            errs.append(f"cell '{name}': args is a string of harness flags")
+            continue
+        for tok in args.split():
+            if tok.split("=", 1)[0] in RESERVED:
+                errs.append(f"cell '{name}': {tok} is set by the driver (arms, seeds, blocks)")
+        blocks = cell.get("blocks", 1)
+        if not isinstance(blocks, int) or blocks < 1 or (isinstance(seeds, int) and seeds % blocks):
+            errs.append(f"cell '{name}': blocks {blocks} must divide the {seeds} seeds")
+    return errs
+
+
+def load_plan(path):
+    try:
+        with open(path, "rb") as f:
+            plan = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        sys.exit(f"{path}: {e}")
+    errs = validate(plan)
+    if errs:
+        sys.exit(f"{path}: invalid plan:\n" + "\n".join(f"  - {e}" for e in errs))
+    plan.setdefault("program", "routing-compare")
+    plan.setdefault("harness", "routing-bench")
+    plan.setdefault("first_seed", 1)
+    plan.setdefault("cap", 12)
+    plan.setdefault("install", {})
+    plan.setdefault("suites", [m["name"] for m in modules(plan)])
+    plan["_path"] = path
+    return plan
+
+
+def seeds(plan):
+    return list(range(plan["first_seed"], plan["first_seed"] + plan["seeds"]))
+
+
+def jobs(plan):
+    """[(label, cell, harness args)] in plan order; one job per seed block."""
+    out = []
+    for cell, spec in plan["cells"].items():
+        blocks = spec.get("blocks", 1)
+        n = plan["seeds"] // blocks
+        for b in range(blocks):
+            first = plan["first_seed"] + b * n
+            args = " ".join(
+                x
+                for x in (
+                    spec.get("args", ""),
+                    f"--protocols={','.join(plan['arms'])}",
+                    f"--runs={n}",
+                    f"--firstRun={first}",
+                )
+                if x
+            )
+            out.append((cell if blocks == 1 else f"{cell}-s{first}", cell, args))
+    return out
+
+
+def build_hash(plan):
+    """7 hex digits naming what the binary is built from: the base and the modules."""
+    key = {
+        "base": plan["base"],
+        "modules": plan["modules"],
+        "install": plan.get("install", {}),
+        "suites": plan.get("suites", [m["name"] for m in modules(plan)]),
+    }
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:7]
+
+
+def image_tag(plan):
+    return f"{build_hash(plan)}-{{base7}}"
+
+
+def parameters(args):
+    """`--k=v` flags as {k: v}, numbers as numbers, a bare flag as true."""
+    out = {}
+    for tok in shlex.split(args):
+        if not tok.startswith("--"):
+            continue
+        key, eq, val = tok[2:].partition("=")
+        if not eq:
+            out[key] = True
+            continue
+        for conv in (int, float):
+            try:
+                out[key] = conv(val)
+                break
+            except ValueError:
+                pass
+        else:
+            out[key] = val
+    return out
+
+
+# --- GitHub -------------------------------------------------------------------
+
+
+def gh(*args, stdin=None, binary=False):
+    p = subprocess.run(
+        ["gh", "api", *args], input=stdin, capture_output=True, text=not binary, check=False
+    )
+    if p.returncode != 0:
+        err = p.stderr if not binary else p.stderr.decode(errors="replace")
+        raise RuntimeError(f"gh api {args[0]}: {err.strip()}")
+    return p.stdout
+
+
+def runs_titled(workflow, title):
+    """Ids of the workflow's dispatched runs whose run-name is `title`."""
+    data = json.loads(
+        gh(f"repos/{REPO}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100")
+    )
+    return {r["id"] for r in data["workflow_runs"] if r.get("display_title") == title}
+
+
+def dispatch_run(workflow, ref, inputs, title):
+    """Dispatch and return the new run's id, found by its run-name `title`."""
+    before = runs_titled(workflow, title)
+    body = {"ref": ref, "inputs": inputs}
+    gh(
+        "-X",
+        "POST",
+        f"repos/{REPO}/actions/workflows/{workflow}/dispatches",
+        "--input",
+        "-",
+        stdin=json.dumps(body),
+    )
+    for _ in range(30):  # the dispatch API returns no run id
+        new = runs_titled(workflow, title) - before
+        if new:
+            return max(new)
+        time.sleep(POLL)
+    raise RuntimeError(f"dispatched {workflow} '{title}', but no new run appeared")
+
+
+def run_state(rid):
+    r = json.loads(gh(f"repos/{REPO}/actions/runs/{rid}"))
+    return r["conclusion"] or r["status"]
+
+
+def active_runs():
+    """Cell runs holding or waiting for a runner."""
+    n = 0
+    for status in ("queued", "in_progress"):
+        out = gh(
+            f"repos/{REPO}/actions/workflows/{CELL_WORKFLOW}/runs?status={status}&per_page=1",
+            "--jq",
+            ".total_count",
+        )
+        n += int(out.strip() or 0)
+    return n
+
+
+def fetch(rid, dest, name):
+    """Extract run `rid`'s artifact `name` into dest."""
+    arts = json.loads(gh(f"repos/{REPO}/actions/runs/{rid}/artifacts"))["artifacts"]
+    art = next((a for a in arts if a["name"] == name), None)
+    if art is None:
+        raise RuntimeError(f"run {rid} has no artifact '{name}' (expired after 7 days?)")
+    data = gh(f"repos/{REPO}/actions/artifacts/{art['id']}/zip", binary=True)
+    with tempfile.NamedTemporaryFile(suffix=".zip") as z:
+        z.write(data)
+        z.flush()
+        with zipfile.ZipFile(z.name) as zf:
+            zf.extractall(dest)
+
+
+# --- state ----------------------------------------------------------------------
+
+
+def work_dir(plan, a):
+    return a.work or os.path.join(".campaign", plan["name"])
+
+
+def load_state(work):
+    p = os.path.join(work, "state.json")
+    if not os.path.exists(p):
+        return {}
+    with open(p) as f:
+        return json.load(f)
+
+
+def save_state(work, state):
+    os.makedirs(work, exist_ok=True)
+    with open(os.path.join(work, "state.json"), "w") as f:
+        json.dump(state, f, indent=2)
+        f.write("\n")
+
+
+def read_log(work):
+    """label -> run id, from the TSV dispatch appends to."""
+    p = os.path.join(work, "runs.tsv")
+    if not os.path.exists(p):
+        return {}
+    with open(p) as f:
+        return dict(line.rstrip("\n").split("\t")[:2] for line in f if "\t" in line)
+
+
+# --- commands -------------------------------------------------------------------
+
+
+def cmd_validate(plan, _a):
+    print(f"{plan['_path']}: valid, {len(jobs(plan))} job(s), build hash {build_hash(plan)}")
+
+
+def cmd_plan(plan, a):
+    state = load_state(work_dir(plan, a))
+    image = state.get("image") or f"{IMAGE}:{image_tag(plan)}-optimized (not built)"
+    print(f"image\t{image}\tFROM ghcr.io/swarm-routing/ns3-dev:{plan['base']}")
+    for m in modules(plan):
+        how = "install" if m["name"] in plan["install"] else "dependency"
+        sub = f":{m['subdir']}" if m["subdir"] else ""
+        print(f"module\t{m['name']}\t{m['repo']}@{m['commit']}{sub}\t{how}")
+    for label, _cell, args in jobs(plan):
+        print(f"{plan['name']}/{label}\t{plan['program']} {args}")
+    print(
+        f"{len(jobs(plan))} job(s) x {len(plan['arms'])} arms, {plan['seeds']} seeds, cap {plan['cap']}",
+        file=sys.stderr,
+    )
+
+
+def cmd_image_inputs(plan, _a):
+    """reusable-ns3-image.yml's inputs, in $GITHUB_OUTPUT form."""
+    path = plan["_path"]
+    if not PLAN_PATH.match(path):
+        sys.exit(f"{path}: the image workflow reads a plan committed as campaigns/<name>.toml")
+    deps = [
+        f"{m['name']}={m['repo']}@{m['commit']}" + (f":{m['subdir']}" if m["subdir"] else "")
+        for m in modules(plan)
+        if m["name"] not in plan["install"]
+    ]
+    own = [f"{n}=.stage/ns3/contrib/{n}" for n in plan["install"]]
+    print("dependencies<<EOF_DEPS\n" + "\n".join(deps) + "\nEOF_DEPS")
+    print(f"modules={' '.join(own)}")
+    print(f"stage={'python3 python/ns3_tool/campaign.py stage ' + path if own else ''}")
+    print(f"ns3-version={plan['base'].removesuffix('-optimized')}")
+    print(f"tag={image_tag(plan)}")
+    print(f"test-suites={' '.join(plan['suites'])}")
+
+
+def cmd_stage(plan, a):
+    """Clone each `install` module at its commit and run its install into .stage/ns3."""
+    root = os.path.abspath(a.root)
+    ns3dir = os.path.join(root, "ns3")
+    os.makedirs(os.path.join(ns3dir, "contrib"), exist_ok=True)
+    open(os.path.join(ns3dir, "CMakeLists.txt"), "a").close()
+    for m in modules(plan):
+        cmd = plan["install"].get(m["name"])
+        if cmd is None:
+            continue
+        src = os.path.join(root, "src", m["name"])
+        shutil.rmtree(src, ignore_errors=True)
+        git = ["git", "-C", src]
+        subprocess.run(["git", "init", "--quiet", src], check=True)
+        subprocess.run(
+            [*git, "fetch", "--quiet", "--depth", "1", f"{GIT}/{m['repo']}", m["commit"]],
+            check=True,
+        )
+        subprocess.run([*git, "checkout", "--quiet", "FETCH_HEAD"], check=True)
+        env = dict(os.environ, NS3DIR=ns3dir)
+        subprocess.run(["bash", "-euo", "pipefail", "-c", cmd], cwd=src, env=env, check=True)
+        dest = os.path.join(ns3dir, "contrib", m["name"])
+        if not os.path.isfile(os.path.join(dest, "CMakeLists.txt")):
+            sys.exit(f"install of {m['name']} left no {dest}/CMakeLists.txt")
+        # Read back by campaign-cell.yml from /src/<name>/ in the image: the
+        # commit of a module the image's dependencies label does not list.
+        with open(os.path.join(dest, ".swarm-module"), "w") as f:
+            f.write(f"{m['name']}={m['repo']}@{m['commit']}\n")
+        print(f"staged {m['name']} = {m['repo']}@{m['commit']} -> {dest}")
+
+
+def cmd_build(plan, a):
+    work = work_dir(plan, a)
+    state = load_state(work)
+    if state.get("image"):
+        print(f"image\t{state['image']}\t{state['tag']} (built by run {state['image_run']})")
+        return
+    path = plan["_path"]
+    if not PLAN_PATH.match(path):
+        sys.exit(
+            f"{path}: build reads the plan from {REPO} at --ref: pass it as campaigns/<name>.toml"
+        )
+    rid = state.get("image_run")
+    if not rid:
+        rid = dispatch_run(IMAGE_WORKFLOW, a.ref, {"plan": path}, f"image {path}")
+        state.update(image_run=rid, ref=a.ref)
+        save_state(work, state)
+        print(f"dispatched {IMAGE_WORKFLOW} run {rid}", file=sys.stderr)
+    while (s := run_state(rid)) in ("queued", "in_progress", "waiting", "pending", "requested"):
+        time.sleep(POLL)
+    if s != "success":
+        sys.exit(f"image run {rid}: {s}; fix it, then delete image_run from {work}/state.json")
+    dest = os.path.join(work, "artifacts", str(rid))
+    fetch(rid, dest, "campaign-image")
+    with open(os.path.join(dest, "campaign-image.json")) as f:
+        info = json.load(f)
+    if not re.match(rf"^{re.escape(IMAGE)}@sha256:[0-9a-f]{{64}}$", info.get("image", "")):
+        sys.exit(f"image run {rid} reported no image by digest: {info}")
+    state.update(image=info["image"], tag=info["tag"])
+    save_state(work, state)
+    print(f"image\t{state['image']}\t{state['tag']}")
+
+
+def cmd_dispatch(plan, a):
+    work = work_dir(plan, a)
+    state = load_state(work)
+    if not state.get("image"):
+        sys.exit("no campaign image yet: run `build` first")
+    state.setdefault("date", datetime.datetime.now(datetime.timezone.utc).date().isoformat())
+    save_state(work, state)
+    cap = a.cap or plan["cap"]
+    done = read_log(work)
+    for label, _cell, args in jobs(plan):
+        if label in done:
+            continue
+        while active_runs() >= cap:
+            if not a.wait:
+                print(
+                    f"cap {cap} reached; {len(read_log(work))} of {len(jobs(plan))} "
+                    "dispatched, run again later",
+                    file=sys.stderr,
+                )
+                return
+            time.sleep(POLL * 8)
+        title = f"{plan['name']}/{label}"
+        inputs = {"image": state["image"], "program": plan["program"], "args": args, "label": title}
+        rid = dispatch_run(CELL_WORKFLOW, state.get("ref", "main"), inputs, title)
+        with open(os.path.join(work, "runs.tsv"), "a") as f:
+            f.write(f"{label}\t{rid}\n")
+        print(f"{label}\t{rid}")
+    print(f"all {len(jobs(plan))} job(s) dispatched", file=sys.stderr)
+
+
+def cmd_status(plan, a):
+    log = read_log(work_dir(plan, a))
+    counts = {}
+    for label, *_ in jobs(plan):
+        rid = log.get(label)
+        state = run_state(rid) if rid else "not-dispatched"
+        counts[state] = counts.get(state, 0) + 1
+        if not (a.brief and state == "success"):
+            print(f"{label}\t{rid or '-'}\t{state}")
+    print(", ".join(f"{v} {k}" for k, v in sorted(counts.items())), file=sys.stderr)
+
+
+def prov_of(text):
+    """The last ##PROV## line's key=value fields."""
+    lines = [ln for ln in text.splitlines() if ln.startswith("##PROV##")]
+    if not lines:
+        return None
+    return dict(t.split("=", 1) for t in lines[-1].split()[1:] if "=" in t)
+
+
+def cell_text(plan, work, label, rid):
+    """One job's results.txt, checked to have ##RUN## rows and the campaign's ##PROV##."""
+    state = load_state(work)
+    src = os.path.join(work, "artifacts", str(rid))
+    path = os.path.join(src, "results.txt")
+    if not os.path.exists(path):
+        fetch(rid, src, "campaign-cell")
+    with open(path) as f:
+        text = f.read()
+    if "##RUN##" not in text:
+        raise RuntimeError(f"{label}: run {rid} has no ##RUN## rows (a failed or timed-out run)")
+    prov = prov_of(text)
+    if prov is None:
+        raise RuntimeError(f"{label}: run {rid} has no ##PROV## line")
+    image = prov.get("image", "")
+    if image.rsplit("@", 1)[-1] != state["image"].rsplit("@", 1)[-1]:
+        raise RuntimeError(
+            f"{label}: run {rid} ran {image}, not the campaign image {state['image']}"
+        )
+    want = {f"{m['name']}@{m['commit']}" for m in modules(plan)}
+    got = set(prov.get("modules", "").split(",")) - {""}
+    if got != want:
+        raise RuntimeError(f"{label}: run {rid} has modules {sorted(got)}, the plan {sorted(want)}")
+    return text, prov
+
+
+def cmd_collect(plan, a):
+    work = work_dir(plan, a)
+    state, log = load_state(work), read_log(work)
+    if not state.get("date"):
+        sys.exit("nothing dispatched yet")
+    by_cell, provs, errs = {}, [], []
+    for label, cell, args in jobs(plan):
+        rid = log.get(label)
+        if not rid:
+            errs.append(f"{label}: not dispatched")
+            continue
+        try:
+            text, prov = cell_text(plan, work, label, rid)
+        except RuntimeError as e:
+            errs.append(str(e))
+            continue
+        provs.append(prov)
+        by_cell.setdefault(cell, []).append((label, rid, args, text))
+    bases = {p["base"] for p in provs}
+    if len(bases) > 1:
+        errs.append(f"cells name different bases: {sorted(bases)}")
+    if errs:
+        sys.exit("not collected:\n" + "\n".join(f"  - {e}" for e in errs))
+    run_dir = os.path.join(a.out, f"{state['date']}-{plan['name']}")
+    os.makedirs(os.path.join(run_dir, "cells"), exist_ok=True)
+    shutil.copyfile(plan["_path"], os.path.join(run_dir, "plan.toml"))
+    files, commands = [], []
+    for cell, parts in by_cell.items():
+        rel = f"cells/{cell}.txt"
+        runs = " / ".join(f"{rid} ({label})" for label, rid, _a, _t in parts)
+        with open(os.path.join(run_dir, rel), "w") as f:
+            f.write(f"# {plan['name']} {cell}: {len(parts)} run(s): {runs}\n")
+            for _l, _r, _a, text in parts:
+                f.write(text if text.endswith("\n") else text + "\n")
+        files.append({"path": rel, "kind": "cell", "scenario": cell})
+        commands += [f"{plan['program']} {args}" for _l, _r, args, _t in parts]
+    files.append({"path": "plan.toml", "kind": "preregistration"})
+    for entry in files:
+        with open(os.path.join(run_dir, entry["path"]), "rb") as f:
+            entry["sha256"] = hashlib.sha256(f.read()).hexdigest()
+    base_ref, _, base_digest = provs[0]["base"].rpartition("@")
+    image_ref, _, image_digest = provs[0]["image"].rpartition("@")
+    manifest = {
+        "schema_version": 1,
+        "campaign": plan["name"],
+        "date": state["date"],
+        "base_image": {
+            "ref": base_ref,
+            "digest": base_digest,
+            "ns3_version": re.search(r":([0-9.]+)-", base_ref)[1] if ":" in base_ref else "",
+            "profile": "optimized",
+        },
+        "campaign_image": {"ref": image_ref, "digest": image_digest},
+        "modules": [{k: m[k] for k in ("name", "repo", "commit")} for m in modules(plan)],
+        "harness": {"program": plan["program"], "module": plan["harness"]},
+        "scenarios": [
+            {"name": c, "arms": plan["arms"], "parameters": parameters(s.get("args", ""))}
+            for c, s in plan["cells"].items()
+        ],
+        "preregistration": {"path": "plan.toml"},
+        "seeds": seeds(plan),
+        "commands": commands,
+        "markers": {"schema_version": MARKERS_VERSION},
+        "files": files,
+    }
+    with open(os.path.join(run_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+    print(f"wrote {run_dir}: {len(by_cell)} cell(s), manifest.json", file=sys.stderr)
+
+
+def cmd_verdicts(plan, a):
+    ref = plan["reference"]
+    for cell in plan["cells"]:
+        path = os.path.join(a.dir, "cells", f"{cell}.txt")
+        if not os.path.exists(path):
+            print(f"{cell}\t-\t(missing {path})")
+            continue
+        with open(path) as f:
+            runs = bench_parse.parse_runs(f.read())
+        for arm in plan["arms"]:
+            if arm == ref:
+                continue
+            ps = bench_parse.paired_stats(runs.get(ref, {}), runs.get(arm, {}))
+            line = bench_parse.fmt_paired(ps) if ps else "(no paired ##RUN## rows)"
+            print(f"{cell}\t{arm} - {ref}\t{line}")
+
+
+COMMANDS = {
+    "validate": cmd_validate,
+    "plan": cmd_plan,
+    "image-inputs": cmd_image_inputs,
+    "stage": cmd_stage,
+    "build": cmd_build,
+    "dispatch": cmd_dispatch,
+    "status": cmd_status,
+    "collect": cmd_collect,
+    "verdicts": cmd_verdicts,
+}
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="ns3-campaign", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    for name in COMMANDS:
+        s = sub.add_parser(name)
+        s.add_argument("plan")
+        s.add_argument("--work", help="state directory (default .campaign/<name>)")
+        if name == "stage":
+            s.add_argument("--root", default=".stage")
+        if name == "build":
+            s.add_argument("--ref", default="main", help=f"the {REPO} ref holding the plan")
+        if name == "dispatch":
+            s.add_argument("--cap", type=int)
+            s.add_argument(
+                "--wait", action="store_true", help="sleep at the cap instead of exiting"
+            )
+        if name == "status":
+            s.add_argument(
+                "--brief", action="store_true", help="only the labels not yet successful"
+            )
+        if name == "collect":
+            s.add_argument("--out", required=True, help="the runs/ root of a benchmarks checkout")
+        if name == "verdicts":
+            s.add_argument("--dir", required=True, help="the run directory collect wrote")
+    a = p.parse_args(argv)
+    COMMANDS[a.cmd](load_plan(a.plan), a)
+
+
+if __name__ == "__main__":
+    main()

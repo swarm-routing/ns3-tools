@@ -1,0 +1,108 @@
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+name: Campaign cell
+run-name: ${{ inputs.label }}
+
+# One campaign cell (#66): a harness command in the campaign image, pulled by
+# digest, with `./ns3 run --no-build` (nothing is rebuilt). `ns3-campaign
+# dispatch` sends one run per cell (or seed block) and finds it by its
+# run-name, the label. The ##PROV## line appended to results.txt is read from
+# the image, not from the dispatch: the base ns3-dev tag (its immutable
+# -<sha7> twin) and digest, the campaign image and digest, and every module
+# commit (the dependencies label, plus /src/<name>/.swarm-module for a module
+# the plan installs); the swarm-routing/benchmarks manifest is built from it.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'The campaign image by digest: ghcr.io/swarm-routing/<name>@sha256:...'
+        required: true
+      program:
+        description: 'The harness program'
+        default: routing-compare
+      args:
+        description: 'The harness flags, verbatim'
+        required: true
+      label:
+        description: '<campaign>/<cell>: the run name ns3-campaign looks the run up by'
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cell:
+    name: ${{ inputs.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360   # the hosted-runner ceiling
+    env:
+      IMAGE: ${{ inputs.image }}
+      PROGRAM: ${{ inputs.program }}
+      ARGS: ${{ inputs.args }}
+    steps:
+      - name: Check the inputs
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE" =~ ^ghcr\.io/swarm-routing/[a-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::image '$IMAGE' is not ghcr.io/swarm-routing/<name>@sha256:<digest>"; exit 1; }
+          [[ "$PROGRAM" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::program '$PROGRAM'"; exit 1; }
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Provenance from the image
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$IMAGE"
+          label() { docker inspect --format "{{ index .Config.Labels \"$1\" }}" "$IMAGE"; }
+          envvar() { docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE" | sed -n "s/^$1=//p"; }
+          profile=$(envvar BUILD_PROFILE)
+          [ "$profile" = optimized ] || { echo "::error::$IMAGE is profile '$profile', not optimized (benchmarks rule 13)"; exit 1; }
+          base=$(label io.github.swarm-routing.ns3-dev.digest)
+          [[ "$base" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$IMAGE names no ns3-dev digest"; exit 1; }
+          # The base's own revision label gives its immutable -<sha7> tag (the
+          # campaign image's revision label is this build's, not the base's).
+          docker buildx imagetools inspect "ghcr.io/swarm-routing/ns3-dev@$base" --format '{{json .Image}}' > base.json
+          rev=$(python3 - base.json <<'PY'
+          import json, sys
+          img = json.load(open(sys.argv[1]))
+          if "config" not in img:  # an index: one config per platform
+              img = img.get("linux/amd64") or next(iter(img.values()))
+          print(img["config"]["Labels"]["org.opencontainers.image.revision"])
+          PY
+          )
+          mods=$(label io.github.swarm-routing.dependencies | tr ',' '\n')
+          # shellcheck disable=SC2016  # expanded inside the container
+          staged=$(docker run --rm "$IMAGE" bash -c 'cat /src/*/.swarm-module 2>/dev/null || true')
+          modules=$(printf '%s\n%s\n' "$mods" "$staged" | sed -n 's/^\([^=]*\)=.*@\([0-9a-f]\{40\}\)$/\1@\2/p' | paste -sd, -)
+          [ -n "$modules" ] || { echo "::error::$IMAGE names no module commit"; exit 1; }
+          prov="##PROV## base=ghcr.io/swarm-routing/ns3-dev:$(envvar NS3_VERSION)-optimized-${rev:0:7}@${base}"
+          prov+=" image=${IMAGE%@*}:$(label org.opencontainers.image.version)@${IMAGE#*@}"
+          prov+=" modules=${modules} run_id=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT}"
+          echo "$prov" | tee prov.txt
+      - name: Run the cell (no rebuild)
+        timeout-minutes: 340   # leaves the always() steps time to upload
+        run: |
+          set -euo pipefail
+          echo "running: $PROGRAM $ARGS"
+          # shellcheck disable=SC2016  # expanded inside the container
+          docker run --rm -e PROGRAM -e ARGS "$IMAGE" bash -c './ns3 run --no-build "$PROGRAM $ARGS"' \
+            2> ns3-stderr.log | tee results.txt \
+            || { echo "--- ns-3 run FAILED; stderr tail ---"; tail -n 60 ns3-stderr.log; exit 1; }
+      - name: Stamp the provenance
+        if: always()
+        run: |
+          [ -f results.txt ] || exit 0
+          echo "##ARGS## $PROGRAM $ARGS" >> results.txt
+          cat prov.txt >> results.txt
+          grep -q '^##RUN##' results.txt || { echo "::error::no ##RUN## rows"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: campaign-cell
+          path: |
+            results.txt
+            ns3-stderr.log
+          retention-days: 7
