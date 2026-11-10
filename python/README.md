@@ -26,6 +26,16 @@ NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_
 (`GPL-2.0-only` data, see `LICENSING.md`). CI also runs the query-equivalence
 test on AntHocNet's whole `results/cells/` corpus.
 
+The CI gates in `tools/checks/` read marker lines through this reader
+(`bench_parse --get FIELD --from run|table|csv|paths --proto ARM -`), never
+by awk column position (#6): `check-stock-arms.sh` takes each arm's delivery
+verdict from `tools/checks/arm-delivers.sh`, which asks `--get pdr`. A marker
+change the reader absorbs cannot make a gate read the wrong number, and a
+contract bump the reader rejects stops the gates too.
+`tests/test_bench_parse_query.py` checks the reader against the awk it
+replaced on every cell, and runs `arm-delivers.sh` on the fixtures and on
+broken inputs.
+
 `scenario_check` is AntHocNet's script with the protocol taken out (#28). The
 anchor floors come from a file in the schema of AntHocNet's
 `ns3/tools/anchors.yml` (`key: number` lines); `--anchor` names one of its
