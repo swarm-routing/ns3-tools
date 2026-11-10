@@ -63,6 +63,17 @@ def main():
     assert set(fam) == {"anthocnet", "oracle", "best native (aodv)"}, fam
     assert "| -10.00 [-10.00, -10.00]" in fam["anthocnet"], fam["anthocnet"]
     assert "| +1.00 [" in fam["best native (aodv)"], fam  # 88 - mean(88, 87, 86)
+    # #14: an anchor whose arm and reference share fewer than 2 seeds (a
+    # truncated cell) reads n/a instead of raising on paired_stats() is None.
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "anchor-ara-p0-v250c.txt"), "w") as f:
+            f.write(rows("ara", [90, 92, 94], 5.0) + "##RUN## 9 aodv 80 10.0 100.0 13.0 9.0\n")
+        run = subprocess.run([sys.executable, TOOL, "--dir", d], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    row = [ln for ln in run.stdout.splitlines() if ln.startswith("| anchor-ara-p0 |")]
+    assert row == [
+        "| anchor-ara-p0 | ara | aodv | 3 | 92.00 | 80.00 | — | — | — | n/a (<2 common seeds) |"
+    ], row
     print("comparator_view self-test: OK")
     return 0
 
