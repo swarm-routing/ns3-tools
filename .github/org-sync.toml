@@ -21,6 +21,35 @@ limitations = """
   probe trusts the simulator it is attached to.
 - A comparator arm here is a model of a published protocol for ns-3, not an
   implementation for real networks."""
+verifying = """
+Releases from v0.1.0 on (#26) are built, signed and published by the org's
+release workflow (`swarm-routing/.github` `reusable-release.yml`, called by
+`.github/workflows/release.yml`). Each carries `routing-bench-X.Y.Z.tar.gz`
+(the harness module, for ns-3's `contrib/`), the `ns3-tool` wheel and sdist,
+`SHA256SUMS`, a CycloneDX SBOM (`ns3-tools-X.Y.Z.cdx.json`) and signed SLSA
+build provenance for every asset (`ns3-tools-X.Y.Z.intoto.jsonl`, and the
+Sigstore bundle `ns3-tools-X.Y.Z.sigstore.json` for offline checks). The
+workflow runs these checks itself before it publishes, and builds the
+tarball in a clean `ns3-dev` tree and runs `test.py -s routing-bench` on it
+first, so a release that fails either never goes out. With the
+[GitHub CLI](https://cli.github.com/):
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
+  --signer-workflow swarm-routing/.github/.github/workflows/reusable-release.yml
+gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
+  --predicate-type https://cyclonedx.org/bom
+gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
+  --bundle ns3-tools-X.Y.Z.sigstore.json   # offline
+```
+
+The same commands verify the wheel and the sdist. The signer is the org's
+reusable workflow; this repository is in the certificate's
+workflow-repository extension. Each release also publishes the image
+`ghcr.io/swarm-routing/ns3-tools-ns3:vX.Y.Z-optimized` and `-debug`, the
+harness built on a pinned `ns3-dev` digest, signed with cosign (keyless):
+see `swarm-routing/.github` `reusable-ns3-image.yml` for its verify commands."""
 [make]
 build = 'docker run --rm -v "$(CURDIR):/src:ro" $(NS3_IMAGE) ns3-build-contrib routing-bench=/src/ns3/routing-bench'
 test = 'for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done'
@@ -31,6 +60,8 @@ description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the ro
 homepage = "https://swarm-routing.github.io/arena/ns3-tools/"
 topics = ["ns-3", "benchmarking", "routing-protocol", "manet", "network-simulation", "statistics", "reproducibility", "aodv", "olsr"]
 ruleset = "tooling"
+# The publish job of release.yml waits for the maintainer (CONTRIBUTING "Cutting a release").
+release_environment = true
 # Not `stock arms deliver (...)`: their names carry the temporary ns-3.48 pin
 # (ns3-containers#35) and change when it moves. Not `module / format` (skipped until
 # formatting is checked).

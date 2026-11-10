@@ -16,7 +16,7 @@ ORG_DIR   ?= $(HOME)/.cache/swarm-routing/dotgithub
 ORG_REF   ?= main
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint format check clean shell ci headers org-sync-check org-tools
+.PHONY: help build test lint format check clean shell ci headers org-sync-check org-tools dist
 
 help: ## list the targets
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z0-9_-]+:.*## /{printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -34,7 +34,7 @@ format: ## apply the formatters
 	git ls-files "*.h" "*.cc" "*.cpp" "*.hpp" | xargs -r clang-format -i
 
 clean: ## remove build outputs
-	rm -rf build
+	rm -rf build dist
 
 shell: ## an interactive shell in the dev image with this repo at /src
 	@command -v docker >/dev/null || { echo "make shell: docker not found (Docker Desktop, Colima, or docker.io)" >&2; exit 127; }
@@ -53,3 +53,10 @@ org-sync-check: org-tools ## org-managed files match the org templates
 check: lint test headers org-sync-check ## everything CI gates on
 
 ci: check ## exactly what CI runs
+
+# The release assets (#26) for swarm-routing/.github's reusable-release.yml,
+# which sets RELEASE_VERSION; locally it defaults to the readers' version.
+# DIST_CHECK=0 skips the checks (the tarball's suite in NS3_IMAGE, the wheel).
+RELEASE_VERSION ?= $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' python/pyproject.toml)
+dist: ## the release assets in dist/: routing-bench tarball, ns3-tool wheel and sdist, each checked
+	NS3_IMAGE=$(NS3_IMAGE) tools/release/dist.sh $(RELEASE_VERSION) dist

@@ -22,6 +22,8 @@ ns3/routing-bench/  the comparison harness module `routing-bench` (moved from An
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6) — MIT OR GPL-2.0-only
+tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
+.cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
@@ -66,6 +68,12 @@ NS3_TOOL_ANTHOCNET=/path/to/AntHocNet python3 python/tests/test_change_plan.py  
 pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
+
+Releases (#26; `swarm-routing/.github` CONTRIBUTING "Cutting a release"):
+dispatch `release.yml` with `dry-run`, then `bump`; merging the bot's
+`chore(release): bump version A to B` PR tags and publishes. `make dist`
+builds the assets locally (`DIST_CHECK=0` skips the docker suite and the
+wheel check).
 
 A reader change must keep its output byte-identical on the fixtures unless the
 change is the point (then say so in the PR and update AntHocNet's callers).
