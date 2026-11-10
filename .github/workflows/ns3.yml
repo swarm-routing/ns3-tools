@@ -116,6 +116,8 @@ jobs:
             arms: olsr dsdv hwmp
           - version: '3.48'  # aodv: 'latest' once ns3-containers#35 is fixed
             arms: aodv
+    # No Harden-Runner here (swarm-routing/.github#164): a job that runs entirely
+    # in a container cannot take it on a GitHub-hosted runner (it needs sudo on the VM).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
