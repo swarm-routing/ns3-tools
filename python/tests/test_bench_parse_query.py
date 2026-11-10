@@ -67,6 +67,35 @@ def check(cond, msg):
         sys.exit(1)
 
 
+# check-stock-arms.sh before ns3-tools#6, verbatim: the arm's rows, then
+# "delivers" if any has $4 (pdr) > 0.
+AWK_STOCK_ROW = '$1 == "##RUN##" && $3 == a'
+AWK_STOCK_DELIVERS = "$4 > 0 {f = 1} END {exit !f}"
+DELIVERS = os.path.join(
+    os.path.dirname(os.path.dirname(TESTS)), "tools", "checks", "arm-delivers.sh"
+)
+
+
+def old_stock_verdict(text, arm):
+    row = "\n".join(awk(AWK_STOCK_ROW, text, a=arm)) + "\n"
+    return subprocess.run(["awk", AWK_STOCK_DELIVERS], input=row, text=True).returncode == 0
+
+
+def delivers(text, arm):
+    """(verdict, printed rows) of tools/checks/arm-delivers.sh, as the gate calls it."""
+    proc = subprocess.run(["bash", DELIVERS, arm], input=text, capture_output=True, text=True)
+    check(proc.returncode in (0, 1), f"arm-delivers.sh crashed: {proc}")
+    return proc.returncode == 0, proc.stdout
+
+
+def one_run(text, proto):
+    """The cell cut to one run, as the gate runs it (--runs=1): the proto's first seed."""
+    seeds = [m.group(1) for m in map(bp.RUN.search, text.splitlines()) if m and m.group(2) == proto]
+    keep = [ln for ln in text.splitlines() if not bp.RUN.search(ln)]
+    keep += [ln for ln in text.splitlines() if (m := bp.RUN.search(ln)) and m.group(1) == seeds[0]]
+    return "\n".join(keep) + "\n"
+
+
 # The awk expressions the gates used before #791, verbatim.
 AWK_RUN_PDR = '$1 == "##RUN##" && $3 == p { v = $4 } END { print v }'
 AWK_TABLE_PDR = "$1 == p && $2 ~ /^[0-9.]+$/ { v = $2 } END { print v }"
@@ -106,6 +135,59 @@ def test_equivalence_on_committed_cells():
     print(
         f"ok: query == awk on {len(cells)} committed cells "
         f"({n_run} run, {n_table} table, {n_paths} paths values)"
+    )
+
+
+def test_stock_arms_verdict():
+    """check-stock-arms.sh's delivery verdict, before (awk) and after (the reader).
+
+    On every cell cut to one run: the reader's pdr > 0 is the old verdict for
+    every protocol; on the 13 fixtures the gate's own helper is run as well.
+    Then broken inputs, which must still fail, and a changed row the old awk
+    would misread."""
+    cells = sorted(glob.glob(os.path.join(CELLS, "*.txt")))
+    fixtures = os.path.join(TESTS, "fixtures", "cells")
+    n = n_pass = n_script = 0
+    for path in cells:
+        with open(path) as fh:
+            text = fh.read()
+        for p in sorted(bp.parse_runs(text)):
+            one = one_run(text, p)
+            want = old_stock_verdict(one, p)
+            pdr = bp.query(one, p, "pdr", "run")
+            got = bool(pdr) and float(pdr[0]) > 0
+            check(got == want, f"{path} {p}: reader verdict {got} != awk verdict {want}")
+            if path.startswith(fixtures):
+                got, rows = delivers(one, p)
+                check(got == want, f"{path} {p}: arm-delivers.sh {got} != awk {want}")
+                check(rows == "\n".join(bp.query(one, p, "row", "run")) + "\n", rows)
+                n_script += 1
+            n += 1
+            n_pass += want
+    check(n > MIN_CMP[0] and n_pass > 0, f"verdicts: {n_pass}/{n} deliver")
+    if not os.environ.get("NS3_TOOL_CELLS"):
+        check(n_script == n, "every fixture verdict ran through the script")
+    # Broken inputs still fail: no delivery, no row, only another arm's row.
+    run = "##RUN## 1 olsr {} 10.0 20.0 30.0 1.00\n"
+    noise = "  [diag olsr seed=1] flow 10.1.0.1:49153 -> 10.1.0.2:9 tx=10 rx=0\n"
+    for text, verdict in (
+        (run.format("98.5"), True),
+        (noise + run.format("0.0"), False),
+        (noise, False),
+        (run.format("98.5").replace("olsr", "dsdv"), False),
+    ):
+        got, _ = delivers(text, "olsr")
+        check(got == verdict == old_stock_verdict(text, "olsr"), f"{text!r}: {got}")
+    # A prefix the reader absorbs (a job log's timestamp) moves the awk's
+    # $1/$3/$4; the reader still finds the row and its pdr.
+    moved = "2026-11-10T03:00:00.0Z ##RUN## 1 olsr 98.5 10.0 20.0 30.0 1.00\n"
+    check(delivers(moved, "olsr")[0], "reader reads a timestamped ##RUN## row")
+    check(
+        not old_stock_verdict(moved, "olsr"),
+        "the positional read misses it (else this proves nothing)",
+    )
+    print(
+        f"ok: stock-arms verdict, reader == awk on {n} one-run cells ({n_pass} deliver, {n_script} by the script)"
     )
 
 
@@ -246,6 +328,7 @@ def test_missing_is_empty_exit_0():
 
 if __name__ == "__main__":
     test_equivalence_on_committed_cells()
+    test_stock_arms_verdict()
     test_run_rows()
     test_csv_by_name()
     test_four_column_table()
