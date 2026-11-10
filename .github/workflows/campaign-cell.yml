@@ -62,23 +62,29 @@ jobs:
           [ "$profile" = optimized ] || { echo "::error::$IMAGE is profile '$profile', not optimized (benchmarks rule 13)"; exit 1; }
           base=$(label io.github.swarm-routing.ns3-dev.digest)
           [[ "$base" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$IMAGE names no ns3-dev digest"; exit 1; }
-          # The base's own revision label gives its immutable -<sha7> tag (the
-          # campaign image's revision label is this build's, not the base's).
-          docker buildx imagetools inspect "ghcr.io/swarm-routing/ns3-dev@$base" --format '{{json .Image}}' > base.json
-          rev=$(python3 - base.json <<'PY'
-          import json, sys
-          img = json.load(open(sys.argv[1]))
-          if "config" not in img:  # an index: one config per platform
-              img = img.get("linux/amd64") or next(iter(img.values()))
-          print(img["config"]["Labels"]["org.opencontainers.image.revision"])
-          PY
-          )
+          # The base's immutable -<sha7> tag: the ns3-dev <ver>-optimized-<sha7>
+          # tag that points at this digest. Read from the registry, not from the
+          # base's revision label: on-demand builds of older releases (3.48)
+          # predate that label.
+          ver=$(envvar NS3_VERSION)
+          reg=https://ghcr.io/v2/swarm-routing/ns3-dev
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:swarm-routing/ns3-dev:pull" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json"
+          accept+=",application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+          twin=""
+          for t in $(curl -fsS -H "Authorization: Bearer $token" "$reg/tags/list?n=10000" \
+              | VER="$ver" python3 -c 'import json,os,re,sys; v=re.escape(os.environ["VER"]); [print(t) for t in json.load(sys.stdin)["tags"] if re.fullmatch(v + r"-optimized-[0-9a-f]{7}", t)]'); do
+            d=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" "$reg/manifests/$t" | tr -d '\r' | sed -n 's/^docker-content-digest: //Ip')
+            if [ "$d" = "$base" ]; then twin=$t; break; fi
+          done
+          [ -n "$twin" ] || { echo "::error::no immutable ns3-dev:${ver}-optimized-<sha7> tag points at $base"; exit 1; }
           mods=$(label io.github.swarm-routing.dependencies | tr ',' '\n')
           # shellcheck disable=SC2016  # expanded inside the container
           staged=$(docker run --rm "$IMAGE" bash -c 'cat /src/*/.swarm-module 2>/dev/null || true')
           modules=$(printf '%s\n%s\n' "$mods" "$staged" | sed -n 's/^\([^=]*\)=.*@\([0-9a-f]\{40\}\)$/\1@\2/p' | paste -sd, -)
           [ -n "$modules" ] || { echo "::error::$IMAGE names no module commit"; exit 1; }
-          prov="##PROV## base=ghcr.io/swarm-routing/ns3-dev:$(envvar NS3_VERSION)-optimized-${rev:0:7}@${base}"
+          prov="##PROV## base=ghcr.io/swarm-routing/ns3-dev:${twin}@${base}"
           prov+=" image=${IMAGE%@*}:$(label org.opencontainers.image.version)@${IMAGE#*@}"
           prov+=" modules=${modules} run_id=${GITHUB_RUN_ID} attempt=${GITHUB_RUN_ATTEMPT}"
           echo "$prov" | tee prov.txt
