@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.13']
+        python: ['3.11', '3.13']  # 3.11: tomllib
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,6 +33,7 @@ jobs:
           python3 -m pip install ./python
           cd "$RUNNER_TEMP"
           ns3-bench-parse "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/fanet-main-6arm.txt | grep -q '95% CI'
+          ns3-campaign validate "$GITHUB_WORKSPACE"/campaigns/anthocnet-aodv-smoke.toml
 
   corpus:
     name: query equivalence on AntHocNet's committed cells
@@ -50,12 +51,6 @@ jobs:
           persist-credentials: false
       - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
 
-
-  quality:
-    # ruff (org ruff.toml) + the self-tests under coverage, report-only
-    # (swarm-routing/.github#35, phase 1).
-    uses: swarm-routing/.github/.github/workflows/reusable-python-ci.yml@main
-    with:
-      paths: python
-      tests: python/tests/test_*.py
-      source: python/ns3_tool
+# ruff and the self-tests under coverage (reusable-python-ci.yml) run in
+# ns3.yml, job `python-quality`: the SonarQube Cloud scan there imports their
+# coverage, and an artifact reaches only jobs of its own run (#67).

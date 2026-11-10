@@ -22,8 +22,10 @@ ns3/routing-bench/  the comparison harness module `routing-bench` (moved from An
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh) — MIT OR GPL-2.0-only
-python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), stdlib only — MIT OR GPL-2.0-only
-python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only)
+python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary) and the campaign driver (campaign: ns3-campaign), stdlib only — MIT OR GPL-2.0-only
+python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
+campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
+.github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
 docs/               marker-line contract, arena reference
 ```
 
@@ -58,7 +60,8 @@ Python (no pytest dependency; each test exits non-zero on its first failure):
 ```bash
 for t in python/tests/test_*.py; do python3 "$t"; done
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_parse_query.py  # the full corpus, as CI
-pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary
+pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-campaign
+ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
 
 A reader change must keep its output byte-identical on the fixtures unless the
@@ -208,6 +211,7 @@ here is undone by the next `org_sync.py apply`).
 |--------------|-------|
 | Python sources to port (MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`, `campaign.py`, `scenario_check.py`), `ns3/tools/run-scenarios.py` |
 | Harness to port into `ns3/` (GPL-2.0-only, so it lands as-is in a GPL path) | AntHocNet `ns3/routing-bench/`, `docs/comparison-harness.md`, ADR-0027 |
+| Run a multi-protocol campaign (one image, cells by digest, a benchmarks manifest) | `python/ns3_tool/campaign.py` (`ns3-campaign`: `validate`, `plan`, `build`, `dispatch`, `status`, `collect`, `verdicts`; its docstring is the plan format), a plan in `campaigns/`, `campaign-image.yml` + `campaign-cell.yml`; #66, swarm-routing/.github#107. AntHocNet's own `tools/bench/campaign.py` stays AntHocNet-only |
 | Comparator arms (SAODV, SEAD, TAODV, DRL, DTN) and their gates | epic #15; the arm contract: AntHocNet `docs/comparison-harness.md`, ADR-0027 |
 | Open issues being migrated here | AntHocNet #764, #771, #772, #773, #791, #431, #294 |
 | The org's invariants, labels, issue shape | [`swarm-routing/.github` CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md) |
