@@ -1,0 +1,9 @@
+# exit 0
+ok: scale-100-pc769.txt: measured at 5847520
+WARN: scale-100-pc769.txt: path diversity is churn-dominated — the single-path floor is 1.391 (olsr) at windowS=10, i.e. route replacement inside the window is being counted as concurrent multipath; anthocnet 1.274 = -0.117 vs the floor. Do not quote path_div_*/path_entropy_bits from this cell. Nothing else is affected: PDR/delay/NRL/jitter come from FlowMonitor, not from the diversity window (#230)
+WARN: scale-100-pc769.txt/anthocnet: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: scale-100-pc769.txt/aodv: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: scale-100-pc769.txt/olsr: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: scale-100-pc769.txt/oracle: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+checked 4 rows
+verdict: WARN (0 fail, 5 warn)

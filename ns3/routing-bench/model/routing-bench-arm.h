@@ -195,51 +195,54 @@ public:
     /// Per-family settings of the arm's measuring instrument (never a
     /// protocol default, ADR-0019). Called once per listed arm while the
     /// scenario is resolved.
-    virtual void Configure(const RunContext& scenario) {}
+    virtual void Configure(const RunContext& /*scenario*/) {}
     /// Refuse a configuration the arm cannot run honestly. Called once per
     /// listed arm before any run.
-    virtual void Validate(const RunContext& scenario) const {}
+    virtual void Validate(const RunContext& /*scenario*/) const {}
     /// ##CONFIG## lines this arm adds when it is listed.
-    virtual void EmitConfig(std::ostream& out) const {}
+    virtual void EmitConfig(std::ostream& /*out*/) const {}
 
     /// True if the arm installs its own devices instead of ad-hoc Wi-Fi.
     virtual bool ProvidesDevices() const { return false; }
     /// Install the devices; `radios` receives the wifi interfaces.
-    virtual NetDeviceContainer InstallDevices(RunContext& run, const DeviceRequest& req,
-                                              NetDeviceContainer& radios) {
+    virtual NetDeviceContainer InstallDevices(RunContext& /*run*/, const DeviceRequest& /*req*/,
+                                              NetDeviceContainer& /*radios*/) {
         return NetDeviceContainer();
     }
     /// Pin the provided devices' streams from `stream`; return the count.
-    virtual int64_t AssignDeviceStreams(RunContext& run, int64_t stream) { return 0; }
+    virtual int64_t AssignDeviceStreams(RunContext& /*run*/, int64_t /*stream*/) { return 0; }
 
     /// After the internet stack is installed (post-stack wiring).
-    virtual void AfterStack(RunContext& run) {}
+    virtual void AfterStack(RunContext& /*run*/) {}
     /// Connect protocol traces to the harness's measurement.
-    virtual void ConnectTraces(RunContext& run, Measurement& m) {}
+    virtual void ConnectTraces(RunContext& /*run*/, Measurement& /*m*/) {}
     /// After the IPv4 addresses are assigned.
-    virtual void AfterAddresses(RunContext& run, const Ipv4InterfaceContainer& ifs) {}
+    virtual void AfterAddresses(RunContext& /*run*/, const Ipv4InterfaceContainer& /*ifs*/) {}
     /// Start recording the replay (--vizTrace); true if this run records.
-    virtual bool StartReplay(RunContext& run, const ReplayRequest& req, Ptr<FlowMonitor> monitor,
-                             Ptr<FlowClassifier> classifier) {
+    virtual bool StartReplay(RunContext& /*run*/, const ReplayRequest& /*req*/,
+                             Ptr<FlowMonitor> /*monitor*/, Ptr<FlowClassifier> /*classifier*/) {
         return false;
     }
-    virtual void FinishReplay(uint64_t tx, uint64_t rx, double pdr) {}
+    virtual void FinishReplay(uint64_t /*tx*/, uint64_t /*rx*/, double /*pdr*/) {}
 
     /// Correct the run's tallies, e.g. for packets refused at the source.
-    virtual void AdjustCounts(RunContext& run, RunCounts& counts) {}
+    virtual void AdjustCounts(RunContext& /*run*/, RunCounts& /*counts*/) {}
     /// A per-run note printed after the counts (e.g. `# hwmp`).
-    virtual void EmitRunNote(RunContext& run, const Measurement& m, std::ostream& out) {}
+    virtual void EmitRunNote(RunContext& /*run*/, const Measurement& /*m*/,
+                             std::ostream& /*out*/) {}
     /// The drop-book detail this protocol can report.
-    virtual void FillDropDetail(RunContext& run, DropDetail& d) {}
+    virtual void FillDropDetail(RunContext& /*run*/, DropDetail& /*d*/) {}
     /// Pending-queue hold times by reason; false if the protocol has none.
-    virtual bool CollectHoldTimes(RunContext& run, std::vector<HoldTime>& hold) { return false; }
+    virtual bool CollectHoldTimes(RunContext& /*run*/, std::vector<HoldTime>& /*hold*/) {
+        return false;
+    }
     /// Fields appended to the `# diag` line.
-    virtual void AppendDiag(RunContext& run, const Measurement& m, std::ostream& out) {}
+    virtual void AppendDiag(RunContext& /*run*/, const Measurement& /*m*/, std::ostream& /*out*/) {}
     /// Diagnostics after the markers (e.g. ##ORACLE##).
-    virtual void EmitDiagnostics(RunContext& run, const Measurement& m, double nrl,
-                                 std::ostream& out) {}
+    virtual void EmitDiagnostics(RunContext& /*run*/, const Measurement& /*m*/, double /*nrl*/,
+                                 std::ostream& /*out*/) {}
     /// Abort on a broken invariant of the arm.
-    virtual void Check(RunContext& run, const Measurement& m) {}
+    virtual void Check(RunContext& /*run*/, const Measurement& /*m*/) {}
 };
 
 using ArmFactory = Ptr<Arm> (*)();

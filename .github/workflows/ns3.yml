@@ -58,7 +58,10 @@ jobs:
       # after each marker tag); strip both before the cross-seed comparison, so
       # "seed 2 differs" has to come from the results (swarm-routing/.github#40).
       determinism-normalize: 's/firstRun=[0-9]+//; s/^(##[A-Z]+##) [0-9]+ /\1 /'
-      # strict-warnings stays off until the harness is clean under it (#31).
+      # Strict warnings as errors on the harness's own code (ns-3's headers
+      # exempt; #31). Automatic runs (`latest`, debug and sanitized) only: an
+      # on-demand older image may predate --strict-warnings.
+      strict-warnings: ${{ inputs.ns3-versions == '' }}
       # SonarQube Cloud CI analysis with gcovr coverage of the harness on the
       # automatic `latest` debug leg (swarm-routing/.github CONTRIBUTING
       # § Quality gates; report-only). Skipped on fork PRs (no token) and while

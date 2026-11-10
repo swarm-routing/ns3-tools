@@ -1,0 +1,156 @@
+# Validation-anchor thresholds (#59) — the single place to recalibrate.
+# Consumed by tools/checks/check-anchors.sh, which parses "key: number" lines
+# (a trailing "# comment" is fine as long as it contains no colon). Scenario
+# definitions live in the script; expected values and their rationale in
+# docs/benchmarks/methodology.md "Validation anchors".
+
+# 2-node, in-range, static, fixed 2 Mbit/s radio: measured 100.0% post-#51.
+# A #51-style rate-manager regression reads ~50%, so 99.0 has wide margin
+# while still catching partial regressions.
+single_hop_pdr_min: 99.0
+
+# --- satellite / ISL anchors (#237, consumed by check-sat-anchors.sh) -------
+# These differ in kind from the wifi anchors above: a point-to-point ISL has no
+# contention and no loss model, so the expected values are *analytic*, not
+# literature-derived. Keep them tight — slack here is slack in which a broken
+# substrate or topology can hide.
+
+# 2 satellites, 1 ISL, stock AODV. A p2p link is lossless: the true expected
+# value is exactly 100.0. 99.0 mirrors the wifi single-hop floor and tolerates
+# only route-setup loss at t=0, nothing else.
+sat_single_isl_pdr_min: 99.0
+
+# Serialisation + queueing slack above the h*d propagation floor, in ms, for
+# the hop-delay identity. Measured on the 4x4 torus (h=2, d=5 ms): 10.39 ms,
+# i.e. 0.39 ms of slack over the 10 ms floor (#214, CI run 30190452648). 1.5 ms
+# leaves room for a slower link rate or a larger packet while still catching a
+# path that is not the 2-hop one — a single extra hop costs a whole d.
+sat_hop_delay_slack_ms: 1.5
+
+# Broch/Perkins field at low mobility (pause=900 speed=1), stock AODV.
+# Literature floor ~90% (Broch et al. 1998); measured 92.5% on current main
+# (time=300, runs=3). 85.0 leaves margin for the gate's 2-run average and
+# random node placement — tighten once more gate runs accumulate.
+broch_low_mobility_aodv_pdr_min: 85.0
+
+# --- v1.4.0 grid arms (#61/#60) — regression floors, NOT validation anchors --
+# These differ in kind from everything above, and the distinction matters.
+# The wifi anchors are literature-derived (Broch et al.) and the satellite ones
+# are analytic identities on a lossless p2p link. For AODV under steady-state
+# RWP, Gauss-Markov or Nakagami fading at the paper base scenario there is
+# **no published reference value and no analytic identity** — so there is
+# nothing external to anchor against, and inventing one would be the kind of
+# unsourced constant #88 and #173 turned out to be.
+#
+# What these are instead: floors derived from our own 20-seed measurement, to
+# catch a #51-class harness/channel regression on an arm that CI never runs.
+# They validate that the substrate still works, not that the number is right.
+# Recalibrate them against a re-measurement, never against a literature claim.
+#
+# Keyed by channel rather than per cell: across the three mobility models AODV
+# moves only 2.7 pp on two-ray and 6.3 pp on Nakagami, so one floor per channel
+# covers the worst mobility case without six near-duplicate thresholds.
+# A floor that false-fires gets ignored (#229), so the margins are generous.
+
+# Measured AODV PDR on two-ray, v1.4.0 grid (runs 31239953345 / 31239962932 /
+# 31239973590): 85.92 / 86.56 / 83.90 %. Worst case 83.90 (Gauss-Markov).
+# 75.0 is ~11 % below it — wide enough for placement variation, tight enough
+# that a rate-manager or propagation regression (which reads ~50 %) still fires.
+grid_tworay_aodv_pdr_min: 75.0
+
+# Measured AODV PDR on Nakagami, v1.4.0 grid (runs 31239958344 / 31239968258 /
+# 31239979624): 73.49 / 73.02 / 67.23 %. Worst case 67.23 (Gauss-Markov).
+# 55.0 is ~18 % below it: a wider margin than the two-ray floor on purpose,
+# because link existence here includes a random draw and per-seed dispersion is
+# correspondingly higher (#60).
+grid_nakagami_aodv_pdr_min: 55.0
+
+# --- FANET anchors (#482, consumed by check-anchors.sh) ----------------------
+# Analytic, like the satellite ones: the expected values follow from geometry,
+# not from a literature measurement (no published FANET reference value exists
+# for this harness's field, and the Broch floor is RWP-on-the-ground only).
+
+# --scenario=fanet shrunk to a 100 m cube at the preset's 350 m range: the
+# 173 m diagonal keeps every pair in range, so every flow is one hop. Stock
+# AODV measured 100.0 % (2 runs, 120 s); 99.0 mirrors the planar single-hop
+# floor.
+fanet_single_hop_3d_pdr_min: 99.0
+# The oracle's mean hop count on that cube is exactly 1.00 by construction.
+fanet_single_hop_3d_oracle_hops_max: 1.0
+
+# A 10 x 10 x 1000 m column at 350 m: AODV measured 98.9 %, oracle hopsMean
+# 1.90 (2 runs, 120 s). The hop floor is the point of this anchor: a field
+# collapsed to 2-D reads exactly 1.00, so anything above 1.2 proves altitude is
+# honoured with margin for seed variation. The PDR floor only catches a broken
+# multi-hop path, so it is looser.
+fanet_vertical_3d_pdr_min: 90.0
+fanet_vertical_3d_oracle_hops_min: 1.2
+
+# --- VANET anchors (#488, consumed by check-anchors.sh) ----------------------
+# Analytic, like the FANET ones: geometry decides the answer. The Broch floor
+# is RWP-only and no published value exists for this harness's street grid.
+# Both shrink --scenario=vanet (Manhattan mobility, urban channel) to a single
+# 280 x 280 m block, 20 vehicles, 120 s, oracle at the preset's 100 ms.
+
+# Street width 279 m leaves a 1 m building: the block diagonal (396 m) is
+# inside the two-ray decode radius (423.3 m) and nothing blocks the line, so
+# every flow is one hop. Measured at this exact invocation: AODV 99.5 %,
+# oracle 99.9 % at hopsMean 1.00; 99.0 mirrors the planar single-hop floor.
+vanet_single_hop_pdr_min: 99.0
+vanet_single_hop_oracle_hops_max: 1.05
+
+# Street width 100 m leaves a 180 x 180 m building: vehicles on opposite
+# streets lose line of sight and must relay around a corner. Measured at this
+# exact invocation: oracle hopsMean 1.36 and PDR 99.6 %, AODV 80.4 %. A channel
+# that ignored the building reads exactly the single-hop 1.00, so the hop floor
+# proves the buildings are honoured; the PDR floor only catches a broken relay
+# path, so it sits ~10 pp under AODV.
+vanet_building_pdr_min: 70.0
+vanet_building_oracle_hops_min: 1.2
+
+# --- VANET GPCR anchor (#709, consumed by check-anchors.sh) -----------------
+# GPCR's own paper trend (Lochert et al. 2005, section V): on a city grid it
+# delivers more than GPSR. The vanet-building block (180 m building, 20
+# vehicles, 4 flows, 120 s, 2 runs), arms gpsr,gpcr,oracle. Measured after
+# the #717 fix: ns-3.42 GPCR 89.3 %, GPSR 84.4 %, oracle 99.6 %; ns-3.48
+# 90.3 / 85.5 / 99.3. The floor applies to every arm in the run, so it sits
+# under GPSR; the gap is the anchor's point.
+vanet_gpcr_pdr_min: 75.0
+# GPCR minus GPSR PDR, percentage points, same seeds. Measured +4.9 (3.42) and
+# +4.8 (3.48); 2.0 still fails a GPCR that has collapsed into plain GPSR.
+vanet_gpcr_minus_gpsr_pp_min: 2.0
+
+# --- FANET gpsr3d anchor (#710, consumed by check-anchors.sh) ---------------
+# The 3-D geographic arm's own paper trend (Bujari et al., IEEE TMC 2018,
+# section 5.2): face recovery delivers more than greedy alone. 50 nodes, a
+# 600 m cube, 200 m range, static, 2 flows at 512 bit/s, 120 s, 4 runs.
+# Measured: ns-3.42 74.9 % with CFace(3) recovery vs 62.5 % greedy only,
+# oracle 74.9 %; ns-3.48 74.7 / 62.2 / 74.9. The floor applies to gpsr3d and
+# the oracle; the gap is the anchor's point.
+fanet_gpsr3d_pdr_min: 65.0
+# gpsr3d with recovery minus gpsr3d with Recovery=false, percentage points,
+# same seeds. Measured +12.4 (3.42) and +12.5 (3.48).
+fanet_gpsr3d_recovery_pp_min: 5.0
+
+# --- static-mesh HWMP anchor (#708, consumed by check-anchors.sh) -----------
+# Analytic: on a static connected disk field at one fixed rate, 802.11s
+# HWMP's airtime metric is equal on every link, so it converges to a
+# minimum-hop path. 16 nodes, 500 m field, 175 m range, 802.11a at 6 Mbit/s,
+# 2 runs. Measured at this exact invocation on ns-3.42 (the CI leg): HWMP
+# 98.2 % PDR, hopsMean 4.73 against the oracle's 4.50 (stretch 1.05); on
+# ns-3.48 98.3 % and 4.67 (1.04). The PDR floor only catches an arm that
+# stopped routing, so it sits ~3 pp under the measurement.
+mesh_hwmp_pdr_min: 95.0
+# Upper bound on hwmp hopsMean / oracle hopsMean (the lower bound, 1.00, is
+# exact and lives in the script). Measured 1.04-1.05; 1.10 leaves room for
+# the odd detour during path discovery.
+mesh_hwmp_stretch_max: 1.10
+
+# --- disaster family (#580, consumed by tools/checks/check-disaster.sh) -----
+# The scene (tools/bench/disaster_scene.py, scene seed 1), 300 s, 2 seeds.
+# With the walls' loss zeroed the oracle is the field's ceiling; with them it
+# must lose a clear margin, or --buildings is not reaching the channel.
+disaster_nowalls_oracle_pdr_min: 90.0
+disaster_walls_cost_pp_min: 8.0
+# Each native arm must route on the walled scene (#439).
+disaster_arm_pdr_min: 50.0

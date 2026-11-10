@@ -1,0 +1,15 @@
+# exit 0
+ok: vanet-main-pc769.txt: measured at 7883f19
+WARN: vanet-main-pc769.txt: path diversity is churn-dominated — the single-path floor is 1.527 (aodv) at windowS=10, i.e. route replacement inside the window is being counted as concurrent multipath; anthocnet 1.364 = -0.163 vs the floor. Do not quote path_div_*/path_entropy_bits from this cell. Nothing else is affected: PDR/delay/NRL/jitter come from FlowMonitor, not from the diversity window (#230)
+WARN: vanet-main-pc769.txt seed1/oracle: the oracle is APPROXIMATE here (mode=decode-los-approx, radius 423.3 m). A fading or two-ray channel has no crisp adjacency, so this arm is a reference point, not a proven upper bound — see ns3/baselines/oracle/README.md before quoting it as one
+WARN: vanet-main-pc769.txt seed1/oracle: 5013 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: vanet-main-pc769.txt seed2/oracle: the oracle is APPROXIMATE here (mode=decode-los-approx, radius 423.3 m). A fading or two-ray channel has no crisp adjacency, so this arm is a reference point, not a proven upper bound — see ns3/baselines/oracle/README.md before quoting it as one
+WARN: vanet-main-pc769.txt seed2/oracle: 4863 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: vanet-main-pc769.txt: oracle identity-matched hops exceed an arm's on 8 seed x arm pair(s) of a moving 3-D or street-grid field. Not a hop bound here (#506, #488): matched packets are forwarded at different instants and the oracle re-routes per hop over a moving graph, so quote no hop or latency bound for this family
+WARN: vanet-main-pc769.txt/anthocnet: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: vanet-main-pc769.txt/aodv: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: vanet-main-pc769.txt/gpsr: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: vanet-main-pc769.txt/gpcr: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+WARN: vanet-main-pc769.txt/oracle: 2 run(s) — below the #293 published-point floor (>=10; tail quantiles need 20). Diagnostic only, do not publish.
+checked 5 rows
+verdict: WARN (0 fail, 11 warn)

@@ -33,6 +33,8 @@ jobs:
           python3 -m pip install ./python
           cd "$RUNNER_TEMP"
           ns3-bench-parse "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/fanet-main-6arm.txt | grep -q '95% CI'
+          ns3-scenario-check results "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/sat-base-app517.txt \
+            --anchors "$GITHUB_WORKSPACE"/python/tests/fixtures/anchors.yml | grep -q '^verdict: '
           ns3-campaign validate "$GITHUB_WORKSPACE"/campaigns/anthocnet-aodv-smoke.toml
 
   corpus:
@@ -47,9 +49,16 @@ jobs:
         with:
           repository: danieljoppi/AntHocNet
           path: anthocnet
-          sparse-checkout: results/cells
+          sparse-checkout: |
+            results/cells
+            tools/bench/scenario_check.py
           persist-credentials: false
       - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
+      # ns3-tools#28: the port's verdicts equal AntHocNet's script on every cell.
+      - run: |
+          NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" \
+          NS3_TOOL_SCENARIO_CHECK="$PWD/anthocnet/tools/bench/scenario_check.py" \
+            python3 python/tests/test_scenario_check_corpus.py
 
 # ruff and the self-tests under coverage (reusable-python-ci.yml) run in
 # ns3.yml, job `python-quality`: the SonarQube Cloud scan there imports their
