@@ -421,6 +421,10 @@ def control(before_text, after_text, proto):
             lines.append(f"  {p}: only in {'after' if a else 'before'} — not compared")
             continue
         common = sorted(set(b) & set(a))
+        if not common:  # a truncated cell: "identical on 0 seeds" would pass vacuously (#14)
+            failed = True
+            lines.append(f"  {p}: FAIL (no common seeds: {len(b)} before, {len(a)} after)")
+            continue
         moved = [r for r in common if b[r] != a[r]]
         if not moved:
             lines.append(f"  {p}: identical on {len(common)} seed(s)")

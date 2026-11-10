@@ -92,9 +92,17 @@ def termite_trend(gen, d):
     return out
 
 
+NO_PAIRS = "n/a (<2 common seeds)"
+
+
 def compare(arm_runs, ref_runs):
-    """{metric: (mean, lo, hi)} and the verdict, arm minus reference, paired by seed."""
-    _, st, verdict = bp.paired_stats(ref_runs, arm_runs)
+    """{metric: (mean, lo, hi)} and the verdict, arm minus reference, paired by seed.
+
+    Fewer than 2 common seeds (a truncated cell, #14): no metrics, NO_PAIRS."""
+    ps = bp.paired_stats(ref_runs, arm_runs)
+    if ps is None:
+        return {}, NO_PAIRS
+    _, st, verdict = ps
     return st, verdict
 
 
