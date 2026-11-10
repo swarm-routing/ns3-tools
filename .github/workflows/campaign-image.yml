@@ -8,8 +8,10 @@ run-name: image ${{ inputs.plan }}
 # `campaign-image` artifact. The plan (campaigns/<name>.toml at the dispatched
 # ref) gives every module at a pinned commit; reusable-ns3-image.yml resolves
 # ns3-dev:<base> to its digest once, builds FROM it, runs the suites, pushes,
-# signs and attests ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<hash7>-<base7>-optimized.
-# skip-existing: a second plan with the same modules and base reuses the image.
+# signs and attests ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<commit7>-<base7>-optimized
+# (commit7: the plan's first module). skip-existing reuses an image of that tag,
+# which another plan may have built with other commits of the other modules, so
+# `record` checks the image holds exactly the plan's module commits.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +33,7 @@ jobs:
       ns3-version: ${{ steps.plan.outputs.ns3-version }}
       tag: ${{ steps.plan.outputs.tag }}
       test-suites: ${{ steps.plan.outputs.test-suites }}
+      expect: ${{ steps.plan.outputs.expect }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,17 +66,34 @@ jobs:
       skip-existing: true
 
   record:
-    needs: image
+    needs: [inputs, image]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - name: campaign-image.json
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The image holds the plan's modules; campaign-image.json
         env:
           IMAGE: ${{ needs.image.outputs.image }}
           TAG: ${{ needs.image.outputs.tag }}
+          EXPECT: ${{ needs.inputs.outputs.expect }}
         run: |
           set -euo pipefail
           [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest: '$IMAGE'"; exit 1; }
+          # The same reading as campaign-cell.yml's ##PROV##: the dependencies
+          # label, plus /src/<name>/.swarm-module for an installed module.
+          docker pull --quiet "$IMAGE"
+          deps=$(docker inspect --format '{{ index .Config.Labels "io.github.swarm-routing.dependencies" }}' "$IMAGE" | tr ',' '\n')
+          # shellcheck disable=SC2016  # expanded inside the container
+          staged=$(docker run --rm "$IMAGE" bash -c 'cat /src/*/.swarm-module 2>/dev/null || true')
+          got=$(printf '%s\n%s\n' "$deps" "$staged" | sed -n 's/^\([^=]*\)=.*@\([0-9a-f]\{40\}\)$/\1@\2/p' | LC_ALL=C sort | paste -sd, -)
+          [ "$got" = "$EXPECT" ] || { echo "::error::$IMAGE holds $got, the plan $EXPECT (a reused tag from other commits: bump the first module's commit)"; exit 1; }
           python3 -c 'import json,os; print(json.dumps({"image": os.environ["IMAGE"], "tag": os.environ["TAG"]}))' \
             | tee campaign-image.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -8,8 +8,9 @@ The plan validator gets a passing plan and one failing mutation per rule.
 status -> collect -> verdicts run against a fake GitHub (campaign.gh replaced
 by a stub that keeps workflow runs and artifacts in memory and writes each
 cell's results the way campaign-cell.yml does), including the throttle and a
-cell that ran another image. With NS3_TOOL_BENCHMARKS=<swarm-routing/benchmarks
-checkout> the collected run is also checked by its tools/validate_run.py.
+cell that ran another image. The collected run is checked by
+swarm-routing/benchmarks' tools/validate_run.py: the copy vendored in
+benchmarks/ (provenance in its README), or NS3_TOOL_BENCHMARKS=<checkout>.
 
 Run: python3 test_campaign.py     (no pytest dependency; exits non-zero on the
                                    first failure)
@@ -53,6 +54,7 @@ cp.POLL = 0
 BASE = "sha256:" + "b" * 64
 IMAGE = cp.IMAGE + "@sha256:" + "c" * 64
 OTHER = cp.IMAGE + "@sha256:" + "d" * 64
+LEAD7 = "4fe1400"  # the example plan's first module (anthocnet) commit
 
 
 def check(cond, what):
@@ -152,7 +154,8 @@ def test_plan_and_inputs():
     )
     check("--runs=10 --firstRun=11" in out, "plan: the second block starts at seed 11")
     check(
-        f"ns3-tools-ns3-campaign:{cp.build_hash(cp.load_plan(EXAMPLE))}-{{base7}}-optimized" in out,
+        f"ns3-tools-ns3-campaign:{cp.modules(example())[0]['commit'][:7]}-{{base7}}-optimized"
+        in out,
         "plan: names the image it needs",
     )
     code, out, _e = run(["image-inputs", EXAMPLE])
@@ -180,14 +183,15 @@ def test_plan_and_inputs():
         "ns3-version=3.48\n" in out and re.search(r"\ntag=[0-9a-f]{7}-\{base7\}\n", out),
         "image-inputs: version and tag",
     )
-    a, b = example(), example()
-    b["cells"]["grid-rwp"]["args"] += " --speed=1"
+    lead = cp.modules(example())[0]
     check(
-        cp.build_hash(a) == cp.build_hash(b),
-        "build hash ignores the cells (same modules, same image)",
+        f"\ntag={lead['commit'][:7]}-{{base7}}\n" in out and lead["name"] == "anthocnet",
+        "image-inputs: the tag names the first module's commit",
     )
-    b["base"] = "latest-optimized"
-    check(cp.build_hash(a) != cp.build_hash(b), "build hash follows the base")
+    check(
+        re.search(r"\nexpect=anthocnet@[0-9a-f]{40},routing-bench@[0-9a-f]{40}\n", out),
+        "image-inputs: the modules the image must hold",
+    )
     check(
         cp.parameters("--nNodes=50 --speed=2.5 --mobility=rwp --diag")
         == {"nNodes": 50, "speed": 2.5, "mobility": "rwp", "diag": True},
@@ -282,7 +286,7 @@ class FakeGitHub:
         out.append(f"##ARGS## {inputs['program']} {inputs['args']}")
         out.append(
             f"##PROV## base=ghcr.io/swarm-routing/ns3-dev:3.48-optimized-1a2b3c4@{BASE} "
-            f"image={cp.IMAGE}:abc1234-bbbbbbb-optimized@{image.split('@')[1]} "
+            f"image={cp.IMAGE}:{LEAD7}-bbbbbbb-optimized@{image.split('@')[1]} "
             f"modules={mods} run_id=1 attempt=1"
         )
         return "\n".join(out) + "\n"
@@ -306,7 +310,7 @@ class FakeGitHub:
             if wf == cp.IMAGE_WORKFLOW:
                 files = {
                     "campaign-image.json": json.dumps(
-                        {"image": self.image, "tag": "abc1234-bbbbbbb-optimized"}
+                        {"image": self.image, "tag": f"{LEAD7}-bbbbbbb-optimized"}
                     )
                 }
                 name = "campaign-image"
@@ -395,7 +399,7 @@ def test_campaign():
                 "manifest: the base",
             )
             check(
-                [x["name"] for x in m["modules"]] == ["routing-bench", "anthocnet"],
+                [x["name"] for x in m["modules"]] == ["anthocnet", "routing-bench"],
                 "manifest: every module",
             )
             check(
@@ -415,21 +419,18 @@ def test_campaign():
                 sorted(runs["aodv"]) == list(range(1, 21)),
                 "collect: the seed blocks joined in one cell",
             )
-            bench = os.environ.get("NS3_TOOL_BENCHMARKS")
-            if bench:
-                p = subprocess.run(
-                    [
-                        sys.executable,
-                        os.path.join(bench, "tools", "validate_run.py"),
-                        "check",
-                        run_dir,
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                check(
-                    p.returncode == 0, f"benchmarks validate_run.py passes:\n{p.stdout}{p.stderr}"
-                )
+            bench = os.environ.get("NS3_TOOL_BENCHMARKS") or os.path.join(HERE, "benchmarks")
+            p = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(bench, "tools", "validate_run.py"),
+                    "check",
+                    run_dir,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            check(p.returncode == 0, f"benchmarks validate_run.py passes:\n{p.stdout}{p.stderr}")
 
             code, out, _e = run(["verdicts", plan_path, "--dir", run_dir])
             lines = out.splitlines()
@@ -450,7 +451,7 @@ def test_campaign():
                 "collect: refuses a cell from another image",
             )
             bad = copy.deepcopy(plan)
-            bad["modules"][1] = bad["modules"][1][:-1] + "0"
+            bad["modules"][0] = bad["modules"][0][:-1] + "0"
             cp.gh = FakeGitHub(bad)
             work3 = os.path.join(d, "work3")
             run(["build", plan_path, "--work", work3])

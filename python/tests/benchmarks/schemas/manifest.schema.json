@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/swarm-routing/benchmarks/blob/main/schemas/manifest.schema.json",
+  "title": "benchmarks run manifest, schema version 1",
+  "description": "runs/<yyyy-mm-dd>-<campaign>/manifest.json: everything needed to reproduce one run (golden rule 11). tools/validate_run.py enforces this file with a stdlib interpreter of the keywords it uses, then checks what JSON Schema cannot (the directory name, tag/field agreement, file hashes, seeds and ##PROV## lines in the data). A field change bumps schema_version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "campaign",
+    "date",
+    "base_image",
+    "campaign_image",
+    "modules",
+    "harness",
+    "scenarios",
+    "preregistration",
+    "seeds",
+    "commands",
+    "markers",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "This manifest schema's version.",
+      "const": 1
+    },
+    "campaign": {
+      "description": "The campaign id: the run directory is <date>-<campaign>.",
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+    },
+    "date": {
+      "description": "The UTC date the campaign was dispatched (YYYY-MM-DD).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
+    "base_image": {
+      "description": "The ns3-dev image the campaign image is built FROM: the immutable versioned tag and its digest (golden rules 11 and 13: the optimized profile).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "digest", "ns3_version", "profile"],
+      "properties": {
+        "ref": {
+          "description": "ghcr.io/swarm-routing/ns3-dev:<ver>[-<base>]-optimized-<sha7>, never a rolling tag.",
+          "type": "string",
+          "pattern": "^ghcr\\.io/swarm-routing/ns3-dev:[0-9]+\\.[0-9]+(\\.[0-9]+)?(-(debian|slim|alpine))?-optimized-[0-9a-f]{7}$"
+        },
+        "digest": {"$ref": "#/$defs/digest"},
+        "ns3_version": {
+          "description": "The ns-3 release in the tag.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$"
+        },
+        "profile": {
+          "description": "Benchmarks run on the optimized image (golden rule 13).",
+          "const": "optimized"
+        }
+      }
+    },
+    "campaign_image": {
+      "description": "The image every cell pulled by digest: a campaign image <repo>-ns3-campaign:<commit7>-<basesha7>, or a release image <repo>-ns3:<version>-optimized (swarm-routing/.github#107).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "digest"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^ghcr\\.io/swarm-routing/[a-z0-9._-]+-ns3(-campaign)?:[A-Za-z0-9._-]+$"
+        },
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "modules": {
+      "description": "Every ns-3 module built into the campaign image, at the commit built: the protocols under test, swarm-core, routing-bench and each arm the plan names.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "repo", "commit"],
+        "properties": {
+          "name": {
+            "description": "The contrib module name (e.g. routing-bench, swarm-core, ara).",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "repo": {
+            "description": "owner/name on github.com.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"
+          },
+          "commit": {"$ref": "#/$defs/commit"}
+        }
+      }
+    },
+    "harness": {
+      "description": "The program that printed the marker lines and the module that holds it (one of modules).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "module"],
+      "properties": {
+        "program": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "module": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+      }
+    },
+    "scenarios": {
+      "description": "Each scenario (cell) of the campaign, its arms and its parameters.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "arms", "parameters"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+          "arms": {
+            "description": "The arms (protocols) the data must carry ##RUN## rows for.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"}
+          },
+          "parameters": {
+            "description": "The harness flags of this cell, by name (as in its ##CONFIG##); {} when the pre-registration file gives them.",
+            "type": "object"
+          }
+        }
+      }
+    },
+    "preregistration": {
+      "description": "The plan written before the run: a file in the run directory (listed in files) or a pinned URL (a blob at a commit, or an issue).",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {"path": {"$ref": "#/$defs/relpath"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["url"],
+          "properties": {"url": {"type": "string", "pattern": "^https://github\\.com/[^\\s]+$"}}
+        }
+      ]
+    },
+    "seeds": {
+      "description": "The RngRun values every arm of every scenario ran (golden rule 6: paired, >= 20).",
+      "type": "array",
+      "minItems": 20,
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1}
+    },
+    "commands": {
+      "description": "The exact command lines run, in order (dispatch and harness).",
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "markers": {
+      "description": "The marker-line contract the data follows: a version in schemas/markers/.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version"],
+      "properties": {
+        "schema_version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "files": {
+      "description": "Every file of the run directory except manifest.json, with its sha256. A cell holds marker lines and names its scenario.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "kind"],
+        "properties": {
+          "path": {"$ref": "#/$defs/relpath"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "kind": {"enum": ["cell", "preregistration", "other"]},
+          "scenario": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"}
+        }
+      }
+    },
+    "supersedes": {
+      "description": "A correction names the run it replaces and the issue that says why (golden rule 10).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "issue"],
+      "properties": {
+        "run": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+        },
+        "issue": {
+          "type": "string",
+          "pattern": "^https://github\\.com/swarm-routing/[A-Za-z0-9._-]+/issues/[0-9]+$"
+        }
+      }
+    },
+    "notes": {
+      "description": "Free text: anything a reader needs that no field holds.",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relpath": {
+      "description": "A path inside the run directory: relative, no '..', no leading '/'.",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._/-]+$"
+    }
+  }
+}

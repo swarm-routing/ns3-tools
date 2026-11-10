@@ -14,9 +14,10 @@ base = "3.48-optimized"
 arms = ["anthocnet", "aodv"]
 reference = "aodv"
 seeds = 20
+# The first module names the image (<commit7>-<base7>): the protocol under test.
 modules = [
-  "routing-bench=swarm-routing/ns3-tools@ba986d87db91974749c580d1af76b9d0017d9f2b:ns3/routing-bench",
   "anthocnet=swarm-routing/AntHocNet@4fe1400c98d8a1e2f053ced6b6580df3b27f1124",
+  "routing-bench=swarm-routing/ns3-tools@ba986d87db91974749c580d1af76b9d0017d9f2b:ns3/routing-bench",
 ]
 
 [install]

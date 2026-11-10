@@ -37,9 +37,9 @@ pre-registration, copied into the run directory):
     seeds = 20                            # >= 20 (org rule 6): RngRun first_seed..
     first_seed = 1                        # default 1
     cap = 12                              # default 12: cell runs queued or running at once
-    modules = [                           # name=owner/repo@<40-char commit>[:subdir]
+    modules = [                           # name=owner/repo@<40-char commit>[:subdir];
+      "anthocnet=swarm-routing/AntHocNet@<commit>",          # the first names the image
       "routing-bench=swarm-routing/ns3-tools@<commit>:ns3/routing-bench",
-      "anthocnet=swarm-routing/AntHocNet@<commit>",
     ]
     suites = ["routing-bench"]            # optional test.py suites; default every module
     [install]                             # a module whose repo installs it (it copies files):
@@ -53,11 +53,15 @@ runs in that clone with NS3DIR pointing at a scratch tree; it must leave the
 module at $NS3DIR/contrib/<name>. Every other module is passed to
 reusable-ns3-image.yml as a dependency, which clones it at its commit.
 
-The image is ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<hash7>-<base7>-optimized,
-where hash7 is the build hash (the base and the modules: two plans with the
-same modules share one image) and base7 the resolved ns3-dev digest's first
-7 hex digits (reusable-ns3-image.yml resolves the tag once and builds FROM
-that digest; skip-existing reuses an image already built).
+The image is ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<commit7>-<base7>-optimized:
+commit7 is the plan's first module's commit (the protocol under test: list it
+first), base7 the resolved ns3-dev digest's first 7 hex digits
+(reusable-ns3-image.yml resolves the tag once, builds FROM that digest and
+appends -optimized; skip-existing reuses an image already built). The
+manifest names it <commit7>-<base7>, the form swarm-routing/benchmarks'
+validator takes; the digest is what pins it. Because a reused image may hold
+other commits of the other modules, campaign-image.yml checks the image's
+modules against the plan (`expect`) before any cell runs.
 
 Every cell's ##PROV## line is written by campaign-cell.yml from the image
 itself (its labels and the base's): the base tag and digest, the campaign
@@ -257,19 +261,14 @@ def jobs(plan):
     return out
 
 
-def build_hash(plan):
-    """7 hex digits naming what the binary is built from: the base and the modules."""
-    key = {
-        "base": plan["base"],
-        "modules": plan["modules"],
-        "install": plan.get("install", {}),
-        "suites": plan.get("suites", [m["name"] for m in modules(plan)]),
-    }
-    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:7]
-
-
 def image_tag(plan):
-    return f"{build_hash(plan)}-{{base7}}"
+    """<commit7>-{base7}: the first module's commit (benchmarks' campaign tag)."""
+    return f"{modules(plan)[0]['commit'][:7]}-{{base7}}"
+
+
+def expected_modules(plan):
+    """name@commit of every module, sorted: what the image must hold."""
+    return ",".join(sorted(f"{m['name']}@{m['commit']}" for m in modules(plan)))
 
 
 def parameters(args):
@@ -401,7 +400,7 @@ def read_log(work):
 
 
 def cmd_validate(plan, _a):
-    print(f"{plan['_path']}: valid, {len(jobs(plan))} job(s), build hash {build_hash(plan)}")
+    print(f"{plan['_path']}: valid, {len(jobs(plan))} job(s), image tag {image_tag(plan)}")
 
 
 def cmd_plan(plan, a):
@@ -437,6 +436,7 @@ def cmd_image_inputs(plan, _a):
     print(f"ns3-version={plan['base'].removesuffix('-optimized')}")
     print(f"tag={image_tag(plan)}")
     print(f"test-suites={' '.join(plan['suites'])}")
+    print(f"expect={expected_modules(plan)}")
 
 
 def cmd_stage(plan, a):
@@ -620,6 +620,9 @@ def cmd_collect(plan, a):
             entry["sha256"] = hashlib.sha256(f.read()).hexdigest()
     base_ref, _, base_digest = provs[0]["base"].rpartition("@")
     image_ref, _, image_digest = provs[0]["image"].rpartition("@")
+    # The pushed tag carries reusable-ns3-image.yml's -<profile>; the manifest
+    # names the campaign image <commit7>-<base7> (benchmarks' validator).
+    image_ref = image_ref.removesuffix("-optimized")
     manifest = {
         "schema_version": 1,
         "campaign": plan["name"],

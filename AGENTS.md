@@ -23,7 +23,7 @@ ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh) — MIT OR GPL-2.0-only
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary) and the campaign driver (campaign: ns3-campaign), stdlib only — MIT OR GPL-2.0-only
-python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only)
+python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
 docs/               marker-line contract, arena reference
