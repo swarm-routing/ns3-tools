@@ -10,6 +10,11 @@ name: ns-3
 # ns-3.49 stock AODV livelocks, so the aodv arm's delivery check runs on
 # ns3-dev:3.48 until the first ns-3 release with the fix reaches `latest`;
 # then move `aodv` into the latest leg and drop the 3.48 one.
+#
+# The Python quality job (ruff + coverage.py over python/tests) runs here too,
+# not in python.yml: SonarQube Cloud keeps one analysis per branch, so the one
+# scan (in the module job) imports both gcovr's C++ report and coverage.py's
+# Python report, and an artifact reaches only jobs of its own run (#67).
 on:
   push:
     branches: [main]
@@ -25,7 +30,20 @@ permissions:
   packages: read
 
 jobs:
+  python-quality:
+    # ruff (org ruff.toml) + the self-tests under coverage, report-only
+    # (swarm-routing/.github#35, phase 1); keeps the `python-coverage` artifact.
+    uses: swarm-routing/.github/.github/workflows/reusable-python-ci.yml@main
+    with:
+      paths: python
+      tests: python/tests/test_*.py
+      source: python/ns3_tool
+
   module:
+    # After the Python job, whose coverage the scan imports; but a ruff finding
+    # there must not stop the ns-3 build (the scan then warns: C++ coverage only).
+    needs: python-quality
+    if: ${{ !cancelled() }}
     uses: swarm-routing/.github/.github/workflows/reusable-ns3-ci.yml@main
     with:
       modules: routing-bench=ns3/routing-bench
@@ -47,6 +65,8 @@ jobs:
       # the project is on Automatic Analysis.
       coverage: ${{ inputs.ns3-versions == '' }}
       sonar: ${{ inputs.ns3-versions == '' }}
+      # coverage.py's report of python/ns3_tool into the same analysis (#67).
+      sonar-python-coverage: python-coverage
       dual-roots: 'python/ tools/'
       core-roots: ''
     secrets:
@@ -63,6 +83,18 @@ jobs:
     uses: swarm-routing/.github/.github/workflows/reusable-codecov.yml@main
     with:
       flags: ns3
+
+  # The Python job's coverage.py report to Codecov, flag `python` (#67).
+  codecov-python:
+    needs: python-quality
+    permissions:
+      contents: read
+      id-token: write
+    uses: swarm-routing/.github/.github/workflows/reusable-codecov.yml@main
+    with:
+      artifact: python-coverage
+      files: coverage.xml
+      flags: python
 
   stock-arms:
     name: stock arms deliver (${{ matrix.arms }} on ns-${{ matrix.version }})
