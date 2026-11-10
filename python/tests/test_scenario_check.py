@@ -1,0 +1,3595 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+"""Self-test for scenario_check.py.
+
+Ported from danieljoppi/AntHocNet tools/bench/test_scenario_check.py with the
+module (ns3-tools#28). The cases run with AntHocNet's arm roles (ROLES below)
+and its anchors file (fixtures/anchors.yml), so every generic rule is held to
+the readings it was written for. The cases of the rules that stayed in
+AntHocNet (##REINJ##, opspf, the per-arm preflight refusals, isl-grid's arm
+list) are not ported; the cases at the end test what the port added.
+
+`scenario_check.py` is the gate that decides whether a campaign's numbers may
+be read, quoted or published. Until this file existed nothing tested it, and
+the consequences showed up twice in one afternoon:
+
+  - #230's path-diversity defect sat in six merged campaigns because no rule
+    asserted the one thing the metric's own docs called its self-check (the
+    single-path baselines must read ~1).
+  - The first cut of #229's queue-drop diagnosis fired on `anthocnet` and
+    `aodv` rows whose accounting was correct, because it keyed on "queue is
+    zero" instead of on an actual shortfall.
+
+So each rule gets two cases: one crafted row where it **must** fire, and one
+where it **must not**. The second half is the half that catches over-firing,
+which is what makes a check untrustworthy and then ignored.
+
+Numbers in the fixtures are the real campaign values (runs 30201145972 /
+30201179429) wherever a rule was written in response to a real reading, so a
+change in threshold has to confront the observation that motivated it.
+
+Run: python3 test_scenario_check.py     (no pytest dependency; exits non-zero
+                                         on the first failure)
+"""
+
+import argparse
+import contextlib
+import importlib.util
+import io
+import os
+import sys
+import tempfile
+
+
+def _load_scenario_check():
+    """Load scenario_check.py from source, next to this file.
+
+    Deliberately not a module-level `import`. Two reasons, both learned the
+    hard way:
+
+    - A stale `__pycache__` entry can shadow an edited rule, so the suite
+      reports a pass (or a phantom failure) for code that is not the code on
+      disk. `exec_module` on the file always runs what is there.
+    - The `sys.path` juggling an import would need puts a statement before the
+      import, which is E402, which needs a `noqa`, whose necessity then depends
+      on how ruff resolves config — it differed between this sandbox and CI on
+      0.16.0, failing the lint either way round.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "ns3_tool", "scenario_check.py"
+    )
+    spec = importlib.util.spec_from_file_location("scenario_check", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+sc = _load_scenario_check()
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+# AntHocNet's ns3/tools/anchors.yml, copied as data.
+ANCHORS = os.path.join(FIXTURES, "anchors.yml")
+# AntHocNet's anchors file and arm roles, which its script hard-coded and the
+# port takes as arguments (see the module docstring).
+ROLES = {
+    "anchors": ANCHORS,
+    "anchor_arms": "aodv",
+    "single_path": "aodv,olsr,dsdv",
+    "multipath": "anthocnet",
+    "oracle_arm": "oracle",
+    "hold_ceiling": [f"{a}=35000" for a in ("ara", "termite", "qrouting", "beeadhoc")],
+}
+
+# A row that must pass every rule cleanly. Deliberately an `anthocnet` row with
+# a closing identity (99.98 at dense-small is the real measured value), so any
+# rule that fires here is over-firing on correct data.
+CLEAN = {
+    "kind": "scenario",
+    "group": "taxonomy",
+    "x": "paper-base",
+    "scenario": "paper-base",
+    "class": "sparse / mobile",
+    "protocol": "anthocnet",
+    "runs": "20",
+    "nNodes": "50",
+    "areaX": "1500",
+    "speed": "20",
+    "pause": "30",
+    "flows": "20",
+    "propagation": "range",
+    "pdr_pct": "89.4",
+    "delay_ms": "40.0",
+    "delay99_ms": "200.0",
+    "throughput_kbps": "9.0",
+    "nrl": "2.0",
+    "jitter_ms": "10.0",
+    "delay_off50_ms": "30.0",
+    "delay_off90_ms": "90.0",
+    "pdr_sd": "1.0",
+    "delay_sd": "1.0",
+    "delay99_sd": "1.0",
+    "nrl_sd": "0.1",
+    "nrl_bytes": "100.0",
+    "energy_j": "500.0",
+    "energy_per_pkt_j": "0.01",
+    "energy_res_min_j": "4500.0",
+    "energy_res_mean_j": "4600.0",
+    "energy_res_sd_j": "10.0",
+    "energy_init_j": "5000.0",
+    "first_death_s": "-1",
+    "reorder_ratio": "0.0003",
+    "reorder_ratio_max": "0.0065",
+    "reorder_extent_mean": "0.20",
+    "reorder_extent_max": "1.0",
+    "reorder_buf_max": "13.4",
+    "drop_route_pct": "2.97",
+    "drop_queue_pct": "1.50",
+    "drop_mac_pct": "3.00",
+    "drop_chan_pct": "3.10",
+    "drop_ttl_pct": "0.03",
+    "drop_setup_pct": "0.50",
+    "drop_reconv_pct": "2.40",
+    "drop_repair_pct": "0.07",
+    "path_hops_mean": "2.5",
+    "path_hops_max": "6.0",
+    "path_div_used": "1.303",
+    "path_div_max": "5.0",
+    "path_entropy_bits": "0.29",
+    "path_div_window_s": "10.0",
+    "jain_pkts": "0.9",
+}
+
+
+def run_results(**overrides):
+    """Check one row (CLEAN + overrides); return the list of reported levels."""
+    row = dict(CLEAN, **overrides)
+    text = ",".join(row) + "\n" + ",".join(str(v) for v in row.values()) + "\n"
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        sc.issues = []
+        args = argparse.Namespace(files=[path], anchor=None, **ROLES)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                sc.cmd_results(args)
+            except SystemExit:
+                pass
+        return list(sc.issues), out.getvalue()
+    finally:
+        os.unlink(path)
+
+
+def run_preflight(**overrides):
+    kw = {
+        "nodes": 50,
+        "areaX": 1500.0,
+        "areaY": 300.0,
+        "range": 300.0,
+        "time": 300.0,
+        "pause": 30.0,
+        "speed": 20.0,
+        "flows": 20,
+        "pktBytes": 64,
+        "pktPerSec": 1.0,
+        "rateMbps": 2.0,
+        "pathWindowS": 10.0,
+        "mobility": "rwp",
+        "propagation": "range",
+        "transport": "udp",
+        "protocols": "anthocnet,aodv,olsr,dsdv",
+        "oracle_arm": "oracle",
+    }
+    kw.update(overrides)
+    sc.issues = []
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        try:
+            sc.cmd_preflight(argparse.Namespace(**kw))
+        except SystemExit:
+            pass
+    return list(sc.issues), out.getvalue()
+
+
+CASES = []
+
+
+def case(name):
+    def deco(fn):
+        CASES.append((name, fn))
+        return fn
+
+    return deco
+
+
+def expect(cond, name, detail):
+    if not cond:
+        print(f"FAIL {name}: {detail}")
+        sys.exit(1)
+
+
+# --- the clean row -----------------------------------------------------------
+
+
+@case("clean anthocnet row reports nothing")
+def _clean():
+    levels, out = run_results()
+    expect(levels == [], "clean", f"expected no reports, got {levels}\n{out}")
+
+
+# --- #293 runs-floor ----------------------------------------------------------
+
+
+@case("#293 a 5-run cell WARNs below the published-point floor")
+def _runs_floor_fires():
+    # 5 was the pre-#110 sweep run count — exactly the data the floor exists
+    # to keep out of publications (DSDV's delay99 dispersion was invisible
+    # at 5 seeds, #293).
+    levels, out = run_results(runs="5")
+    expect("WARN" in levels, "runs-floor-fires", f"runs=5 did not WARN\n{out}")
+    expect(
+        "published-point floor" in out, "runs-floor-fires", f"WARN did not name the floor\n{out}"
+    )
+
+
+@case("#293 the floor stays quiet at 10 runs and on rows with no run count")
+def _runs_floor_quiet():
+    levels, out = run_results(runs="10")
+    expect(levels == [], "runs-floor-quiet", f"runs=10 (the floor) must not WARN\n{out}")
+    # A bare table row with no ##RUN## rows carries no run count: skip.
+    levels, out = run_cell("anthocnet 89.4 40.0 200.0 9.0 2.0\n")
+    expect(levels == [], "runs-floor-no-count", f"row without a run count must not WARN\n{out}")
+
+
+# --- #230 path diversity -----------------------------------------------------
+
+
+@case("#230 single-path floor above 1.10 WARNs — and does not FAIL the cell")
+def _div_fires():
+    # olsr / heavy-load, the worst real reading of the campaign. It must still
+    # be said out loud (the diversity columns are unquotable), but it must not
+    # condemn the cell: divUsed is accumulated off the WifiMac AckedMpdu trace
+    # and cannot move a FlowMonitor number. 14 consecutive campaign cells
+    # FAILed on exactly this and nothing else, and all 14 were waved through.
+    levels, out = run_results(protocol="olsr", path_div_used="1.428")
+    expect(
+        levels == ["WARN"],
+        "div-fires",
+        f"expected exactly one WARN for olsr div 1.428, got {levels}\n{out}",
+    )
+    expect(
+        "churn-dominated" in out and "1.428" in out,
+        "div-fires",
+        f"WARN did not name the mechanism and the floor\n{out}",
+    )
+
+
+@case("#230 single-path floor at 1.004 passes")
+def _div_quiet_baseline():
+    # olsr / sparse-static — the churn-free control, the one row that already
+    # reads correctly. If the threshold ever creeps below this the calibration
+    # target becomes unreachable.
+    levels, out = run_results(protocol="olsr", path_div_used="1.004")
+    expect(levels == [], "div-quiet", f"fired on the good control\n{out}")
+
+
+@case("#230 rule does not apply to anthocnet")
+def _div_quiet_anthocnet():
+    # AntHocNet is *supposed* to exceed 1, and with no single-path row beside
+    # it there is no floor to read it against, so there is nothing to say.
+    levels, out = run_results(protocol="anthocnet", path_div_used="1.512")
+    expect(levels == [], "div-anthocnet", f"fired on anthocnet\n{out}")
+
+
+# --- #230 reordering extent --------------------------------------------------
+
+
+@case("#230 extent above buffer high-water mark WARNs")
+def _extent_fires():
+    # aodv / dense-small: extentMean 45.8 vs bufMax 22.6.
+    levels, out = run_results(
+        protocol="aodv",
+        path_div_used="1.05",
+        reorder_extent_mean="45.8",
+        reorder_extent_max="60.0",
+        reorder_buf_max="22.6",
+    )
+    expect(levels == ["WARN"], "extent-fires", f"expected exactly one WARN, got {levels}\n{out}")
+    expect("route flapping" in out, "extent-fires", f"WARN did not name the mechanism\n{out}")
+
+
+@case("#230 extent below buffer high-water mark is quiet")
+def _extent_quiet():
+    levels, out = run_results(reorder_extent_mean="2.03", reorder_buf_max="973.8")
+    expect(levels == [], "extent-quiet", f"fired on a sane row\n{out}")
+
+
+# --- #229 drop accounting ----------------------------------------------------
+
+
+@case("#229 identity shortfall FAILs and names the queue cause")
+def _drop_fires():
+    # dsdv / dense-small: 22.2 + 0.15 + 0 + 52.37 + 13.59 + 0.23 = 88.54.
+    levels, out = run_results(
+        protocol="dsdv",
+        pdr_pct="22.2",
+        path_div_used="1.05",
+        drop_route_pct="0.15",
+        drop_queue_pct="0.00",
+        drop_mac_pct="52.37",
+        drop_chan_pct="13.59",
+        drop_ttl_pct="0.23",
+        drop_setup_pct="",
+        drop_reconv_pct="",
+        drop_repair_pct="",
+        reorder_extent_mean="0.0",
+        reorder_buf_max="0.6",
+    )
+    expect("FAIL" in levels, "drop-fires", f"identity did not FAIL\n{out}")
+    expect("WARN" in levels, "drop-fires", f"shortfall carried no queue diagnosis\n{out}")
+    expect("error callback" in out, "drop-fires", f"diagnosis did not name the mechanism\n{out}")
+
+
+@case("#229 queue diagnosis does not fire when the identity closes")
+def _drop_quiet_when_balanced():
+    # This is the over-firing bug the first cut of the rule had: anthocnet and
+    # aodv both read drop_queue_pct 0.00 at dense-small while accounting
+    # correctly (99.98 and 99.33). Keying on "queue is zero" flags them.
+    levels, out = run_results(
+        protocol="anthocnet",
+        pdr_pct="42.1",
+        path_div_used="1.257",
+        drop_route_pct="55.91",
+        drop_queue_pct="0.00",
+        drop_mac_pct="0.54",
+        drop_chan_pct="1.42",
+        drop_ttl_pct="0.00",
+        drop_setup_pct="4.58",
+        drop_reconv_pct="50.23",
+        drop_repair_pct="1.12",
+        reorder_extent_mean="5.49",
+        reorder_buf_max="151.0",
+    )
+    expect(levels == [], "drop-quiet", f"fired on a correctly-accounted row: {levels}\n{out}")
+
+
+@case("#229 post-fix dsdv row: queue counted, identity closes, no findings")
+def _drop_quiet_post_fix():
+    # The expected dense-small dsdv reading once the harness's pending-queue
+    # conservation hook (routing-bench-run.cc PqTrackTx, #229) folds the
+    # silent PacketQueue sheds into drop_queue_pct: the former −21.8 pp
+    # shortfall is now the queue column and the identity closes.
+    # 21.2 + 0.23 + 21.85 + 45.63 + 10.97 + 0.15 = 100.03.
+    levels, out = run_results(
+        protocol="dsdv",
+        pdr_pct="21.2",
+        path_div_used="1.05",
+        drop_route_pct="0.23",
+        drop_queue_pct="21.85",
+        drop_mac_pct="45.63",
+        drop_chan_pct="10.97",
+        drop_ttl_pct="0.15",
+        drop_setup_pct="",
+        drop_reconv_pct="",
+        drop_repair_pct="",
+        reorder_extent_mean="0.0",
+        reorder_buf_max="0.6",
+    )
+    expect(
+        levels == [],
+        "drop-quiet-post-fix",
+        f"fired on a closing post-#229 dsdv row: {levels}\n{out}",
+    )
+
+
+@case("#229 sub-breakdown is checked against its parent, not added to it")
+def _sub_breakdown():
+    # setup+reconv+repair must reconstruct drop_route_pct. Breaking one term
+    # must WARN; the identity itself must stay clean, proving the three are
+    # never summed into it (the ~156% double-count).
+    levels, out = run_results(drop_setup_pct="0.50", drop_reconv_pct="0.10", drop_repair_pct="0.07")
+    expect(
+        levels == ["WARN"],
+        "sub-breakdown",
+        f"expected one WARN for the broken partition, got {levels}\n{out}",
+    )
+    expect("not attributed" in out, "sub-breakdown", out)
+
+
+# --- pre-instrumentation inputs ---------------------------------------------
+
+
+@case("rows without the new columns skip every new rule")
+def _absent_columns():
+    blank = {
+        k: ""
+        for k in (
+            "reorder_ratio",
+            "reorder_ratio_max",
+            "reorder_extent_mean",
+            "reorder_extent_max",
+            "reorder_buf_max",
+            "drop_route_pct",
+            "drop_queue_pct",
+            "drop_mac_pct",
+            "drop_chan_pct",
+            "drop_ttl_pct",
+            "drop_setup_pct",
+            "drop_reconv_pct",
+            "drop_repair_pct",
+            "path_hops_mean",
+            "path_hops_max",
+            "path_div_used",
+            "path_div_max",
+            "path_entropy_bits",
+            "jain_pkts",
+            "energy_j",
+            "energy_per_pkt_j",
+            "energy_res_min_j",
+            "energy_res_mean_j",
+            "energy_init_j",
+        )
+    }
+    levels, out = run_results(**blank)
+    expect(levels == [], "absent-columns", f"a rule fired on a pre-instrumentation row\n{out}")
+
+
+# --- #63 TCP transport preflight ----------------------------------------------
+
+
+@case("#63 preflight WARNs that a TCP arm is saturating")
+def _transport_tcp_fires():
+    levels, out = run_preflight(transport="tcp", pathWindowS=2.0)
+    expect("WARN" in levels, "transport-tcp-fires", f"a saturating TCP arm did not WARN\n{out}")
+    expect("SATURATING" in out, "transport-tcp-fires", out)
+    expect(
+        "##GOODPUT##" in out,
+        "transport-tcp-fires",
+        f"the WARN did not name the metric to read instead\n{out}",
+    )
+
+
+@case("#63 preflight says nothing about transport on the udp default")
+def _transport_udp_silent():
+    # Must-not-fire: udp is what every published number used, so it must not
+    # acquire a new warning.
+    _, out = run_preflight(pathWindowS=2.0)
+    expect("SATURATING" not in out, "transport-udp-silent", out)
+
+
+# --- #61/#60 grid regression floors ------------------------------------------
+#
+# These floors are derived from our own measurement, not from literature, so
+# the must-not-fire half matters more than usual: if they fire on the very
+# numbers they were calibrated from, they are wrong by construction.
+
+
+def run_results_anchor(anchor, **overrides):
+    """Check one row against an --anchor floor; return (levels, stdout)."""
+    row = dict(CLEAN, **overrides)
+    text = ",".join(row) + "\n" + ",".join(str(v) for v in row.values()) + "\n"
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        sc.issues = []
+        args = argparse.Namespace(files=[path], anchor=anchor, **ROLES)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                sc.cmd_results(args)
+            except SystemExit:
+                pass
+        return list(sc.issues), out.getvalue()
+    finally:
+        os.unlink(path)
+
+
+@case("#60 grid-tworay floor stays quiet at the measured AODV PDR")
+def _grid_tworay_quiet():
+    # 83.90 is the worst measured two-ray cell (gaussmarkov, run 31239973590).
+    # Assert on the anchor's own verdict, not on the global level list: the
+    # shared CLEAN fixture trips unrelated rules once pdr_pct is overridden,
+    # and a test that keys on "any FAIL" would be testing those instead.
+    _, out = run_results_anchor("grid-tworay-aodv", protocol="aodv", pdr_pct="83.90")
+    expect(
+        "floor 75.0 met" in out,
+        "grid-tworay-quiet",
+        f"the floor fired on the number it was calibrated from\n{out}",
+    )
+    expect("'grid-tworay-aodv' floor 75.0 violated" not in out, "grid-tworay-quiet", out)
+
+
+@case("#60 grid-tworay floor fires on a #51-class collapse")
+def _grid_tworay_fires():
+    _, out = run_results_anchor("grid-tworay-aodv", protocol="aodv", pdr_pct="50.0")
+    expect(
+        "'grid-tworay-aodv' floor 75.0 violated" in out,
+        "grid-tworay-fires",
+        f"a ~50% rate-manager regression did not fire\n{out}",
+    )
+
+
+@case("#60 grid-nakagami floor stays quiet at the measured AODV PDR")
+def _grid_nakagami_quiet():
+    # 67.23 is the worst measured fading cell (gaussmarkov, run 31239979624)
+    # and sits well below the two-ray floor — which is exactly why the fading
+    # arm needs its own threshold rather than reusing grid-tworay.
+    _, out = run_results_anchor("grid-nakagami-aodv", protocol="aodv", pdr_pct="67.23")
+    expect(
+        "floor 55.0 met" in out,
+        "grid-nakagami-quiet",
+        f"the floor fired on the number it was calibrated from\n{out}",
+    )
+    expect("'grid-nakagami-aodv' floor 55.0 violated" not in out, "grid-nakagami-quiet", out)
+
+
+@case("#60 grid-tworay floor would reject a healthy fading cell")
+def _grid_wrong_anchor_fires():
+    # The reason there are two floors: a legitimate Nakagami reading checked
+    # against the two-ray floor must FAIL, so picking the wrong --anchor is a
+    # loud error rather than a silently-passing one.
+    _, out = run_results_anchor("grid-tworay-aodv", protocol="aodv", pdr_pct="67.23")
+    expect(
+        "'grid-tworay-aodv' floor 75.0 violated" in out,
+        "grid-wrong-anchor-fires",
+        f"a fading cell passed the two-ray floor\n{out}",
+    )
+
+
+# --- #61 mobility-model preflight --------------------------------------------
+
+
+@case("#61 preflight FAILs pause>0 under gaussmarkov (inert knob)")
+def _mobility_pause_fires():
+    levels, out = run_preflight(mobility="gaussmarkov", pathWindowS=2.0)
+    expect(
+        "FAIL" in levels, "mobility-pause-fires", f"pause=30 under gaussmarkov did not FAIL\n{out}"
+    )
+    expect("inert" in out, "mobility-pause-fires", out)
+
+
+@case("#61 preflight stays quiet on pause=0 under gaussmarkov")
+def _mobility_pause_quiet():
+    # The knob is stated explicitly, so the coherence rule has nothing to say.
+    # A WARN about non-rwp comparability is expected and correct here; what
+    # must not happen is a FAIL.
+    levels, out = run_preflight(mobility="gaussmarkov", pause=0.0, pathWindowS=2.0)
+    expect(
+        "FAIL" not in levels,
+        "mobility-pause-quiet",
+        f"pause=0 under gaussmarkov should not FAIL\n{out}",
+    )
+
+
+@case("#61 preflight FAILs ssrwp at zero speed")
+def _mobility_ssrwp_fires():
+    levels, out = run_preflight(mobility="ssrwp", speed=0.0, pathWindowS=2.0)
+    expect("FAIL" in levels, "mobility-ssrwp-fires", f"ssrwp at speed=0 did not FAIL\n{out}")
+    expect("undefined at zero" in out, "mobility-ssrwp-fires", out)
+
+
+@case("#61 preflight WARNs that a non-rwp model leaves the published corpus")
+def _mobility_corpus_warn():
+    levels, out = run_preflight(mobility="ssrwp", pathWindowS=2.0)
+    expect(
+        "WARN" in levels,
+        "mobility-corpus-warn",
+        f"a non-rwp model did not WARN about comparability\n{out}",
+    )
+    expect("published corpus" in out, "mobility-corpus-warn", out)
+
+
+@case("#61 preflight says nothing about mobility on the default rwp")
+def _mobility_default_silent():
+    # The must-not-fire half: the model every published number was measured
+    # under must not acquire a new warning, or the gate cries wolf on the
+    # scenario it is most often run against.
+    _, out = run_preflight(pathWindowS=2.0)
+    expect("published corpus" not in out, "mobility-default-silent", out)
+    expect("inert" not in out, "mobility-default-silent", out)
+
+
+# --- #60 channel-model preflight ---------------------------------------------
+
+
+@case("#60 preflight WARNs that --range is inert off the disk model")
+def _channel_range_inert_fires():
+    levels, out = run_preflight(propagation="tworay", pathWindowS=2.0)
+    expect(
+        "WARN" in levels,
+        "channel-range-inert-fires",
+        f"tworay did not WARN that range is inert\n{out}",
+    )
+    expect("inert" in out, "channel-range-inert-fires", out)
+
+
+@case("#60 preflight WARNs that nakagami is stochastic")
+def _channel_nakagami_fires():
+    levels, out = run_preflight(propagation="nakagami", pathWindowS=2.0)
+    expect(
+        "WARN" in levels, "channel-nakagami-fires", f"nakagami did not WARN about dispersion\n{out}"
+    )
+    expect("stochastic channel" in out, "channel-nakagami-fires", out)
+
+
+@case("#60 preflight says nothing about the channel on the disk default")
+def _channel_default_silent():
+    # Must-not-fire half: the disk model is what the published corpus used and
+    # what most dispatches pass, so it must not acquire a new warning.
+    _, out = run_preflight(pathWindowS=2.0)
+    expect("inert" not in out, "channel-default-silent", out)
+    expect("stochastic channel" not in out, "channel-default-silent", out)
+
+
+# --- #481 3-D preflight -------------------------------------------------------
+#
+# A 3-D cell as the FANET work will dispatch it: disk channel, gaussmarkov,
+# pause 0, a window short enough to clear #230. Each refusal below mutates
+# exactly one knob of it.
+FANET_3D = {
+    "nodes": 30,
+    "areaX": 1000.0,
+    "areaY": 1000.0,
+    "areaZ": 300.0,
+    "range": 250.0,
+    "speed": 20.0,
+    "pause": 0.0,
+    "mobility": "gaussmarkov",
+    "flows": 5,
+    "pathWindowS": 2.0,
+}
+
+
+# #488: a VANET cell as the harness smoke runs it: 30 vehicles on a 5x5 grid
+# over 1 km^2, urban channel, no pauses. Each refusal mutates one knob.
+VANET = {
+    "nodes": 30,
+    "areaX": 1000.0,
+    "areaY": 1000.0,
+    "range": 300.0,
+    "speed": 20.0,
+    "pause": 0.0,
+    "mobility": "manhattan",
+    "propagation": "urban",
+    "flows": 4,
+    "pathWindowS": 2.0,
+    "blocksX": 5,
+    "blocksY": 5,
+    "streetWidth": 20.0,
+}
+
+
+@case("#488 street_in_range_prob: disk limits and buildings only remove links")
+def _street_prob():
+    # Range beyond the field diagonal: every street pair is in range.
+    expect(
+        sc.street_in_range_prob(1000, 1000, 5, 5, 1500) == 1.0,
+        "street-prob",
+        "r > diagonal should give probability 1",
+    )
+    disk = sc.street_in_range_prob(1000, 1000, 5, 5, sc.TWO_RAY_DECODE_RADIUS_M)
+    urb = sc.street_in_range_prob(1000, 1000, 5, 5, sc.TWO_RAY_DECODE_RADIUS_M, urban=True)
+    expect(
+        0 < urb < disk, "street-prob", f"urban {urb:.3f} must be > 0 and below the disk {disk:.3f}"
+    )
+    # Two points on one street, 300 m apart: line of sight, no loss.
+    expect(
+        sc.urban_obstacle_db((0, 0), (300, 0), 1000, 1000, 5, 5, 20) == 0,
+        "street-prob",
+        "a pair on the same street crossed a building",
+    )
+    # Across one block's diagonal: two walls plus the inside length.
+    loss = sc.urban_obstacle_db((0, 0), (200, 200), 1000, 1000, 5, 5, 20)
+    # The building spans 10..190 m on both axes, so the line runs 180*sqrt(2)
+    # m inside it.
+    expect(
+        abs(loss - (2 * 9 + 0.4 * 180 * 2**0.5)) < 1e-6,
+        "street-prob",
+        f"one-block diagonal loss {loss:.3f} dB",
+    )
+
+
+@case("#488 preflight's urban degree matches the harness's measured graph")
+def _pre_vanet_degree():
+    _, out = run_preflight(**VANET)
+    expect("street grid (road network; urban" in out, "pre-vanet-degree", out)
+    deg = float(out.split("expected mean degree ~")[1].split()[0])
+    # check-manhattan.sh's field: the oracle measured 66 directed edges over
+    # 30 nodes (mean degree 2.2) on the decode-los-approx rule this mirrors.
+    expect(1.5 < deg < 3.0, "pre-vanet-degree", f"degree {deg}\n{out}")
+    expect(
+        "partitioned" in out,
+        "pre-vanet-degree",
+        f"30 vehicles in 1 km^2 urban must read as partitioned\n{out}",
+    )
+
+
+@case("#488 preflight mirrors the harness's Manhattan/urban refusals")
+def _pre_vanet_refusals():
+    for knob, msg in (
+        ({"pause": 5.0}, "pause is inert"),
+        ({"mobility": "rwp"}, "--propagation=urban needs"),
+        ({"areaZ": 100.0}, "--mobility=manhattan with --areaZ"),
+        ({"streetWidth": 250.0}, "narrower than a block"),
+    ):
+        levels, out = run_preflight(**dict(VANET, **knob))
+        expect(
+            "FAIL" in levels and msg in out,
+            "pre-vanet-refusals",
+            f"{knob} was not refused with '{msg}'\n{out}",
+        )
+
+
+@case("#537 preflight WARNs the corner-limited link lifetime on an urban grid")
+def _pre_vanet_corner():
+    levels, out = run_preflight(**VANET)
+    expect(
+        "corner-limited link lifetime ~1.0s" in out and "WARN" in levels, "pre-vanet-corner", out
+    )
+    # Not on the disk channel (no buildings), nor on a MANET cell.
+    _, out = run_preflight(**dict(VANET, propagation="range", nodes=60))
+    expect("corner-limited" not in out, "pre-vanet-corner", out)
+    _, out = run_preflight()
+    expect("corner-limited" not in out, "pre-vanet-corner", out)
+
+
+@case("#639 preflight validates a replayed scene's trace and flow files")
+def _pre_replay():
+    fix = os.path.join(FIXTURES, "replay")  # AntHocNet's ns3/tools/fixtures/chain-10.*
+    trace = os.path.join(fix, "chain-10.ns_movements")
+    flows = os.path.join(fix, "chain-10.flows")
+    levels, out = run_preflight(
+        mobility="trace", traceFile=trace, flowsFile=flows, areaX=1000.0, areaY=300.0, range=150.0
+    )
+    bad = [ln for ln in out.splitlines() if ln.startswith("FAIL") and "#639" in ln]
+    expect(
+        not bad and "10 nodes" in out and "2 flows" in out,
+        "pre-replay",
+        f"the fixture's files must pass\n{out}",
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".flows", delete=False) as t:
+        t.write("0 42 2 50 2048\n0 1\n")
+    levels, out = run_preflight(
+        mobility="trace", traceFile=trace, flowsFile=t.name, areaX=1000.0, areaY=300.0, range=150.0
+    )
+    os.unlink(t.name)
+    expect(
+        levels.count("FAIL") >= 2 and ":1: node ids" in out and ":2: expected" in out,
+        "pre-replay",
+        f"a bad id and a short line must both FAIL\n{out}",
+    )
+    levels, out = run_preflight(mobility="trace")
+    expect("FAIL" in levels and "needs --traceFile" in out, "pre-replay", out)
+
+
+@case("#488 preflight labels a disk-channel Manhattan cell validation-only")
+def _pre_vanet_disk():
+    _, out = run_preflight(**dict(VANET, propagation="range", nodes=60))
+    expect("harness validation only" in out, "pre-vanet-disk", out)
+    _, out = run_preflight(**VANET)
+    expect("harness validation only" not in out, "pre-vanet-disk", out)
+
+
+@case("#481 box_in_range_prob matches its closed-form limits")
+def _box_prob_limits():
+    import math
+
+    # Range longer than the box diagonal: every pair is in range.
+    expect(
+        sc.box_in_range_prob(100, 100, 100, 200) == 1.0,
+        "box-prob",
+        "r > diagonal should give probability 1",
+    )
+    # A near-zero-height box is the 2-D unit square, whose pair-distance CDF
+    # is exact: pi r^2 - 8/3 r^3 + r^4 / 2.
+    r = 0.1
+    exact = math.pi * r * r - 8 / 3 * r**3 + r**4 / 2
+    got = sc.box_in_range_prob(1, 1, 1e-6, r)
+    expect(abs(got - exact) < 0.002, "box-prob", f"thin box {got:.5f} vs exact square {exact:.5f}")
+
+
+@case("#481 preflight uses 3-D box geometry when --areaZ > 0")
+def _pre3d_geometry():
+    levels, out = run_preflight(**FANET_3D)
+    expect("(3-D)" in out, "pre3d-geometry", out)
+    # 30 nodes at 250 m in 1000x1000x300 m: the measured probability puts the
+    # mean degree near 3.5, right at ln(30) = 3.4 -- the 2-D strip cap would
+    # have said ~5.6 by ignoring the third dimension entirely.
+    deg = float(out.split("expected mean degree ~")[1].split()[0])
+    expect(3.0 < deg < 4.0, "pre3d-geometry", f"degree {deg}\n{out}")
+    expect("FAIL" not in levels, "pre3d-geometry", f"a coherent 3-D cell was FAILed\n{out}")
+
+
+@case("#481/#482 preflight WARNs that a 3-D cell is its own family")
+def _pre3d_unpublishable():
+    levels, out = run_preflight(**FANET_3D)
+    expect("WARN" in levels and "not comparable" in out, "pre3d-unpub", out)
+    # #482: it points at the analytic 3-D anchors instead.
+    expect("analytic 3-D anchors" in out, "pre3d-unpub", out)
+    # The planar anchor advice names channels a 3-D cell may not use.
+    expect("grid regression floors" not in out, "pre3d-unpub", out)
+
+
+@case("#481 preflight says nothing 3-D on a planar cell")
+def _pre3d_planar_silent():
+    _, out = run_preflight(pathWindowS=2.0)
+    expect("(3-D)" not in out and "--areaZ" not in out, "pre3d-planar", out)
+
+
+@case("#481 preflight mirrors the harness's four arm-free --areaZ refusals")
+def _pre3d_refusals():
+    for knob, msg in (
+        ({"propagation": "tworay"}, "--propagation=tworay"),
+        ({"propagation": "nakagami"}, "--propagation=nakagami"),
+        ({"mobility": "ssrwp", "speed": 20.0}, "--mobility=ssrwp"),
+        ({"areaZ": -5.0}, "must be >= 0"),
+    ):
+        levels, out = run_preflight(**dict(FANET_3D, **knob))
+        expect(
+            "FAIL" in levels and msg in out,
+            "pre3d-refusals",
+            f"{knob} was not refused with '{msg}'\n{out}",
+        )
+
+
+@case("#708 preflight mirrors the harness's radio refusals")
+def _pre_radio_refusals():
+    mesh = {
+        "protocols": "anthocnet,olsr,hwmp,oracle",
+        "pause": 900.0,
+        "standard": "80211a",
+        "rateManager": "constant6",
+        "rateMbps": 6.0,
+    }
+    levels, out = run_preflight(**mesh)
+    expect("FAIL" not in levels, "pre-radio", f"the static-mesh cell failed\n{out}")
+    for knob, msg in (
+        ({"propagation": "tworay"}, "--propagation=tworay"),
+        ({"rateManager": "constant2"}, "DSSS (802.11b) rate"),
+        ({"standard": "80211b", "protocols": "anthocnet"}, "needs --standard 80211a"),
+    ):
+        levels, out = run_preflight(**dict(mesh, **knob))
+        expect(
+            "FAIL" in levels and msg in out,
+            "pre-radio",
+            f"{knob} was not refused with '{msg}'\n{out}",
+        )
+    # A caller that predates the knob stays on 802.11b, silent.
+    _, out = run_preflight()
+    expect("#708" not in out, "pre-radio", out)
+
+
+@case("#481 preflight FAILs links shorter-lived than the hello interval")
+def _hello_fail():
+    # 250 m at 150 m/s: ~0.83 s link lifetime against a 1 s hello.
+    levels, out = run_preflight(**dict(FANET_3D, speed=150.0, pathWindowS=0.5))
+    expect("FAIL" in levels and "shorter than the" in out, "hello-fail", out)
+
+
+@case("#481 preflight WARNs links living under 3 hello periods")
+def _hello_warn():
+    # 150 m at 30 m/s: 2.5 s.
+    levels, out = run_preflight(
+        **dict(FANET_3D, range=150.0, speed=30.0, nodes=200, pathWindowS=1.0)
+    )
+    expect("WARN" in levels and "under 3 hello" in out, "hello-warn", out)
+
+
+@case("#481 hello rule is silent on every published MANET cell shape")
+def _hello_quiet():
+    # paper-base (300 m / 20 m/s = 7.5 s) and thesis (250 m / 10 m/s = 12.5 s).
+    for kw in (
+        {"pathWindowS": 2.0},
+        {
+            "nodes": 100,
+            "areaX": 2400.0,
+            "areaY": 800.0,
+            "range": 250.0,
+            "speed": 10.0,
+            "pathWindowS": 2.0,
+        },
+    ):
+        _, out = run_preflight(**kw)
+        expect("hello period" not in out.replace("hello periods)", ""), "hello-quiet", out)
+        expect("under 3 hello" not in out and "shorter than the" not in out, "hello-quiet", out)
+
+
+# --- #230 preflight ----------------------------------------------------------
+
+
+@case("#663 preflight WARNs, not FAILs, the shipped 10s window at paper-base")
+def _preflight_fires():
+    # Only path_div_* reads the window, and every published grid and FANET
+    # cell runs the 10 s default: a FAIL refused the whole corpus.
+    levels, out = run_preflight()
+    expect(
+        "FAIL" not in levels,
+        "preflight-fires",
+        f"the 10s default FAILed a published cell shape\n{out}",
+    )
+    expect(
+        "WARN" in levels and "path_div_* from this cell is unquotable" in out,
+        "preflight-fires",
+        f"the 10s default was not flagged\n{out}",
+    )
+
+
+@case("#230 preflight downgrades a mid window to WARN, not clean")
+def _preflight_quiet():
+    # 2 s clears the churn bound but sits exactly on the 2-packets/cell floor.
+    # It must not FAIL (the window itself is fine) and must not pass silently
+    # (the measurement says it does not separate).
+    levels, out = run_preflight(pathWindowS=2.0)
+    expect("FAIL" not in levels, "preflight-quiet", f"2s should not FAIL on churn\n{out}")
+    expect(
+        "WARN" in levels,
+        "preflight-quiet",
+        f"2s passed clean despite being at the sampling floor\n{out}",
+    )
+
+
+@case("#230 preflight FAILs a window too short to sample")
+def _preflight_starved():
+    # 0.5 s at 1 pkt/s = 0.5 packets/cell; a cell needs >=2 to exceed 1.0.
+    # Measured: all four protocols read 1.000-1.001 at this window.
+    levels, out = run_preflight(pathWindowS=0.5)
+    expect("FAIL" in levels, "preflight-starved", f"0.5s did not FAIL on sampling\n{out}")
+    expect("per cell" in out, "preflight-starved", out)
+
+
+@case("#230 preflight flags every window at the paper's 1 pkt/s")
+def _preflight_no_window():
+    # The squeeze: churn caps the window at ~7.5 s, sampling floors it at 4 s,
+    # and the 2 s midpoint measured anthocnet 1.002 vs aodv 1.002. Every window
+    # in the swept range must be flagged, or the calibration looks solvable
+    # when it is not.
+    for w in (0.5, 1.0, 2.0, 5.0, 10.0):
+        levels, out = run_preflight(pathWindowS=w)
+        expect(levels != [], "preflight-no-window", f"window {w}s passed clean at 1 pkt/s\n{out}")
+
+
+@case("#230 preflight passes once the rate supports the window")
+def _preflight_rate_fixes():
+    # Raising the offered rate is the escape the FAIL points at.
+    levels, out = run_preflight(pathWindowS=2.0, pktPerSec=4.0)
+    expect(levels == [], "preflight-rate", f"2s at 4 pkt/s should be clean, got {levels}\n{out}")
+
+
+@case("#483 preflight derives the packet rate from --cbrBps")
+def _preflight_cbr_derives():
+    # 2048 bit/s at 64 B is 4 pkt/s: the same clean verdict as pktPerSec=4.
+    levels, out = run_preflight(pathWindowS=2.0, pktPerSec=None, cbrBps=2048.0)
+    expect(
+        levels == [],
+        "preflight-cbr-derive",
+        f"cbrBps=2048 should read as 4 pkt/s and be clean, got {levels}\n{out}",
+    )
+    expect(
+        "offered load 41.0 kbps" in out,
+        "preflight-cbr-load",
+        f"offered load not computed from cbrBps\n{out}",
+    )
+
+
+@case("#483 preflight FAILs a --cbrBps/--pktPerSec pair that disagrees")
+def _preflight_cbr_conflict():
+    levels, out = run_preflight(pathWindowS=2.0, pktPerSec=1.0, cbrBps=2048.0)
+    expect(
+        "FAIL" in levels and "pass one of them" in out,
+        "preflight-cbr-conflict",
+        f"conflict not refused\n{out}",
+    )
+
+
+@case("#230 preflight skips a static field")
+def _preflight_static():
+    levels, out = run_preflight(pause=900.0, time=300.0, speed=1.0)
+    expect("FAIL" not in levels, "preflight-static", f"window rule fired on a static field\n{out}")
+
+
+# --- ##BENCH## cell input: the diagnostic lines feed the same rules (#230) ----
+#
+# Until this landed, `results` on a saved cell parsed only the table rows: every
+# '# paths' / '# drops' / '# reorder' / '# energy' line was skipped by ROW, so
+# the drop/reorder/route-quality/energy rules never ran and a cell whose
+# diversity figures were out of band still returned OK — measured on run
+# 30379320885, where planting divUsed=9.999 changed nothing. The fixture below
+# is that run's real cell (paper-base, main@6a479fa, time=300, runs=2,
+# pathWindowS=4); its aodv/olsr rows genuinely breach the single-path bound, so
+# the *unmodified* cell must FAIL — that is finding 2 on #230, now gate-visible.
+
+CELL = """\
+##BENCH## anthocnet 71.9 410.8 1797.5 3.63 278.02 212.35 542.5 inf 302.165
+##BENCH## aodv 81.7 41.4 802.5 4.60 60.09 66.65 6.0 inf 31.557
+##BENCH## olsr 76.6 10.2 30.0 3.84 6.45 13.89 1.5 inf 13.284
+##BENCH## dsdv 70.2 16.5 698.0 3.77 33.90 29.13 2.0 inf 23.232
+# paths anthocnet divUsed=1.104 divMax=3.0 entropyBits=0.101 windowS=4.0 hopsMean=3.42 hopsMax=44.5
+# paths aodv divUsed=1.112 divMax=2.5 entropyBits=0.112 windowS=4.0 hopsMean=2.07 hopsMax=7.5
+# paths olsr divUsed=1.117 divMax=2.0 entropyBits=0.117 windowS=4.0 hopsMean=1.69 hopsMax=6.0
+# paths dsdv divUsed=1.057 divMax=2.0 entropyBits=0.057 windowS=4.0 hopsMean=1.73 hopsMax=6.5
+# energy anthocnet initJ=5000.0 resMinJ=4740.6 resMeanJ=4741.9 resSdJ=0.868 firstDeathS=-1.0
+# drops anthocnet pdr=71.88 route=2.33 queue=0.00 mac=0.97 chan=24.01 ttl=0.36 sum=99.56 other=0.00 [route: setup=0.12 reconv=2.26 repair=0.27]
+# drops aodv pdr=81.72 route=3.29 queue=0.00 mac=9.25 chan=5.59 ttl=0.04 sum=99.89 other=0.00 [route: setup=- reconv=- repair=-]
+# reorder anthocnet ratio=0.0077 ratioWorstFlow=0.0358 extentMean=0.23 extentMax=1.00 bufMax=58.00
+"""
+
+
+PROV = (
+    "##PROV## commit=0b42c896b8969081a7b0ba160a9a7f4082461803 ref=main "
+    "run_id=31284265709 attempt=1 image=ghcr.io/danieljoppi/ns3:3.42-opt "
+    "profile=release harness=compare\n"
+)
+
+
+def run_cell(text, prov=True):
+    """Check a ##BENCH## cell text; return (levels, printed output).
+
+    A ##PROV## line (#365) is appended by default, because every cell fetched
+    from a campaign workflow now carries one — a fixture without it would make
+    "clean" mean something no real input is. Pass prov=False for the cases that
+    are specifically about provenance being absent.
+    """
+    # Appended only to log-shaped inputs — the same scope check_provenance
+    # applies. Some fixtures routed through here are CSVs, where an extra line
+    # is a data row, not a comment.
+    if prov and ("##BENCH##" in text or "##RUN##" in text):
+        text = text if text.endswith("\n") else text + "\n"
+        text += PROV
+    fd, path = tempfile.mkstemp(suffix=".txt")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        sc.issues = []
+        args = argparse.Namespace(files=[path], anchor=None, **ROLES)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                sc.cmd_results(args)
+            except SystemExit:
+                pass
+        return list(sc.issues), out.getvalue()
+    finally:
+        os.unlink(path)
+
+
+@case("cell: real run 30379320885 WARNs once on its churn-dominated floor")
+def _cell_real():
+    # Every baseline here is out of band (aodv 1.112, olsr 1.117 at windowS=4)
+    # and AntHocNet reads *below* both (1.104). That is one finding about the
+    # window, not three about three protocols, and it invalidates nothing but
+    # the diversity columns — so: no FAIL, one WARN, naming the floor and the
+    # excess that is the only readable quantity.
+    levels, out = run_cell(CELL)
+    expect(
+        "FAIL" not in levels,
+        "cell-real",
+        f"a churn-dominated floor must not FAIL the cell, got {levels}\n{out}",
+    )
+    expect(
+        out.count("churn-dominated") == 1,
+        "cell-real",
+        f"expected exactly one diversity WARN\n{out}",
+    )
+    expect(
+        "1.117 (olsr)" in out and "anthocnet 1.104 = -0.013" in out,
+        "cell-real",
+        f"WARN did not carry floor and excess\n{out}",
+    )
+
+
+@case("cell: impossible divUsed on a '# paths' line still FAILs (9.999 probe)")
+def _cell_div_fires():
+    # The instrument-broken half of the rule stays a FAIL: 9.999 mean distinct
+    # next hops against a measured maximum of 2.5 is arithmetically impossible,
+    # so no threshold judgement is involved.
+    levels, out = run_cell(CELL.replace("aodv divUsed=1.112", "aodv divUsed=9.999"))
+    expect("FAIL" in levels, "cell-div", f"planted divUsed=9.999 did not FAIL, got {levels}\n{out}")
+    expect(
+        "max path diversity 2.5 < mean path diversity 9.999" in out,
+        "cell-div",
+        f"FAIL did not name the broken invariant\n{out}",
+    )
+
+
+# --- #308 phase 2 step 4: pending-queue hold on the ##HOLD## rows -------------
+#
+# Fixture values are the real step-4 readings (run 31069667952): setup
+# 21/428.7ms/max2752.9ms, reconv 1677/87.3ms, repair ~1959/24.0ms. The rules are
+# arithmetic impossibilities, not thresholds: negative components, a mean with
+# no count behind it, and a hold outlasting the QueueTimeout that bounds it.
+HOLD_CELL = """anthocnet 95.8 54.3 862.1 6.32 36.08
+##HOLD## 1 anthocnet 21 428.70 2752.90 1677 87.30 994.50 1959 24.00 1945.90
+##HOLD## 2 anthocnet 27 331.40 2074.80 1849 104.90 981.20 1902 23.10 1877.40
+"""
+
+
+@case("#308p2 hold rows stay quiet on real step-4 values")
+def _hold_quiet():
+    levels, out = run_cell(HOLD_CELL)
+    expect(levels == [], "hold-quiet", f"real ##HOLD## values must not report, got {levels}\n{out}")
+
+
+@case("#308p2 a hold outlasting QueueTimeout FAILs")
+def _hold_ceiling():
+    _levels, out = run_cell(HOLD_CELL.replace("2752.90", "5200.00"))
+    expect("exceeds 5000.0 ms" in out, "hold-ceiling", f"a 5.2 s hold was not flagged\n{out}")
+
+
+@case("#805 an adaptive arm's hold is bounded by its own 30 s queue, not 5 s")
+def _hold_ceiling_adaptive():
+    cell = (
+        "beeadhoc 93.4 86.9 849.5 5.37 3.66\n"
+        "##HOLD## 1 beeadhoc 40 650.00 12000.00 3 900.00 2100.00 5 30.00 80.00\n"
+    )
+    levels, out = run_cell(cell)
+    expect(
+        levels == [],
+        "hold-adaptive-quiet",
+        f"a 12 s hold within the adaptive queue timeout must not report, got {levels}\n{out}",
+    )
+    _levels, out = run_cell(cell.replace("12000.00", "36000.00"))
+    expect(
+        "exceeds 35000.0 ms" in out,
+        "hold-adaptive-ceiling",
+        f"a 36 s adaptive hold was not flagged\n{out}",
+    )
+
+
+@case("#308p2 a non-zero mean hold with a zero count FAILs")
+def _hold_mean_no_count():
+    # What a mis-ordered field mapping looks like: a mean with nothing behind it.
+    _levels, out = run_cell(HOLD_CELL.replace("21 428.70", "0 428.70"))
+    expect(
+        "zero hold count" in out, "hold-mean-no-count", f"mean-without-count was not flagged\n{out}"
+    )
+
+
+@case("#308p2 negative hold FAILs, and a cell with no ##HOLD## rows skips")
+def _hold_negative_and_absent():
+    _levels, out = run_cell(HOLD_CELL.replace("1677 87.30", "1677 -87.30"))
+    expect("negative hold" in out, "hold-negative", f"negative mean hold was not flagged\n{out}")
+    # AODV/OLSR/DSDV emit no ##HOLD## row at all — absence must report nothing,
+    # never "this protocol never held a packet".
+    levels, out = run_cell("aodv 83.9 32.4 472.6 5.54 55.39\n")
+    expect(
+        levels == [],
+        "hold-absent",
+        f"a protocol with no ##HOLD## rows must skip, got {levels}\n{out}",
+    )
+
+
+# --- #308 phase 2 step 3: channel occupancy on the ##AIR## rows --------------
+#
+# Two a-priori bounds (occupancy is non-negative; a node cannot see the medium
+# busy for more than the whole run) plus the harness-failure detector: an ##AIR##
+# row is only printed when the PHY State trace is connected, so a row that IS
+# present while reporting zero occupancy in a run that delivered packets means
+# the trace fired without recording. --energyJ=0 prints no row at all, and that
+# absence must skip every rule rather than read as a failure.
+AIR_CELL = """anthocnet 95.8 54.3 862.1 6.32 36.08
+##AIR## 1 anthocnet 1204.500 8931.250 3310.750 29.8811
+##AIR## 2 anthocnet 1198.125 8902.500 3288.375 29.7532
+"""
+
+
+@case("#308p2 channel occupancy stays quiet on plausible values")
+def _air_quiet():
+    levels, out = run_cell(AIR_CELL)
+    expect(
+        levels == [], "air-quiet", f"plausible ##AIR## rows must not report, got {levels}\n{out}"
+    )
+
+
+@case("#308p2 busy above 100% of node-time FAILs")
+def _air_over_hundred():
+    _levels, out = run_cell(AIR_CELL.replace("29.8811", "100.4000"))
+    expect(
+        "cannot see the medium occupied" in out,
+        "air-over",
+        f"busyPct above 100 was not flagged\n{out}",
+    )
+
+
+@case("#308p2 a present-but-zero occupancy row with non-zero PDR FAILs")
+def _air_zero():
+    _levels, out = run_cell(
+        AIR_CELL.replace("1204.500 8931.250 3310.750 29.8811", "0.000 0.000 0.000 0.0000")
+    )
+    expect(
+        "medium cannot have been idle" in out,
+        "air-zero",
+        f"zero occupancy with PDR 95.8 was not flagged\n{out}",
+    )
+
+
+@case("#308p2 negative occupancy FAILs, and an absent ##AIR## block skips")
+def _air_negative_and_absent():
+    _levels, out = run_cell(AIR_CELL.replace("8931.250", "-1.000"))
+    expect(
+        "negative channel-occupancy" in out,
+        "air-negative",
+        f"negative component was not flagged\n{out}",
+    )
+    # --energyJ=0 emits no ##AIR## row at all; that must report nothing.
+    levels, out = run_cell("anthocnet 95.8 54.3 862.1 6.32 36.08\n")
+    expect(
+        levels == [], "air-absent", f"a cell with no ##AIR## rows must skip, got {levels}\n{out}"
+    )
+
+
+# --- #308 phase 2: hopsCommon on the ##COMMON## rows -------------------------
+#
+# The a-priori control: a delivered packet crosses at least one transmission
+# and at most maxPathLength, so hopsCommon is in [1, 100] on any real run. The
+# value that matters most is the one only this metric can get wrong — hops are
+# keyed by a flow address rebuilt from (source IP, UDP source port), and if that
+# ever stops matching the key the delays use, hopsCommon vanishes while nCommon
+# stays large. Fixture values are the real phase-2 re-measure (run 31042812548):
+# nCommon 6605, hopsCommon 2.73 for anthocnet against 2.19 for aodv.
+COMMON_CELL = """anthocnet 95.8 54.3 862.1 6.32 36.08
+##COMMON## 1 anthocnet 7775 6605 784.5 37.0 1008.9 2.730 3.410
+##COMMON## 2 anthocnet 7859 6584 944.0 59.5 1146.0 2.744 3.502
+"""
+
+
+@case("#308p2 hopsCommon stays quiet on real phase-2 values")
+def _hops_common_quiet():
+    levels, out = run_cell(COMMON_CELL)
+    expect(
+        levels == [],
+        "hops-common-quiet",
+        f"real hopsCommon values must not report, got {levels}\n{out}",
+    )
+
+
+@case("#308p2 a missing hopsCommon with a non-empty common set FAILs")
+def _hops_common_missing_fires():
+    # The flow-key divergence this rule exists for: nCommon large, no hops.
+    _levels, out = run_cell(COMMON_CELL.replace("1008.9 2.730 3.410", "1008.9 na na"))
+    expect(
+        "no hopsCommon" in out,
+        "hops-common-missing",
+        f"absent hopsCommon on a non-empty common set was not flagged\n{out}",
+    )
+
+
+@case("#308p2 hopsCommon below one hop, and above maxPathLength, FAIL")
+def _hops_common_bounds_fire():
+    _levels, out = run_cell(COMMON_CELL.replace("2.730", "0.500"))
+    expect(
+        "hopsCommon 0.5 < 1 hop" in out,
+        "hops-common-low",
+        f"hopsCommon below one hop was not flagged\n{out}",
+    )
+    _levels, out = run_cell(COMMON_CELL.replace("2.730", "101.000"))
+    expect(
+        "exceeds maxPathLength" in out,
+        "hops-common-high",
+        f"hopsCommon above maxPathLength was not flagged\n{out}",
+    )
+
+
+@case("#308p2 rows predating the hop fields, and an empty common set, skip")
+def _hops_common_skips():
+    # Seven-field ##COMMON## lines are what every run before this metric
+    # emitted; they must parse and report nothing rather than read as missing.
+    old = """anthocnet 95.8 54.3 862.1 6.32 36.08
+##COMMON## 1 anthocnet 7775 6605 784.5 37.0 1008.9
+"""
+    levels, out = run_cell(old)
+    expect(
+        levels == [],
+        "hops-common-old",
+        f"pre-instrumentation ##COMMON## row must skip, got {levels}\n{out}",
+    )
+    # nCommon 0 with no hop data is arithmetic, not a harness failure.
+    levels, out = run_cell(
+        COMMON_CELL.replace("7775 6605 784.5 37.0 1008.9 2.730 3.410", "7775 0 -1.0 -1.0 na na na")
+    )
+    expect(
+        levels == [], "hops-common-empty", f"empty common set must not FAIL, got {levels}\n{out}"
+    )
+
+
+@case("cell: broken drop identity on a '# drops' line fires")
+def _cell_drops_fire():
+    _levels, out = run_cell(CELL.replace("chan=24.01", "chan=90.00"))
+    expect(
+        "do not account for the offered packets" in out,
+        "cell-drops",
+        f"planted chan=90 left the identity unchecked\n{out}",
+    )
+
+
+@case("cell: closing drop identity stays quiet, '-' sub-causes skip")
+def _cell_drops_quiet():
+    _levels, out = run_cell(CELL)
+    expect(
+        "do not account" not in out and "exit path is not attributed" not in out,
+        "cell-drops-quiet",
+        f"drop rules over-fired on a closing identity / '-' causes\n{out}",
+    )
+
+
+@case("cell: out-of-range reorder ratio on a '# reorder' line fires")
+def _cell_reorder_fires():
+    _levels, out = run_cell(CELL.replace("ratio=0.0077", "ratio=9.9999"))
+    expect(
+        "reorder_ratio 9.9999 outside [0,1]" in out,
+        "cell-reorder",
+        f"planted ratio not flagged\n{out}",
+    )
+
+
+@case("cell: residual energy above initial on a '# energy' line fires")
+def _cell_energy_fires():
+    _levels, out = run_cell(CELL.replace("resMinJ=4740.6", "resMinJ=5740.6"))
+    expect(
+        "exceeds initial" in out, "cell-energy", f"planted residual > initial not flagged\n{out}"
+    )
+
+
+@case("cell: rounded pdr on a '# drops' line must NOT overwrite the row pdr")
+def _cell_pdr_authoritative():
+    # The '# drops' pdr is a rounded duplicate; mapping it would let a
+    # corrupted diagnostic line silently replace the table value the headline
+    # rules already checked. Corrupt it and nothing may change.
+    levels, out = run_cell(
+        CELL.replace("# drops anthocnet pdr=71.88", "# drops anthocnet pdr=1.00")
+    )
+    base, _ = run_cell(CELL)
+    expect(
+        levels == base, "cell-pdr", f"'# drops' pdr leaked into the row: {levels} vs {base}\n{out}"
+    )
+
+
+# --- #230 dedicated diversity cell (cbrBps=4096, pathWindowS=2) --------------
+# Real readings from run 30650903707: at the churn-free 2 s window with the
+# raised rate, the single-path floor sits legitimately above the 1.10 absolute
+# bound (aodv 1.133 — a route break at 8 pkt/s lands packets on both routes
+# within one short window), so the absolute rule must NOT fire there; only the
+# 1.50 sanity ceiling may.
+DIVCELL = """\
+##BENCH## anthocnet 94.8 62.0 900.0 6.10 40.00 95.00 3.5 361.0 47.9
+##BENCH## aodv 90.1 33.0 480.0 5.60 53.00 47.00 4.0 inf 28.2
+# paths anthocnet divUsed=1.229 divMax=7.0 entropyBits=0.163 windowS=2.0 hopsMean=2.77 hopsMax=64.0
+# paths aodv divUsed=1.133 divMax=6.0 entropyBits=0.093 windowS=2.0 hopsMean=2.17 hopsMax=63.0
+"""
+
+
+@case("#230 diversity cell: baseline above 1.10 at windowS<=2 stays quiet")
+def _divcell_floor_allowed():
+    levels, out = run_cell(DIVCELL)
+    expect(
+        levels == [],
+        "divcell-quiet",
+        f"the readable diversity cell must be quiet, got {levels}\n{out}",
+    )
+    expect(
+        "path diversity readable" in out and "excess +0.096" in out,
+        "divcell-quiet",
+        f"the one readable diversity claim was not printed\n{out}",
+    )
+
+
+@case("#230 diversity cell: anthocnet at the floor WARNs — no spreading")
+def _divcell_no_separation():
+    # The other half of the same reading. If the multipath protocol matches the
+    # churn floor in a cell clean enough to measure one, the defining claim
+    # fails — and that is worth saying precisely because this cell can say it.
+    levels, out = run_cell(DIVCELL.replace("anthocnet divUsed=1.229", "anthocnet divUsed=1.133"))
+    expect(
+        levels == ["WARN"],
+        "divcell-nosep",
+        f"expected one WARN for a zero excess, got {levels}\n{out}",
+    )
+    expect(
+        "does not exceed the single-path floor" in out,
+        "divcell-nosep",
+        f"WARN did not name the finding\n{out}",
+    )
+
+
+@case("#230 diversity cell: baseline above the 1.50 sanity ceiling fires")
+def _divcell_sanity_fires():
+    _levels, out = run_cell(DIVCELL.replace("aodv divUsed=1.133", "aodv divUsed=1.633"))
+    expect(
+        "not churn-free at this offered rate" in out,
+        "divcell-sanity",
+        f"planted 1.633 above the sanity ceiling not flagged\n{out}",
+    )
+
+
+# --- the shape the v1.5.0 campaign actually produced (#230) ------------------
+# grid-v150/rwp-tworay, one of the 14 cells (6 grid re-baseline + 8 phase-2)
+# that every returned `verdict: FAIL` on the diversity rule and nothing else,
+# and that were every one waved through as "known #230, non-blocking". All four
+# protocols, windowS=10, drop identity closing to within 0.07 pp, energy and
+# reordering sane: the cell is publication-grade on every metric the campaign
+# publishes, and the only thing wrong with it is a metric no document quotes.
+# It is the regression fixture for over-firing — if this cell ever FAILs again,
+# the gate has gone back to crying wolf.
+GRIDCELL = """\
+##BENCH## anthocnet 92.6 29.3 420.8 6.11 34.92 46.15 1.8 301.7 40.674
+##BENCH## aodv 85.9 42.4 584.6 5.67 64.64 67.01 3.5 inf 34.056
+##BENCH## olsr 90.6 7.4 23.2 5.83 4.02 10.89 1.1 inf 10.431
+##BENCH## dsdv 85.0 15.2 419.8 5.61 23.01 26.72 1.4 inf 15.744
+# paths anthocnet divUsed=1.275 divMax=4.9 entropyBits=0.221 windowS=10.0 hopsMean=1.97 hopsMax=13.4
+# paths aodv divUsed=1.346 divMax=5.0 entropyBits=0.259 windowS=10.0 hopsMean=1.75 hopsMax=16.9
+# paths olsr divUsed=1.326 divMax=5.0 entropyBits=0.243 windowS=10.0 hopsMean=1.53 hopsMax=9.7
+# paths dsdv divUsed=1.169 divMax=3.8 entropyBits=0.141 windowS=10.0 hopsMean=1.55 hopsMax=6.0
+# drops anthocnet pdr=92.59 route=5.45 queue=0.00 mac=0.18 chan=1.76 ttl=0.03 sum=100.01 other=0.00 [route: setup=0.00 reconv=5.30 repair=0.14]
+# drops aodv pdr=85.93 route=3.02 queue=0.01 mac=8.50 chan=2.45 ttl=0.02 sum=99.93 other=0.00 [route: setup=- reconv=- repair=-]
+# drops olsr pdr=90.59 route=0.09 queue=0.00 mac=7.55 chan=1.76 ttl=0.01 sum=100.00 other=0.00 [route: setup=- reconv=- repair=-]
+# drops dsdv pdr=84.99 route=0.00 queue=0.00 mac=12.36 chan=2.65 ttl=0.00 sum=100.00 other=0.00 [route: setup=- reconv=- repair=-]
+"""
+
+
+@case("#230 a real v1.5.0 campaign cell WARNs once and exits 0")
+def _gridcell_quiet():
+    levels, out = run_cell(GRIDCELL)
+    expect(
+        levels == ["WARN"],
+        "gridcell",
+        f"the 14-cell campaign shape must be one WARN, got {levels}\n{out}",
+    )
+    expect(
+        "1.346 (aodv)" in out and "anthocnet 1.275 = -0.071" in out,
+        "gridcell",
+        f"WARN did not carry floor and excess\n{out}",
+    )
+
+
+@case("#230 the same cell with a real defect still FAILs loudly")
+def _gridcell_defect_fires():
+    # dsdv losing 12.36 pp at the MAC retry limit, unaccounted: the #229 class
+    # where the identity breaks and the numbers genuinely cannot be trusted.
+    # Demoting diversity to WARN must not have demoted this with it.
+    levels, out = run_cell(GRIDCELL.replace("mac=12.36 chan=2.65", "mac=0.00 chan=2.65"))
+    expect(
+        "FAIL" in levels,
+        "gridcell-defect",
+        f"a broken drop identity must still FAIL, got {levels}\n{out}",
+    )
+    expect("drop causes" in out, "gridcell-defect", f"FAIL did not name the identity\n{out}")
+
+
+# --- #259 satellite (isl-grid) input: CSV schema + human mode + rules --------
+#
+# The CSV fixture is a realistic 4x4 torus at the anchor knobs: 16 satellites,
+# 32 ISLs, islDelayMs=5, 8 flows. delay 10.4 ms is the measured hop-delay
+# identity reading (h=2, d=5 ms: 10.39 ms, CI run 30190452648, anchors.yml).
+# runs sits at the #293 published-point floor so the clean fixture stays
+# clean; the runs-floor WARN has its own must-fire case below.
+
+ISL_CLEAN = {
+    "protocol": "anthocnet",
+    "runs": "20",
+    "rows": "4",
+    "cols": "4",
+    "nodes": "16",
+    "links": "32",
+    "isl_delay_ms": "5.0",
+    "flows": "8",
+    "pdr_pct": "100.0",
+    "delay_ms": "10.4",
+    "delay99_ms": "10.9",
+    "throughput_kbps": "32.28",
+    "nrl": "1.401",
+    "nrl_bytes": "0.988",
+    "jitter_ms": "0.15",
+}
+
+
+def run_isl(**overrides):
+    """Check one isl-grid --csv row (ISL_CLEAN + overrides)."""
+    row = dict(ISL_CLEAN, **overrides)
+    return run_cell(",".join(row) + "\n" + ",".join(str(v) for v in row.values()) + "\n")
+
+
+# The human-mode fixture mirrors what satellite-benchmark.yml's
+# satellite-results.txt artifact holds: ##RUN## per-seed rows, '# diag' ant
+# tallies (deliberately unparsed), the '+Grid' summary and the aggregate table
+# — whose column order (…thrput nrl nrlbytes jitter) differs from the MANET
+# table, the trap the dedicated branch exists for.
+
+ISL_CELL = """\
+##RUN## 1 anthocnet 100.00 10.40 10.90 32.28 1.40 0.99 0.15
+##RUN## 2 anthocnet 100.00 10.41 10.92 32.29 1.41 0.99 0.15
+# diag anthocnet seed=1 ctrlTx=1234 antTx[1=100,2=50,] antRx[1=98,2=49,]
+##RUN## 1 aodv 100.00 10.30 10.60 32.28 0.60 0.35 0.10
+##RUN## 2 aodv 100.00 10.31 10.61 32.28 0.60 0.35 0.10
++Grid torus 4x4 = 16 satellites, 32 ISLs (mean degree 4.00) @ 5.00 ms 10Mbps, 8 flows, 60.00 s, mean of 2 run(s)
+
+protocol          PDR%  delay(ms)  delay99(ms)  thrput(kbps)     NRL   NRLbytes  jitter(ms)
+-------------------------------------------------------------------------------------------
+anthocnet        100.0       10.4         10.9         32.28    1.40       0.99        0.15
+aodv             100.0       10.3         10.6         32.28    0.60       0.35        0.10
+"""
+
+
+@case("#259 clean isl-grid CSV row reports nothing")
+def _isl_clean():
+    levels, out = run_isl()
+    expect(levels == [], "isl-clean", f"expected no reports, got {levels}\n{out}")
+    expect("checked 1 rows" in out, "isl-clean", f"CSV row not parsed\n{out}")
+
+
+@case("#259 mean delay below the one-ISL propagation floor FAILs")
+def _isl_floor_fires():
+    levels, out = run_isl(delay_ms="3.2", delay99_ms="3.4")
+    expect("FAIL" in levels, "isl-floor-fires", f"delay 3.2 < islDelayMs 5.0 did not FAIL\n{out}")
+    expect("propagation floor" in out, "isl-floor-fires", f"FAIL did not name the floor\n{out}")
+
+
+@case("#259 propagation floor skips a dead cell (delay 0, PDR 0)")
+def _isl_floor_dead_cell():
+    # Nothing delivered => the mean-of-none prints 0.0; the dead-cell WARN
+    # owns that reading, the physics floor must not pile a FAIL on top.
+    levels, out = run_isl(
+        pdr_pct="0.0", delay_ms="0.0", delay99_ms="0.0", throughput_kbps="0.00", jitter_ms="0.00"
+    )
+    expect("FAIL" not in levels, "isl-floor-dead", f"floor fired on a dead cell\n{out}")
+    expect("WARN" in levels, "isl-floor-dead", f"dead cell not WARNed\n{out}")
+
+
+@case("#259 single-ISL AODV row below sat_single_isl_pdr_min FAILs")
+def _isl_anchor_fires():
+    levels, out = run_isl(
+        protocol="aodv",
+        rows="1",
+        cols="2",
+        nodes="2",
+        links="1",
+        delay_ms="5.2",
+        delay99_ms="5.4",
+        pdr_pct="97.0",
+    )
+    expect(
+        "FAIL" in levels, "isl-anchor-fires", f"AODV 97.0 on one lossless ISL did not FAIL\n{out}"
+    )
+    expect(
+        "sat_single_isl_pdr_min" in out,
+        "isl-anchor-fires",
+        f"FAIL did not name the anchor key\n{out}",
+    )
+
+
+@case("#259 single-ISL anchor stays quiet at 100.0 and off-anchor topologies")
+def _isl_anchor_quiet():
+    levels, out = run_isl(
+        protocol="aodv",
+        rows="1",
+        cols="2",
+        nodes="2",
+        links="1",
+        delay_ms="5.2",
+        delay99_ms="5.4",
+        pdr_pct="100.0",
+    )
+    expect(levels == [], "isl-anchor-quiet", f"fired on a perfect single-ISL row\n{out}")
+    # 97.0 on the 4x4 grid is congestion territory, not the anchor topology;
+    # firing there would make the gate cry wolf on every loaded run.
+    levels, out = run_isl(protocol="aodv", pdr_pct="97.0")
+    expect(levels == [], "isl-anchor-quiet", f"anchor fired off the 2-node/1-link topology\n{out}")
+
+
+@case("#259 human satellite-results.txt parses runs+table and stays quiet")
+def _isl_cell_clean():
+    levels, out = run_cell(ISL_CELL)
+    expect(levels == [], "isl-cell-clean", f"clean human-mode output reported {levels}\n{out}")
+    # 4 ##RUN## rows + 2 table rows; the '# diag' line must bind to nothing.
+    expect("checked 6 rows" in out, "isl-cell-clean", f"wrong row count from human mode\n{out}")
+
+
+@case("#259 planted sub-floor delay on a ##RUN## line fires")
+def _isl_cell_floor_fires():
+    _levels, out = run_cell(
+        ISL_CELL.replace("##RUN## 2 aodv 100.00 10.31", "##RUN## 2 aodv 100.00 3.10")
+    )
+    expect(
+        "propagation floor" in out and "run2/aodv" in out,
+        "isl-cell-floor",
+        f"per-run sub-floor delay not flagged\n{out}",
+    )
+
+
+@case("#259 table jitter binds to column 7, not to NRLbytes")
+def _isl_cell_jitter_position():
+    # Corrupt only the table's last column (jitter). Under the MANET mapping
+    # position 5 (NRLbytes) would be read as jitter and this would stay
+    # silent — the mis-binding the dedicated isl-grid branch prevents.
+    _levels, out = run_cell(
+        ISL_CELL.replace(
+            "aodv             100.0       10.3         10.6         32.28    0.60       0.35        0.10",
+            "aodv             100.0       10.3         10.6         32.28    0.60       0.35       -0.10",
+        )
+    )
+    expect(
+        "negative jitter" in out,
+        "isl-cell-jitter",
+        f"negative jitter in the last table column not flagged\n{out}",
+    )
+
+
+# --- #365 provenance ---------------------------------------------------------
+# The marker is emitted by the workflow, so nothing in the harness can prove it
+# arrives. This pair is the only thing that can fail: one case that the warning
+# fires when a cell has no commit, one that it stays quiet when it has.
+
+
+@case("#365 a ##BENCH## cell with no ##PROV## line WARNs")
+def _prov_missing_fires():
+    _levels, out = run_cell(ISL_CELL, prov=False)
+    expect("no ##PROV## line" in out, "prov-missing", f"cell without provenance not flagged\n{out}")
+
+
+@case("#365 a ##PROV## line silences the warning and echoes the commit")
+def _prov_present_quiet():
+    _levels, out = run_cell(ISL_CELL)
+    expect(
+        "no ##PROV## line" not in out, "prov-present", f"provenance present but still warned\n{out}"
+    )
+    expect(
+        "measured at 0b42c89" in out,
+        "prov-present-echo",
+        f"commit not echoed for the reader\n{out}",
+    )
+
+
+@case("#365 a truncated commit field is not accepted as provenance")
+def _prov_short_sha_fires():
+    # A tail cut mid-line leaves a stub that still starts with ##PROV##.
+    # Matching the marker alone would read that as provenance recorded.
+    _levels, out = run_cell(ISL_CELL + "##PROV## commit=0b4\n", prov=False)
+    expect(
+        "no ##PROV## line" in out,
+        "prov-short-sha",
+        f"a 3-char commit stub was accepted as provenance\n{out}",
+    )
+
+
+@case("#365 a campaign CSV is exempt — provenance is the run ID, not a line")
+def _prov_csv_exempt():
+    _levels, out = run_results()
+    expect(
+        "no ##PROV## line" not in out,
+        "prov-csv-exempt",
+        f"CSV input warned about a marker it is not supposed to carry\n{out}",
+    )
+
+
+# --- #377 drop-identity overlap ----------------------------------------------
+# Numbers taken from the shape of the reported failure: the rwp x nakagami
+# anthocnet cell reads drop_chan_pct -13.77 on ~20 000 offered packets, i.e. an
+# overlap of a couple of thousand packets, against a clean two-ray cell.
+
+DROPID_CLEAN = (
+    "##DROPID## 1 aodv hopTx=52000 hopRx=50000 ackedHops=50000 "
+    "macDrops=1800 reinjected=0 macTerminal=1800 queue=200 "
+    "hopLoss=2000 overlap=0 unackedRx=0\n"
+)
+DROPID_OVERLAP = (
+    "##DROPID## 3 anthocnet hopTx=52000 hopRx=51000 "
+    "ackedHops=48250 macDrops=3750 reinjected=0 "
+    "macTerminal=3750 queue=0 hopLoss=1000 overlap=2750 "
+    "unackedRx=2750\n"
+)
+
+
+@case("#377 a ##DROPID## row with overlap>0 WARNs and names both figures")
+def _dropid_overlap_fires():
+    _levels, out = run_cell(ISL_CELL + DROPID_OVERLAP)
+    expect(
+        "drop-cause books overlap by 2750" in out,
+        "dropid-overlap",
+        f"positive overlap not flagged\n{out}",
+    )
+    expect(
+        "unackedRx=2750" in out,
+        "dropid-unacked",
+        f"the discriminating figure was not reported alongside it\n{out}",
+    )
+
+
+@case("#377 a ##DROPID## row with overlap=0 stays quiet")
+def _dropid_clean_quiet():
+    _levels, out = run_cell(ISL_CELL + DROPID_CLEAN)
+    expect(
+        "drop-cause books overlap" not in out,
+        "dropid-clean",
+        f"a clean drop identity was flagged\n{out}",
+    )
+
+
+@case("#377 one warning per protocol, not per seed")
+def _dropid_worst_per_proto():
+    # Twenty seeds of the same broken cell must not bury every other finding.
+    rows = "".join(
+        DROPID_OVERLAP.replace("##DROPID## 3 ", f"##DROPID## {s} ") for s in range(1, 21)
+    )
+    _levels, out = run_cell(ISL_CELL + rows)
+    expect(
+        out.count("drop-cause books overlap") == 1,
+        "dropid-once",
+        f"expected one warning for the protocol, got "
+        f"{out.count('drop-cause books overlap')}\n{out}",
+    )
+
+
+@case("#377 an AntHocNet row is judged on the same term the residual uses")
+def _dropid_reinject_arm():
+    # Shaped from probe run 31286508174 (rwp x nakagami) with hopLoss lowered
+    # so the residual goes negative. The re-injection gap is what matters:
+    # macDrops=475 against macTerminal=9. A rule keyed on macTerminal would
+    # report a large negative overlap and stay silent on the very arm #377
+    # reports the worst drop_chan_pct for.
+    row = (
+        "##DROPID## 1 anthocnet hopTx=4584 hopRx=4106 ackedHops=3789 "
+        "macDrops=475 reinjected=466 macTerminal=9 macLost=158 queue=0 "
+        "hopLoss=151 overlap=7 unackedRx=317\n"
+    )
+    _levels, out = run_cell(ISL_CELL + row)
+    expect(
+        "drop-cause books overlap by 7" in out,
+        "dropid-reinject",
+        f"the re-injecting arm was not flagged\n{out}",
+    )
+
+
+@case("#377 the real 900 s Nakagami rows read clean once macLost is subtracted")
+def _dropid_corrected_residual_quiet():
+    # Verbatim counters from run 31288485211 seeds 1-2, the cell that reported
+    # drop_chan_pct -13.10 before the correction. overlap is recomputed as
+    # macLost + queue - hopLoss, which is <= 0 by construction because macLost
+    # is a subset of hopLoss. If a future change reverts the residual to the
+    # raw MAC-drop count these rows go positive again and this case fails.
+    rows = (
+        "##DROPID## 1 anthocnet hopTx=20571 hopRx=18761 ackedHops=17194 "
+        "macDrops=2738 reinjected=2698 macTerminal=40 macLost=1171 queue=0 "
+        "hopLoss=1810 overlap=-639 unackedRx=1567\n"
+        "##DROPID## 1 aodv hopTx=12721 hopRx=11387 ackedHops=10433 "
+        "macDrops=1899 reinjected=0 macTerminal=1899 macLost=945 queue=0 "
+        "hopLoss=1334 overlap=-389 unackedRx=954\n"
+        "##DROPID## 1 olsr hopTx=11762 hopRx=10862 ackedHops=9738 "
+        "macDrops=1554 reinjected=0 macTerminal=1554 macLost=430 queue=0 "
+        "hopLoss=900 overlap=-470 unackedRx=1124\n"
+    )
+    _levels, out = run_cell(ISL_CELL + rows)
+    expect(
+        "drop-cause books overlap" not in out,
+        "dropid-corrected",
+        f"the corrected residual was still flagged as overlapping\n{out}",
+    )
+
+
+@case("#761 an adaptive-arm fate tail with unseen=0 stays quiet")
+def _dropid_fate_clean_quiet():
+    # Verbatim 120 s grid-rwp-nakagami seed-1 termite row (local build).
+    row = (
+        "##DROPID## 1 termite hopTx=76721 hopRx=28718 ackedHops=24221 "
+        "macDrops=9946 reinjected=8175 macTerminal=1771 macLost=5449 "
+        "queue=0 hopLoss=48003 overlap=-474 unackedRx=4497 recovered=47991 "
+        "recoveredPkts=1206 delivered=759 termMac=280 termRoute=18 "
+        "termTtl=58 termOther=0 termTx=474 termAtNode=0 unseen=0\n"
+    )
+    _levels, out = run_cell(ISL_CELL + row)
+    expect(
+        "fate partition" not in out,
+        "dropid-fate-clean",
+        f"a coherent per-packet partition was flagged\n{out}",
+    )
+
+
+@case("#800 more deliveries than distinct packets (duplicate copies) FAILs")
+def _dup_deliveries():
+    base = (
+        "beeadhoc 87.7 74.4 1078.5 18.23 1.70\n"
+        "##DROPID## 1 beeadhoc hopTx=4379 hopRx=4270 delivered={d} termMac=19 "
+        "termRoute=48 termTtl=0 termOther=0 termTx=0 termAtNode=0 unseen=0\n"
+        "##MATCH## 1 beeadhoc {rx} 1486 1078.5 24.5\n"
+    )
+    # The #800 local reproduction: 1486 deliveries of 597 distinct packets.
+    _levels, out = run_cell(base.format(d=597, rx=1486))
+    expect(
+        "duplicate copies" in out and "FAIL" in out,
+        "dup-fail",
+        f"1486 deliveries of 597 packets were not flagged\n{out}",
+    )
+    _levels, out = run_cell(base.format(d=1486, rx=1486))
+    expect(
+        "duplicate copies" not in out,
+        "dup-quiet",
+        f"equal deliveries and distinct packets must stay quiet\n{out}",
+    )
+    no_match = (
+        "\n".join(
+            ln for ln in base.format(d=597, rx=1486).splitlines() if not ln.startswith("##MATCH##")
+        )
+        + "\n"
+    )
+    _levels, out = run_cell(no_match)
+    expect(
+        "cannot be checked" in out,
+        "dup-no-match",
+        f"a seed without ##MATCH## must WARN, not pass silently\n{out}",
+    )
+
+
+@case("#761 a negative unseen (a packet booked twice) FAILs")
+def _dropid_fate_double_fails():
+    row = (
+        "##DROPID## 1 ara hopTx=3378 hopRx=3246 ackedHops=3171 macDrops=85 "
+        "reinjected=58 macTerminal=27 macLost=10 queue=0 hopLoss=132 "
+        "overlap=0 unackedRx=75 recovered=180 recoveredPkts=110 "
+        "delivered=1351 termMac=3 termRoute=165 termTtl=6 termOther=0 "
+        "termTx=0 termAtNode=64 unseen=-12\n"
+    )
+    levels, out = run_cell(ISL_CELL + row)
+    expect(
+        "FAIL" in levels and "fate partition exceeds" in out and "unseen=-12" in out,
+        "dropid-fate-double",
+        f"a double-booked partition was not failed\n{out}",
+    )
+
+
+# #761 regression: grid-rwp-nakagami seed 1, 900 s, termite alone, on a local
+# ns-3.42 build of the fix (the base reproduced the committed v250c seed-1
+# counters byte for byte). Before the per-packet book the same seed read
+# mac 166.32 + chan 188.87 (sum 405.39); after it, the identity closes.
+TERMITE_761 = """\
+##DROPID## 1 termite hopTx=517332 hopRx=202400 ackedHops=151167 macDrops=131344 reinjected=105353 macTerminal=25991 macLost=80111 queue=0 hopLoss=314932 overlap=-4567 unackedRx=51233 recovered=310659 recoveredPkts=12418 delivered=5902 termMac=4857 termRoute=86 termTtl=215 termOther=0 termTx=4567 termAtNode=0 unseen=0
+##RUN## 1 termite 37.3 1676.5 11117.5 4.77 0.81 1838.96 inf inf 0.4563
+AntHocNet protocol comparison (mean of 1 run(s))
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+-----------------------------------------------------------------------------------------------------------------
+termite         37.3     1676.5      11117.5         4.77    0.81     1838.96         inf         inf       0.456
+# drops termite pdr=37.33 route=0.55 queue=0.00 mac=31.08 chan=29.23 ttl=1.38 sum=99.56 other=0.00 [route: setup=- reconv=- repair=-]
+"""
+TERMITE_761_BEFORE = (
+    "# drops termite pdr=37.33 route=1.54 queue=0.00 mac=166.32 chan=188.87 "
+    "ttl=11.32 sum=405.39 other=0.00 [route: setup=- reconv=- repair=-]"
+)
+
+
+@case("#761 the termite drop book closes per packet; the event book FAILed")
+def _termite_761():
+    _levels, out = run_cell(TERMITE_761)
+    expect(
+        "do not account" not in out
+        and "drop causes off" not in out
+        and "outside [0,100]" not in out
+        and "fate partition" not in out,
+        "termite-761-closes",
+        f"the per-packet book did not close\n{out}",
+    )
+    after = TERMITE_761.splitlines()[-1]
+    _levels, out = run_cell(TERMITE_761.replace(after, TERMITE_761_BEFORE))
+    expect(
+        "drop_mac_pct 166.32 outside [0,100]" in out
+        and "do not account for the offered packets" in out,
+        "termite-761-before",
+        f"the event book was not failed\n{out}",
+    )
+
+
+@case("#377 a cell with no ##DROPID## rows is not flagged")
+def _dropid_absent_quiet():
+    # TCP cells and every pre-#377 run carry no such row; absence is not a
+    # failure, it is the marker not existing yet.
+    _levels, out = run_cell(ISL_CELL)
+    expect(
+        "drop-cause books overlap" not in out,
+        "dropid-absent",
+        f"absent counters were treated as a defect\n{out}",
+    )
+
+
+# --- #296 item 1 / #216: the oracle control ----------------------------------
+#
+# Every fixture below is the real measured shape, from the smoke cells run when
+# the arm was built (paper base, 300 s / 60 s, ns-3.36):
+#   paper-base/range   oracle 95.9% PDR, 2.09 hops, NRL 0 | olsr 75.4%, 1.90 hops
+#   4x4 ISL torus      oracle 100% PDR, NRL 0, mode=wired, 64 directed edges
+# The olsr row is the one that matters: its mean hop count is BELOW the
+# oracle's because it delivers 20 pp less traffic and therefore only the short
+# flows. A naive "the oracle must have the fewest hops" rule fails on correct
+# data, which is why the rule carries the survivorship guard and why this
+# fixture is in the suite.
+
+ORACLE_LINE_OK = (
+    "##ORACLE## 1 oracle mode=disk approx=0 nodes=50 edges=914 "
+    "recomputes=300 changes=150 range=300.0 noRoute=0 nrl=0.00\n"
+)
+
+MANET_ORACLE_CELL = """\
+##RUN## 1 oracle 95.90 4.8 24.0 4.97 0.00 4.60 2.0 14.5 0.0000
+##RUN## 1 olsr 75.40 10.2 32.0 4.08 6.12 13.90 3.5 inf 13.0630
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          95.9        4.8         24.0         4.97    0.00        4.60         2.0        14.5       0.000
+olsr            75.4       10.2         32.0         4.08    6.12       13.90         3.5         inf      13.063
+# paths oracle divUsed=1.000 divMax=1.0 entropyBits=0.000 windowS=2.0 hopsMean=2.09 hopsMax=5.0
+# paths olsr divUsed=1.000 divMax=1.5 entropyBits=0.000 windowS=2.0 hopsMean=1.90 hopsMax=6.5
+"""
+
+ISL_ORACLE_CELL = """\
+##ORACLE## 1 oracle mode=wired approx=0 nodes=16 edges=64 recomputes=60 changes=1 range=-1.0 noRoute=0 nrl=0.00
+##RUN## 1 oracle 100.00 10.15 11.00 10.44 0.00 0.00 0.00
+##RUN## 1 aodv 98.61 10.15 11.00 10.48 4.89 2.56 0.00
++Grid torus 4x4 = 16 satellites, 32 ISLs (mean degree 4.00) @ 5.00 ms 10Mbps, 4 flows, 60.00 s, mean of 1 run(s)
+
+protocol          PDR%  delay(ms)  delay99(ms)  thrput(kbps)     NRL   NRLbytes  jitter(ms)
+-------------------------------------------------------------------------------------------
+oracle           100.0       10.2         11.0         10.44    0.00       0.00        0.00
+aodv              98.6       10.2         11.0         10.48    4.89       2.56        0.00
+"""
+
+
+@case("#296 a correct oracle cell reports nothing about the oracle")
+def _oracle_clean():
+    _levels, out = run_cell(ORACLE_LINE_OK + MANET_ORACLE_CELL)
+    expect(
+        "#296" not in out and "#216" not in out,
+        "oracle-clean",
+        f"a correct oracle cell was flagged\n{out}",
+    )
+
+
+@case("#296 the survivorship case stays quiet: olsr 1.90 hops at 75.4% PDR")
+def _oracle_hops_survivorship_quiet():
+    # The measured cell. olsr's mean hop count is lower than the oracle's and
+    # that is CORRECT — it delivered 20 pp less, so its mean is taken over the
+    # short flows only. Firing here would make the rule untrustworthy on every
+    # real cell, which is exactly how a check gets ignored.
+    _levels, out = run_cell(ORACLE_LINE_OK + MANET_ORACLE_CELL)
+    expect(
+        "exceeds" not in out,
+        "oracle-hops-quiet",
+        f"the survivorship-biased hop comparison fired\n{out}",
+    )
+
+
+@case("#296 a shorter path at EQUAL delivery FAILs — survivorship cannot explain it")
+def _oracle_hops_fires():
+    # Same cell with olsr's delivery raised to the oracle's: now olsr delivered
+    # as much AND on shorter paths, which no shortest-path oracle permits.
+    text = ORACLE_LINE_OK + MANET_ORACLE_CELL.replace(
+        "olsr            75.4", "olsr            96.4"
+    )
+    _levels, out = run_cell(text)
+    expect(
+        "survivorship cannot explain" in out,
+        "oracle-hops-fires",
+        f"an impossible hop count was not flagged\n{out}",
+    )
+
+
+@case("#296 non-zero NRL on the oracle arm FAILs")
+def _oracle_nrl_fires():
+    text = ORACLE_LINE_OK + MANET_ORACLE_CELL.replace(
+        "oracle          95.9        4.8         24.0         4.97    0.00",
+        "oracle          95.9        4.8         24.0         4.97    0.31",
+    )
+    _levels, out = run_cell(text)
+    expect("must be exactly 0" in out, "oracle-nrl", f"a talking control was not flagged\n{out}")
+
+
+@case("#296 non-zero NRL on the ##ORACLE## row FAILs")
+def _oracle_row_nrl_fires():
+    _levels, out = run_cell(ORACLE_LINE_OK.replace("nrl=0.00", "nrl=0.04") + MANET_ORACLE_CELL)
+    expect(
+        "puts NOTHING on the wire" in out,
+        "oracle-row-nrl",
+        f"a non-zero ##ORACLE## nrl was not flagged\n{out}",
+    )
+
+
+@case("#296 a never-solved topology FAILs")
+def _oracle_changes_fires():
+    _levels, out = run_cell(ORACLE_LINE_OK.replace("changes=150", "changes=0") + MANET_ORACLE_CELL)
+    expect("never solved" in out, "oracle-changes", f"an unsolved graph was not flagged\n{out}")
+
+
+@case("#296 an empty ground-truth graph FAILs")
+def _oracle_edges_fires():
+    _levels, out = run_cell(ORACLE_LINE_OK.replace("edges=914", "edges=0") + MANET_ORACLE_CELL)
+    expect("came out empty" in out, "oracle-edges", f"a 0-edge topology was not flagged\n{out}")
+
+
+@case("#296 an approx flag contradicting the mode tag FAILs")
+def _oracle_flag_mismatch_fires():
+    _levels, out = run_cell(ORACLE_LINE_OK.replace("approx=0", "approx=1") + MANET_ORACLE_CELL)
+    expect(
+        "contradicts mode" in out,
+        "oracle-flag-mismatch",
+        f"an incoherent exactness flag was not flagged\n{out}",
+    )
+
+
+@case("#296 a fading cell's oracle WARNs as approximate; a disk cell does not")
+def _oracle_approx_warns():
+    approx = ORACLE_LINE_OK.replace("mode=disk ", "mode=disk-approx ").replace(
+        "approx=0", "approx=1"
+    )
+    _levels, out = run_cell(approx + MANET_ORACLE_CELL)
+    expect(
+        "APPROXIMATE here" in out,
+        "oracle-approx-warn",
+        f"an approximate oracle was not flagged\n{out}",
+    )
+    _levels, out = run_cell(ORACLE_LINE_OK + MANET_ORACLE_CELL)
+    expect(
+        "APPROXIMATE here" not in out,
+        "oracle-approx-quiet",
+        f"an exact disk oracle was called approximate\n{out}",
+    )
+
+
+@case("#296 a ##ORACLE## row for another protocol FAILs")
+def _oracle_wrong_proto_fires():
+    _levels, out = run_cell(
+        ORACLE_LINE_OK.replace("1 oracle mode", "1 aodv mode") + MANET_ORACLE_CELL
+    )
+    expect(
+        "only the oracle arm" in out,
+        "oracle-wrong-proto",
+        f"a foreign ##ORACLE## row was not flagged\n{out}",
+    )
+
+
+@case("#296 partitioned lookups WARN rather than pass silently")
+def _oracle_noroute_warns():
+    _levels, out = run_cell(ORACLE_LINE_OK.replace("noRoute=0", "noRoute=412") + MANET_ORACLE_CELL)
+    expect(
+        "found no path" in out,
+        "oracle-noroute",
+        f"a partitioned oracle field was not flagged\n{out}",
+    )
+
+
+# --- #464: refused sends must reach the denominator and the drop book --------
+#
+# The oracle refuses a locally originated send when its graph holds no path:
+# RouteOutput returns nullptr, the send dies in the socket, and FlowMonitor
+# never counts the packet as transmitted. Before #464 those packets were in
+# neither the PDR denominator nor the drop book, so a partitioned cell read
+# pdr=100.0 on a seed with 4512 refused sends while `# drops` closed at
+# sum=100.00 — self-consistently wrong, which is exactly why the #215 identity
+# could not catch it. Numbers below are the real measured cell (25 nodes /
+# 1600 x 1600 / range 450 / static, seeds 1,2,4 partitioned).
+
+ORACLE_REFUSAL_CELL = """\
+##RUN## 1 oracle 87.40 3.2 7.5 38.69 0.00 0.32 2.5 inf 0.0000
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          87.4        3.2          7.5        38.69    0.00        0.32         2.5         inf       0.000
+# drops oracle pdr=@PDR@ route=@ROUTE@ queue=0.00 mac=0.00 chan=0.04 ttl=0.00 sum=100.00 other=0.00 [route: setup=- reconv=- repair=-]
+"""
+
+
+@case("#464 refused sends absent from the drop book FAIL")
+def _oracle_refusals_unbooked_fires():
+    # A pre-#464 cell: noRoute is non-zero and carries no split, and the route
+    # column reads 0.00 because those packets never entered the accounting.
+    cell = ORACLE_LINE_OK.replace("noRoute=0", "noRoute=913") + ORACLE_REFUSAL_CELL.replace(
+        "@PDR@", "99.96"
+    ).replace("@ROUTE@", "0.00")
+    _levels, out = run_cell(cell)
+    expect(
+        "refused sends are missing" in out or "route column reads" in out,
+        "oracle-refusals-unbooked",
+        f"unbooked refused sends were not flagged\n{out}",
+    )
+
+
+@case("#464 booked refusals stay quiet")
+def _oracle_refusals_booked_quiet():
+    # A post-#464 cell: the split is present and the refusals are in the route
+    # column, so the accounting closes honestly and nothing should fire.
+    line = ORACLE_LINE_OK.replace(
+        "noRoute=0 nrl=0.00", "noRoute=913 noRouteOrigin=913 noRouteFwd=0 nrl=0.00"
+    )
+    cell = line + ORACLE_REFUSAL_CELL.replace("@PDR@", "77.97").replace("@ROUTE@", "21.99")
+    _levels, out = run_cell(cell)
+    expect(
+        "refused sends are missing" not in out and "route column reads" not in out,
+        "oracle-refusals-booked",
+        f"a correctly booked partitioned cell was flagged\n{out}",
+    )
+
+
+@case(
+    "#521 a booked refusal share below print precision stays quiet; "
+    "one that would print still FAILs"
+)
+def _oracle_refusals_below_precision():
+    # The rwp x nakagami grid cell on CBR sources: 5 origin refusals on one
+    # seed, ~17k offered packets per seed, so the share is ~0.03 % of that
+    # seed and ~0.0015 % of the cell, and the cell's route column prints 0.00
+    # honestly. One seed shown: 5 / (16400 / 0.9609) = 0.029 % prints as 0.03,
+    # so the single-seed fixture must FAIL; scaled to 1 refusal in 160000
+    # offered it must stay quiet.
+    def cell(no_route, delivered):
+        line = ORACLE_LINE_OK.replace(
+            "noRoute=0 nrl=0.00",
+            f"noRoute={no_route} noRouteOrigin={no_route} noRouteFwd=0 nrl=0.00",
+        )
+        body = (
+            ORACLE_REFUSAL_CELL.replace("87.40", "96.09")
+            .replace("@PDR@", "96.09")
+            .replace("@ROUTE@", "0.00")
+        )
+        return line + body + f"##MATCH## 1 oracle {delivered} {delivered} 7.5 7.5\n"
+
+    _levels, out = run_cell(cell(1, 153744))
+    expect(
+        "route column reads" not in out,
+        "oracle-refusal-precision-quiet",
+        f"a sub-precision booked refusal was flagged\n{out}",
+    )
+    _levels, out = run_cell(cell(5, 16400))
+    expect(
+        "route column reads" in out,
+        "oracle-refusal-precision-fires",
+        f"a printable unbooked refusal share was not flagged\n{out}",
+    )
+
+
+@case("#464 a split that does not sum to the total FAILs")
+def _oracle_refusal_split_broken():
+    line = ORACLE_LINE_OK.replace(
+        "noRoute=0 nrl=0.00", "noRoute=913 noRouteOrigin=900 noRouteFwd=0 nrl=0.00"
+    )
+    cell = line + ORACLE_REFUSAL_CELL.replace("@PDR@", "77.97").replace("@ROUTE@", "21.99")
+    _levels, out = run_cell(cell)
+    expect(
+        "does not account for" in out,
+        "oracle-refusal-split",
+        f"an inconsistent noRoute split was not flagged\n{out}",
+    )
+
+
+# --- #431: the per-seed identity-matched hop gate ----------------------------
+#
+# Fixtures are the #431 measurement study's real numbers (issue 431, comment
+# 5310753299 §3: 20 nodes, 1500 x 300 m, 120 s, tworay, 5 seeds — one seed
+# shown). BEFORE: the pre-#431 explicit 300 m disk, where the oracle routed
+# the identity-matched packets in MORE hops than aodv (hopsC 2.044 vs 1.594,
+# +0.450 — the defect the survivorship guard suppressed on wifi, because the
+# oracle dominates PDR there and the guard never released). AFTER: the derived
+# 423.3 m decode disk, where the same bound holds with margin (1.528 vs
+# 1.611). The gate must FIRE on the former and STAY QUIET on the latter.
+
+TWORAY_300_ORACLE_CELL = """\
+##ORACLE## 1 oracle mode=disk-approx approx=1 nodes=20 edges=146 recomputes=120 changes=64 range=300.0 noRoute=0 nrl=0.00
+##RUN## 1 oracle 100.00 6.1 28.0 4.97 0.00 4.60 2.0 14.5 0.0000
+##RUN## 1 aodv 94.24 9.8 40.2 4.08 1.12 8.90 3.5 22.1 3.0630
+##COMMON## 1 oracle 360 349 45.0 8.1 52.0 2.044 2.05
+##COMMON## 1 aodv 352 349 47.0 9.2 55.0 1.594 1.60
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle         100.0        6.1         28.0         4.97    0.00        4.60         2.0        14.5       0.000
+aodv            94.2        9.8         40.2         4.08    1.12        8.90         3.5        22.1       3.063
+"""
+
+TWORAY_423_ORACLE_CELL = """\
+##ORACLE## 1 oracle mode=decode-approx approx=1 nodes=20 edges=203 recomputes=120 changes=71 range=423.3 noRoute=0 nrl=0.00
+##RUN## 1 oracle 98.62 5.4 24.1 4.90 0.00 4.10 1.9 13.2 0.0000
+##RUN## 1 aodv 94.24 9.8 40.2 4.08 1.12 8.90 3.5 22.1 3.0630
+##COMMON## 1 oracle 355 349 44.0 7.6 50.0 1.528 1.53
+##COMMON## 1 aodv 352 349 47.0 9.2 55.0 1.611 1.62
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          98.6        5.4         24.1         4.90    0.00        4.10         1.9        13.2       0.000
+aodv            94.2        9.8         40.2         4.08    1.12        8.90         3.5        22.1       3.063
+"""
+
+
+@case("#431 the matched-set hop violation FIRES per seed, no survivorship guard")
+def _oracle_common_hops_fires():
+    # The whole-run guarded rule is silent on this cell (the oracle delivers
+    # 100 % vs aodv's 94.2 %, so the PDR-tie guard never releases) — which is
+    # exactly the suppression #431's acceptance section names. On the matched
+    # set the +0.450 excess is unexplainable and must FAIL.
+    levels, out = run_cell(TWORAY_300_ORACLE_CELL)
+    expect(
+        "identity-matched hops" in out and "+0.450" in out,
+        "oracle-common-hops-fires",
+        f"the matched-set hop violation was not flagged\n{out}",
+    )
+    expect(
+        "FAIL" in levels, "oracle-common-hops-fires-level", f"expected a FAIL, got {levels}\n{out}"
+    )
+
+
+@case("#506 the same matched-hop excess on a 3-D field WARNs, not FAILs")
+def _oracle_common_hops_3d_warns():
+    # Identical rows to the #431 FAIL fixture above, plus the ##CONFIG## row
+    # of a 3-D (FANET) cell. There the check's premise fails (matched packets
+    # are forwarded at different instants, and the oracle re-routes per hop
+    # over a moving graph), so the excess is reported once per file as a WARN.
+    cell = (
+        "##CONFIG## scenario=fanet nNodes=30 time=900 runs=1 firstRun=1 "
+        "areaX=1000 areaY=1000 areaZ=300 speed=30 speedMin=10 pause=0 "
+        "range=350 propagation=range mobility=gaussmarkov transport=udp "
+        "flows=10 cbrBps=2048 rateManager=constant2 protocols=aodv,oracle\n"
+        + TWORAY_300_ORACLE_CELL
+    )
+    _levels, out = run_cell(cell)
+    expect(
+        "#506" in out and "1 seed x arm" in out,
+        "oracle-common-hops-3d",
+        f"the 3-D scoping WARN did not fire\n{out}",
+    )
+    expect(
+        "on the common packet set, where survivorship" not in out,
+        "oracle-common-hops-3d-nofail",
+        f"a 3-D cell still FAILed the matched-hop bound\n{out}",
+    )
+
+
+@case("#488 a moving street grid scopes the matched-hop excess; a static one keeps the FAIL")
+def _oracle_common_hops_grid():
+    def cfg(speed):
+        return (
+            "##CONFIG## scenario=vanet nNodes=40 time=900 runs=1 firstRun=1 "
+            f"areaX=800 areaY=800 speed={speed} speedMin=0.01 pause=0 "
+            "range=0 propagation=urban mobility=manhattan blocksX=4 "
+            "blocksY=4 streetWidth=20 transport=udp flows=20 cbrBps=2048 "
+            "offTime=0 rateManager=constant2 protocols=aodv,oracle\n"
+        )
+
+    _levels, out = run_cell(cfg(20) + TWORAY_300_ORACLE_CELL)
+    expect(
+        "#488" in out
+        and "1 seed x arm" in out
+        and "on the common packet set, where survivorship" not in out,
+        "oracle-common-hops-grid",
+        f"a moving grid still FAILed\n{out}",
+    )
+    levels, out = run_cell(cfg(0.02) + TWORAY_300_ORACLE_CELL)
+    expect(
+        "FAIL" in levels and "+0.450" in out,
+        "oracle-common-hops-grid-static",
+        f"a near-static grid lost its control FAIL\n{out}",
+    )
+
+
+@case("#506 a planar ##CONFIG## (areaZ=0) keeps the matched-hop FAIL")
+def _oracle_common_hops_planar_fails():
+    cell = (
+        "##CONFIG## scenario=paper nNodes=20 time=120 runs=1 firstRun=1 "
+        "areaX=1500 areaY=300 areaZ=0 speed=20 pause=30 range=300 "
+        "propagation=tworay mobility=rwp transport=udp flows=5 "
+        "cbrBps=512 rateManager=constant2 protocols=aodv,oracle\n" + TWORAY_300_ORACLE_CELL
+    )
+    levels, out = run_cell(cell)
+    expect(
+        "FAIL" in levels and "+0.450" in out and "#506" not in out,
+        "oracle-common-hops-planar",
+        f"the planar matched-hop FAIL was lost\n{out}",
+    )
+
+
+@case("#431 the derived decode radius' matched hops stay quiet (and coherent)")
+def _oracle_common_hops_quiet():
+    _, out = run_cell(TWORAY_423_ORACLE_CELL)
+    expect(
+        "identity-matched hops" not in out,
+        "oracle-common-hops-quiet",
+        f"a satisfied matched-set hop bound was flagged\n{out}",
+    )
+    # decode-approx carries the "approx" substring, so the mode/flag coherence
+    # rule accepts it, and the arm still WARNs as approximate.
+    expect(
+        "contradicts mode" not in out,
+        "oracle-decode-mode-coherent",
+        f"decode-approx tripped the mode/flag coherence rule\n{out}",
+    )
+    expect(
+        "APPROXIMATE here" in out,
+        "oracle-decode-still-approx",
+        f"a derived-radius fading cell must still WARN approx=1\n{out}",
+    )
+
+
+NAKAGAMI_P50_ORACLE_CELL = """\
+##ORACLE## 1 oracle mode=p50-approx approx=1 nodes=20 edges=176 recomputes=120 changes=71 range=373.4 noRoute=0 nrl=0.00
+##RUN## 1 oracle 99.10 5.9 26.3 4.92 0.00 4.30 2.0 13.8 0.0000
+##RUN## 1 aodv 47.70 52.8 1037.5 2.08 3.12 48.90 6.5 322.1 9.0630
+##COMMON## 1 oracle 350 340 44.0 7.8 51.0 1.386 1.39
+##COMMON## 1 aodv 168 340 340.0 52.2 1005.0 1.329 1.34
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          99.1        5.9         26.3         4.92    0.00        4.30         2.0        13.8       0.000
+aodv            47.7       52.8       1037.5         2.08    3.12       48.90         6.5       322.1       9.063
+"""
+
+
+@case("#431 a p50-approx sub-defect excess WARNs (loud, not publication-blocking)")
+def _oracle_common_hops_p50_warns():
+    # Real numbers from the calibrated nakagami A/B (seed 3: oracle 1.386 vs
+    # aodv 1.329, +0.057): the P50 disk is calibrated to the DELIVERY bound —
+    # a probabilistic link has no true radius — so its honest residual
+    # (-0.02..+0.08 measured) must not FAIL, or the gate forbids publishing
+    # the very re-measurement that closes #431. It must still be loud.
+    levels, out = run_cell(NAKAGAMI_P50_ORACLE_CELL)
+    expect(
+        "p50-approx cell" in out and "+0.057" in out,
+        "oracle-common-hops-p50-warn",
+        f"the p50 honest-residual WARN did not fire\n{out}",
+    )
+    expect(
+        "FAIL" not in levels,
+        "oracle-common-hops-p50-warn-level",
+        f"a sub-defect p50 residual must WARN, not FAIL, got {levels}\n{out}",
+    )
+
+
+@case("#431 a p50-approx cell within eps stays quiet")
+def _oracle_common_hops_p50_quiet():
+    # oracle 1.386 vs aodv 1.390: bound satisfied, neither branch fires.
+    text = NAKAGAMI_P50_ORACLE_CELL.replace(" 1005.0 1.329 1.34", " 1005.0 1.390 1.40")
+    _levels, out = run_cell(text)
+    expect(
+        "identity-matched hops" not in out,
+        "oracle-common-hops-p50-quiet",
+        f"a satisfied p50 hop bound was flagged\n{out}",
+    )
+
+
+@case("#431 a defect-class excess FAILs even on a p50-approx cell")
+def _oracle_common_hops_p50_defect_fires():
+    # oracle 1.827 vs aodv 1.377 (+0.450, the tworay defect magnitude): above
+    # ORACLE_COMMON_HOP_DEFECT (0.15, sized between the largest honest p50
+    # residual +0.083 and the smallest published defect +0.17), so the mode
+    # buys no leniency — every published #431 violation would still FAIL here.
+    text = NAKAGAMI_P50_ORACLE_CELL.replace(" 51.0 1.386 1.39", " 51.0 1.827 1.83").replace(
+        " 1005.0 1.329 1.34", " 1005.0 1.377 1.38"
+    )
+    levels, out = run_cell(text)
+    expect(
+        "missing links the radios actually have" in out and "+0.450" in out,
+        "oracle-common-hops-p50-defect",
+        f"a defect-class p50 excess was not FAILed\n{out}",
+    )
+    expect(
+        "FAIL" in levels,
+        "oracle-common-hops-p50-defect-level",
+        f"expected a FAIL, got {levels}\n{out}",
+    )
+
+
+@case("#431 the same sub-defect excess on decode-approx still FAILs")
+def _oracle_common_hops_decode_still_fails():
+    # decode-approx CLAIMS the hop bound (the decode disk is the measured
+    # zero-load delivery graph), so +0.080 there is a real violation, not an
+    # honest residual: only p50-approx gets the WARN branch.
+    text = TWORAY_423_ORACLE_CELL.replace(" 55.0 1.611 1.62", " 55.0 1.448 1.45")
+    levels, out = run_cell(text)
+    expect(
+        "missing links the radios actually have" in out and "+0.080" in out,
+        "oracle-common-hops-decode-fails",
+        f"a decode-approx excess was not FAILed\n{out}",
+    )
+    expect(
+        "FAIL" in levels,
+        "oracle-common-hops-decode-fails-level",
+        f"expected a FAIL, got {levels}\n{out}",
+    )
+
+
+@case("#431 an eps-exceeding seed with no ##ORACLE## mode row fails closed")
+def _oracle_common_hops_no_mode_fails():
+    # ##COMMON## rows without the oracle's self-description: severity cannot
+    # be keyed off the mode, so the gate takes the FAIL branch rather than
+    # guessing leniency.
+    text = (
+        "\n".join(
+            line
+            for line in NAKAGAMI_P50_ORACLE_CELL.splitlines()
+            if not line.startswith("##ORACLE##")
+        )
+        + "\n"
+    )
+    levels, out = run_cell(text)
+    expect(
+        "missing links the radios actually have" in out,
+        "oracle-common-hops-no-mode",
+        f"an excess without a mode row did not fail closed\n{out}",
+    )
+    expect(
+        "FAIL" in levels,
+        "oracle-common-hops-no-mode-level",
+        f"expected a FAIL, got {levels}\n{out}",
+    )
+
+
+@case("#431 a pre-instrumentation ##COMMON## row (no hop fields) is skipped")
+def _oracle_common_hops_no_fields():
+    text = TWORAY_300_ORACLE_CELL.replace(" 45.0 8.1 52.0 2.044 2.05", " 45.0 8.1 52.0").replace(
+        " 47.0 9.2 55.0 1.594 1.60", " 47.0 9.2 55.0"
+    )
+    _levels, out = run_cell(text)
+    expect(
+        "identity-matched hops" not in out,
+        "oracle-common-hops-absent",
+        f"the gate fired on rows without hop instrumentation\n{out}",
+    )
+
+
+@case("#216 beating the oracle on a static lossless torus FAILs")
+def _oracle_static_pdr_fires():
+    # aodv above the oracle on a topology with full knowledge, no setup cost
+    # and no churn: impossible, therefore an instrumentation or wiring defect.
+    text = ISL_ORACLE_CELL.replace("aodv              98.6", "aodv             100.0").replace(
+        "oracle           100.0", "oracle            99.2"
+    )
+    _levels, out = run_cell(text)
+    expect(
+        "nothing can beat full knowledge" in out,
+        "oracle-static-pdr",
+        f"a beaten oracle was not flagged on a static torus\n{out}",
+    )
+
+
+@case("#216 the real torus cell (oracle 100%, aodv 98.6%) stays quiet")
+def _oracle_static_pdr_quiet():
+    _levels, out = run_cell(ISL_ORACLE_CELL)
+    expect("#216" not in out, "oracle-static-quiet", f"a correct torus cell was flagged\n{out}")
+
+
+@case("#216 the delivery bound is NOT asserted on an adversarial cell")
+def _oracle_static_pdr_skips_corridor():
+    # The congestion cell exists precisely so the control loses (#216): it
+    # cannot see offered load on an equal-length corridor. Asserting the bound
+    # there would fail the experiment the cell was built to run.
+    text = (
+        ISL_ORACLE_CELL.replace("aodv              98.6", "aodv             100.0").replace(
+            "oracle           100.0", "oracle            99.2"
+        )
+        + "# corridor probe pdr=99.2 split=0.51/0.49\n"
+    )
+    _levels, out = run_cell(text)
+    expect(
+        "nothing can beat full knowledge" not in out,
+        "oracle-static-corridor",
+        f"the bound was asserted on a cell designed to break it\n{out}",
+    )
+
+
+@case("#296 preflight: the oracle alone WARNs")
+def _oracle_preflight_alone():
+    _levels, out = run_preflight(protocols="oracle")
+    expect(
+        "measures nothing" in out,
+        "oracle-preflight-alone",
+        f"a lone oracle arm was not flagged\n{out}",
+    )
+
+
+@case("#296 preflight: the oracle on a fading channel WARNs, on the disk it does not")
+def _oracle_preflight_channel():
+    _levels, out = run_preflight(protocols="anthocnet,oracle", propagation="nakagami")
+    expect(
+        "auto-derived" in out,
+        "oracle-preflight-fading",
+        f"an approximate oracle cell was not flagged at preflight\n{out}",
+    )
+    _levels, out = run_preflight(protocols="anthocnet,oracle")
+    expect(
+        "#296" not in out and "#431" not in out,
+        "oracle-preflight-disk",
+        f"an exact disk oracle cell was flagged at preflight\n{out}",
+    )
+
+
+@case("#431 preflight: fading with no --range WARNs but no longer FAILs")
+def _oracle_preflight_no_range():
+    # Before #431 this combination FAILed ("the run will ABORT at t=0"): the
+    # oracle had no derivation for a fading channel and --range was what
+    # pinned its radius. Auto-derivation removed both facts — the run starts
+    # and derives its own radius, so a FAIL here would block valid dispatches.
+    _, out = run_preflight(protocols="anthocnet,oracle", propagation="tworay", range=0.0)
+    expect(
+        "auto-derived" in out,
+        "oracle-preflight-no-range",
+        f"the derived-adjacency WARN did not fire\n{out}",
+    )
+    # The geometry rules still FAIL a range=0 field estimate — that is theirs,
+    # not the oracle's; only the oracle abort must be gone.
+    expect(
+        "will ABORT at t=0" not in out,
+        "oracle-preflight-no-range-level",
+        f"the pre-#431 oracle abort FAIL is still firing\n{out}",
+    )
+
+
+@case("#296 preflight is silent about the oracle when the arm is not named")
+def _oracle_preflight_absent():
+    _levels, out = run_preflight(propagation="nakagami")
+    expect(
+        "#296" not in out,
+        "oracle-preflight-absent",
+        f"oracle rules fired without an oracle arm\n{out}",
+    )
+
+
+# --- #444 satellite (isl-grid) preflight -------------------------------------
+#
+# Fixtures are the two real #432 dispatch cells (issue 432, comment
+# 5305417841) — the ones whose hand-built, discarded validator this preflight
+# turns permanent: cell A, the 6x6 corridor cell (12Mbps constant duty over
+# the 10Mbps ISL from t=15, flows=0 per the #280 probe contract), and cell B,
+# the 4x4 failcell (break (0,0)-(3,0) — the rows-axis wrap link — at 450 s of
+# 900 s, 8 standard flows). Both must pass here AND reach the same conclusions
+# the hand validator printed: rho=1.20 declared overload, and the cut ISL on
+# the shortest paths of flows 0->15 and 3->12.
+
+
+def run_sat(**overrides):
+    """Sat-mode preflight (isl-grid harness defaults + overrides)."""
+    kw = {
+        "harness": "isl-grid",
+        "rows": 6,
+        "cols": 6,
+        "torus": True,
+        "islDelayMs": 5.0,
+        "islRate": "10Mbps",
+        "cbrBps": 4096.0,
+        "time": None,
+        "flows": None,
+        "protocols": None,
+        "breakLink": "",
+        "breakAt": 0.0,
+        "corridorLoad": "",
+        "corridorLoadAt": 15.0,
+        "removeLinks": "",
+        "oracle_arm": "oracle",
+    }
+    kw.update(overrides)
+    sc.issues = []
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        try:
+            sc.cmd_preflight(argparse.Namespace(**kw))
+        except SystemExit:
+            pass
+    return list(sc.issues), out.getvalue()
+
+
+CELL_A = {
+    "rows": 6,
+    "cols": 6,
+    "time": 900.0,
+    "flows": 0,
+    "corridorLoad": "12Mbps",
+    "corridorLoadAt": 15.0,
+    "protocols": "anthocnet,aodv,olsr,oracle",
+}
+CELL_B = {
+    "rows": 4,
+    "cols": 4,
+    "time": 900.0,
+    "flows": 8,
+    "breakLink": "0,0,3,0",
+    "breakAt": 450.0,
+    "protocols": "anthocnet,aodv,olsr,oracle",
+}
+
+
+@case("#444 the #432 corridor cell (A) passes and declares rho=1.20")
+def _sat_cell_a():
+    levels, out = run_sat(**CELL_A)
+    expect(
+        levels == [],
+        "sat-cell-a",
+        f"the dispatched-and-succeeded cell must be clean, got {levels}\n{out}",
+    )
+    expect(
+        "rho=1.20" in out and "declared-overload" in out,
+        "sat-cell-a",
+        f"the overload was not declared\n{out}",
+    )
+    expect(
+        "probe (0,0)->(0,3), two 3-hop corridors" in out,
+        "sat-cell-a",
+        f"corridor geometry not echoed\n{out}",
+    )
+
+
+@case("#444 the #432 failcell (B) passes; BFS finds flows 0->15, 3->12 on the cut ISL")
+def _sat_cell_b():
+    # (0,0)-(3,0) is the rows-axis wrap link, so this is also the quiet half
+    # of the wrap-aware adjacency rule.
+    levels, out = run_sat(**CELL_B)
+    expect(
+        levels == [],
+        "sat-cell-b",
+        f"the dispatched-and-succeeded cell must be clean, got {levels}\n{out}",
+    )
+    expect(
+        "shortest path of flow(s) 0->15, 3->12" in out,
+        "sat-cell-b",
+        f"BFS did not reach the hand validator's conclusion\n{out}",
+    )
+
+
+@case("#444 topology: 1x1 FAILs; the 1x2 single-ISL anchor (with dsdv) stays clean")
+def _sat_topology_degenerate():
+    levels, out = run_sat(rows=1, cols=1)
+    expect(
+        "FAIL" in levels and "measures nothing" in out,
+        "sat-1x1",
+        f"a 1-node grid did not FAIL\n{out}",
+    )
+    # The #237 anchor shape: 2 nodes, 1 ISL, degree 1 — dsdv is genuinely
+    # correct there (the harness gates on topology, not on the arm), and the
+    # default torus=true wraps nothing without being worth a warning.
+    levels, out = run_sat(rows=1, cols=2, protocols="anthocnet,dsdv")
+    expect(
+        levels == [], "sat-anchor", f"the 1x2 anchor topology must stay clean, got {levels}\n{out}"
+    )
+
+
+@case("#444 topology: a 1xN torus WARNs it is a ring; a 2x2 torus wraps nothing")
+def _sat_torus_degenerate():
+    levels, out = run_sat(rows=1, cols=8, flows=1)
+    expect(
+        levels == ["WARN"] and "is a ring" in out,
+        "sat-ring",
+        f"a 1x8 'torus' was not called a ring, got {levels}\n{out}",
+    )
+    levels, out = run_sat(rows=2, cols=2)
+    expect(
+        levels == ["WARN"] and "wraps nothing" in out,
+        "sat-inert-torus",
+        f"an inert torus flag was not flagged, got {levels}\n{out}",
+    )
+    # Quiet half: the full 6x6/4x4 tori (cells A/B above) say nothing.
+
+
+@case("#444 the GridLinks/AxisLinks mirror desync trips the #226 tripwire")
+def _sat_mirror_desync():
+    # The dual-entry bookkeeping the harness's CheckTopology does, mirrored:
+    # patch the closed form to the open-grid count and the walked torus links
+    # must no longer match — proving an edit to one mirror trips the other.
+    orig = sc.sat_axis_links
+
+    def open_only(n, torus):
+        return 0 if n < 2 else n - 1
+
+    sc.sat_axis_links = open_only
+    try:
+        _levels, out = run_sat(**CELL_B)
+        expect(
+            "mirror out of sync" in out,
+            "sat-mirror",
+            f"a desynced closed form was not flagged\n{out}",
+        )
+    finally:
+        sc.sat_axis_links = orig
+    levels, out = run_sat(**CELL_B)
+    expect(
+        levels == [], "sat-mirror-quiet", f"the intact mirror must stay quiet, got {levels}\n{out}"
+    )
+
+
+@case("#444 #280 flows=0 without a corridor FAILs; as the corridor probe it is the contract")
+def _sat_flows_zero():
+    levels, out = run_sat(flows=0)
+    expect(
+        "FAIL" in levels and "measures nothing" in out,
+        "sat-flows0",
+        f"flows=0 with nothing to probe did not FAIL\n{out}",
+    )
+    # Quiet half: cell A runs flows=0 WITH the corridor and is clean (above).
+    # The reverse reading: flows>0 with the corridor breaks the headline-row-
+    # is-the-probe contract and must WARN.
+    levels, out = run_sat(**dict(CELL_A, flows=4))
+    expect(
+        "WARN" in levels and "headline row IS the probe" in out,
+        "sat-flows-probe-mix",
+        f"flows=4 with the corridor did not WARN on the #280 contract\n{out}",
+    )
+
+
+@case("#444 arms: an empty list FAILs (harness abort)")
+def _sat_arms():
+    levels, out = run_sat(protocols="")
+    expect(
+        "FAIL" in levels and "selected nothing" in out,
+        "sat-arm-empty",
+        f"an empty arm list was not flagged\n{out}",
+    )
+    # Quiet half: the canonical four-arm list (cells A/B) reports nothing.
+
+
+@case("#444 #296 oracle notes: exactness echoed with the arm, alone WARNs, absent silent")
+def _sat_oracle_notes():
+    _levels, out = run_sat(**CELL_A)
+    expect(
+        "mode=wired approx=0" in out,
+        "sat-oracle-exact",
+        f"the exact-on-wired note was not echoed\n{out}",
+    )
+    levels, out = run_sat(protocols="oracle")
+    expect(
+        "WARN" in levels and "upper bound with nothing under it" in out,
+        "sat-oracle-alone",
+        f"a lone oracle arm did not WARN\n{out}",
+    )
+    _levels, out = run_sat(protocols="anthocnet,aodv")
+    expect(
+        "approx=0" not in out,
+        "sat-oracle-absent",
+        f"oracle notes printed without an oracle arm\n{out}",
+    )
+
+
+@case("#444 #216 corridor prerequisites FAIL off-torus / odd cols / bad onset")
+def _sat_corridor_aborts():
+    levels, out = run_sat(**dict(CELL_A, torus=False))
+    expect(
+        "FAIL" in levels and "even number of columns" in out,
+        "sat-corr-open",
+        f"an open-grid corridor did not FAIL\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_A, cols=5))
+    expect("even number of columns" in out, "sat-corr-odd", f"odd cols did not FAIL\n{out}")
+    _levels, out = run_sat(**dict(CELL_A, corridorLoadAt=899.5))
+    expect(
+        "must fall inside the run" in out,
+        "sat-corr-late",
+        f"an onset at time-0.5s did not FAIL\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_A, corridorLoadAt=0.0))
+    expect("must fall inside the run" in out, "sat-corr-zero", f"a zero onset did not FAIL\n{out}")
+    # Quiet half: cell A's onset at 15 s of 900 s.
+
+
+@case("#444 #216 a standard flow hitting the probe destination FAILs (harness abort)")
+def _sat_probe_collision():
+    # 6x6, probe dst = node 3; flow i targets n-1-i, so i=32 is the collision:
+    # flows=33 fires, flows=32 does not.
+    _levels, out = run_sat(**dict(CELL_A, flows=33))
+    expect(
+        "also targets the probe destination" in out,
+        "sat-collide",
+        f"flow 32 -> node 3 was not flagged\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_A, flows=32))
+    expect(
+        "also targets the probe destination" not in out,
+        "sat-collide-quiet",
+        f"a non-colliding flow count was flagged\n{out}",
+    )
+
+
+@case("#444 #216 rho < 1 WARNs an unsaturated corridor; an unparsable rate WARNs")
+def _sat_rho():
+    levels, out = run_sat(**dict(CELL_A, corridorLoad="8Mbps"))
+    expect(
+        "WARN" in levels and "rho=0.80 < 1" in out,
+        "sat-rho-under",
+        f"an unsaturated corridor did not WARN\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_A, corridorLoad="fast"))
+    expect(
+        "rho unchecked" in out,
+        "sat-rho-unparsed",
+        f"an unparsable DataRate was silently skipped\n{out}",
+    )
+    # Quiet half: cell A's 12Mbps/10Mbps prints rho=1.20 as a note, no WARN.
+
+
+@case("#444 #260 break knobs must come together; breakAt must precede --time")
+def _sat_break_pairing():
+    _levels, out = run_sat(**dict(CELL_B, breakLink=""))
+    expect(
+        "given together" in out,
+        "sat-break-lone-at",
+        f"--breakAt without --breakLink did not FAIL\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_B, breakAt=0.0))
+    expect(
+        "given together" in out,
+        "sat-break-lone-link",
+        f"--breakLink without --breakAt did not FAIL\n{out}",
+    )
+    levels, out = run_sat(**dict(CELL_B, breakAt=900.0))
+    expect(
+        "FAIL" in levels and "past --time" in out,
+        "sat-break-late",
+        f"breakAt == time did not FAIL\n{out}",
+    )
+    # Quiet half: cell B's 450 s of 900 s.
+
+
+@case("#444 #260 break endpoints: format, range, identity, wrap-aware adjacency")
+def _sat_break_endpoints():
+    _levels, out = run_sat(**dict(CELL_B, breakLink="0,0,3"))
+    expect(
+        "expects r1,c1,r2,c2" in out, "sat-break-format", f"a 3-field breakLink did not FAIL\n{out}"
+    )
+    _levels, out = run_sat(**dict(CELL_B, breakLink="0,0,4,0"))
+    expect(
+        "outside the 4x4 grid" in out,
+        "sat-break-range",
+        f"an out-of-grid endpoint did not FAIL\n{out}",
+    )
+    _levels, out = run_sat(**dict(CELL_B, breakLink="1,1,1,1"))
+    expect("same node" in out, "sat-break-self", f"a self-link did not FAIL\n{out}")
+    _levels, out = run_sat(**dict(CELL_B, breakLink="0,0,2,0"))
+    expect("not adjacent" in out, "sat-break-nonadj", f"a distance-2 pair did not FAIL\n{out}")
+    # (0,0)-(3,0) is adjacent ONLY via the rows-axis wrap: the same endpoints
+    # on the open grid must FAIL. The torus quiet half is cell B itself.
+    levels, out = run_sat(**dict(CELL_B, torus=False))
+    expect(
+        "FAIL" in levels and "not adjacent" in out,
+        "sat-break-wrap",
+        f"the wrap link survived torus=false\n{out}",
+    )
+
+
+@case("#444 #260 break timing: an early break and a thin post-break window WARN")
+def _sat_break_timing():
+    levels, out = run_sat(**dict(CELL_B, breakAt=10.0))
+    expect(
+        "WARN" in levels and "settle window" in out,
+        "sat-break-early",
+        f"a break inside the settle window did not WARN\n{out}",
+    )
+    levels, out = run_sat(**dict(CELL_B, breakAt=880.0))
+    expect(
+        "WARN" in levels and "post-break traffic" in out,
+        "sat-break-thin",
+        f"19 s of post-break traffic did not WARN\n{out}",
+    )
+    # Quiet half: cell B's 450 s (>= 15 s settle, 449 s of post-break).
+
+
+@case("#444 #260 a break no flow routes over FAILs; a partitioning break FAILs")
+def _sat_break_bfs():
+    # 4x4 torus, one flow (0 -> 15, 2 hops): the column link (1,0)-(2,0) is
+    # adjacent but on no shortest path of that flow — a break nobody routes
+    # over measures nothing.
+    levels, out = run_sat(
+        rows=4,
+        cols=4,
+        time=900.0,
+        flows=1,
+        breakLink="1,0,2,0",
+        breakAt=450.0,
+        protocols="anthocnet,aodv,olsr,oracle",
+    )
+    expect(
+        "FAIL" in levels and "no configured flow's shortest path" in out,
+        "sat-break-offpath",
+        f"an off-path break did not FAIL\n{out}",
+    )
+    # 1x4 open path, flow 0 -> 3: cutting (0,1)-(0,2) partitions it, so the
+    # cell measures connectivity, not reconvergence.
+    levels, out = run_sat(
+        rows=1,
+        cols=4,
+        torus=False,
+        time=100.0,
+        flows=1,
+        breakLink="0,1,0,2",
+        breakAt=30.0,
+        protocols="anthocnet",
+    )
+    expect(
+        "FAIL" in levels and "disconnects flow(s) 0->3" in out,
+        "sat-break-partition",
+        f"a partitioning break did not FAIL\n{out}",
+    )
+    # Quiet half: cell B's break sits on flows 0->15 and 3->12 (above).
+
+
+# --- #432 item 3: static irregularity (--removeLinks) ------------------------
+#
+# Fixture is the designed seam cell (#432 item 3): the 6x6 torus with the
+# rows-axis wrap seam cut at every column but 0 — 67 ISLs, degree min 3 /
+# max 4, still connected, and the surviving wrap ISL (0,0)-(5,0) on a
+# shortest path of all 8 standard flows. Mean shortest-path hops over those
+# flows: 4.25 (21.25 ms oracle floor) vs 3.25 on the full torus, with flows
+# 2->33 and 3->32 tripled from 2 to 6 hops and equal-cost but structurally
+# different alternatives (funnel vs around the open rows axis).
+
+SEAM = {
+    "rows": 6,
+    "cols": 6,
+    "time": 900.0,
+    "flows": 8,
+    "removeLinks": "5,1,0,1;5,2,0,2;5,3,0,3;5,4,0,4;5,5,0,5",
+    "protocols": "anthocnet,aodv,olsr,oracle",
+}
+
+
+@case("#432 the seam cell passes; the built (post-removal) topology is echoed")
+def _seam_cell():
+    levels, out = run_sat(**SEAM)
+    expect(levels == [], "seam", f"the designed cell must be clean, got {levels}\n{out}")
+    expect("67 ISLs" in out, "seam", f"the ISL count does not reflect the removals\n{out}")
+    # The degree spread comes from the post-removal adjacency — the same `deg`
+    # the #420 dsdv rule reads, so this line is also the proof that the dsdv
+    # gate keys on the topology actually built, not on the +Grid closed form.
+    expect("degree min=3 max=4" in out, "seam", f"the degree spread is not post-removal\n{out}")
+    expect("still connected" in out, "seam", f"connectivity of the remainder was not proven\n{out}")
+
+
+@case("#432 removeLinks validation: format, range, identity, adjacency, duplicate")
+def _seam_validation():
+    _levels, out = run_sat(**dict(SEAM, removeLinks="5,1,0"))
+    expect("expects r1,c1,r2,c2" in out, "seam-format", f"a 3-field quadruple did not FAIL\n{out}")
+    _levels, out = run_sat(**dict(SEAM, removeLinks="6,0,0,0"))
+    expect(
+        "outside the 6x6 grid" in out, "seam-range", f"an out-of-grid endpoint did not FAIL\n{out}"
+    )
+    _levels, out = run_sat(**dict(SEAM, removeLinks="1,1,1,1"))
+    expect("same node" in out, "seam-self", f"a self-link did not FAIL\n{out}")
+    _levels, out = run_sat(**dict(SEAM, removeLinks="0,0,2,0"))
+    expect("not adjacent" in out, "seam-nonadj", f"a distance-2 pair did not FAIL\n{out}")
+    _levels, out = run_sat(**dict(SEAM, removeLinks="5,1,0,1;5,1,0,1"))
+    expect("twice" in out, "seam-dupe", f"a duplicate removal did not FAIL\n{out}")
+    # Quiet half: the seam cell's five distinct wrap quadruples (above).
+
+
+@case("#432 a disconnecting removal FAILs; the seam removal stays connected")
+def _seam_disconnect():
+    # 4x4 torus, all four ISLs of satellite (0,0) removed -> node 0 isolated.
+    levels, out = run_sat(
+        rows=4,
+        cols=4,
+        time=900.0,
+        flows=8,
+        removeLinks="0,0,0,1;0,0,0,3;0,0,1,0;0,0,3,0",
+        protocols="anthocnet,aodv,olsr,oracle",
+    )
+    expect(
+        "FAIL" in levels and "disconnects the constellation" in out,
+        "seam-cut",
+        f"an isolating removal did not FAIL\n{out}",
+    )
+    # Quiet half: the seam cell removes 5 ISLs and stays connected (above).
+
+
+@case("#432 a removed ISL cannot host the scripted break; the funnel can")
+def _seam_break_removed():
+    levels, out = run_sat(**dict(SEAM, breakLink="5,1,0,1", breakAt=450.0))
+    expect(
+        "FAIL" in levels and "names no built ISL" in out,
+        "seam-break-removed",
+        f"breaking a removed ISL did not FAIL\n{out}",
+    )
+    # Quiet half: the surviving funnel ISL (0,0)-(5,0) is grid-adjacent, not
+    # removed, and on every flow's shortest path — the break BFS must run on
+    # the post-removal adjacency and find it.
+    levels, out = run_sat(**dict(SEAM, breakLink="0,0,5,0", breakAt=450.0))
+    expect(
+        levels == [] and "shortest path of flow(s)" in out,
+        "seam-break-funnel",
+        f"breaking the funnel ISL was not clean, got {levels}\n{out}",
+    )
+
+
+@case("#432 a row-0 removal with the corridor on FAILs; an off-row-0 one is clean")
+def _seam_corridor():
+    levels, out = run_sat(**dict(CELL_A, removeLinks="0,1,0,2"))
+    expect(
+        "FAIL" in levels and "cuts a row-0 ISL" in out,
+        "seam-corr",
+        f"a removal inside the corridor ring did not FAIL\n{out}",
+    )
+    levels, out = run_sat(**dict(CELL_A, removeLinks="3,0,4,0"))
+    expect(
+        levels == [],
+        "seam-corr-quiet",
+        f"an off-row-0 removal with the corridor on was flagged, got {levels}\n{out}",
+    )
+
+
+@case("#444 the MANET preflight defaults are unchanged by the per-harness fill")
+def _sat_manet_defaults_unchanged():
+    # --time/--flows/--protocols moved to a None default so isl-grid can fill
+    # its own; a bare MANET preflight must be byte-identical to the explicit
+    # pre-#444 defaults.
+    explicit = run_preflight()
+    filled = run_preflight(time=None, flows=None, protocols=None)
+    expect(
+        explicit == filled,
+        "sat-manet-defaults",
+        f"the None fill changed MANET behaviour:\n{explicit}\nvs\n{filled}",
+    )
+
+
+# --- #294 item 4 route stability ---------------------------------------------
+# Rows shaped from a local 3.42 run of the paper field at pause=900, time=200,
+# propagation=range (seed 1): the oracle reads pathChg 0 exactly and every
+# single-path baseline's path length equals its TTL hop count.
+
+ROUTE_CONFIG_STATIC = (
+    "##CONFIG## scenario=paper nNodes=50 time=200 runs=1 firstRun=1 "
+    "areaX=1500 areaY=300 speed=20 pause=900 range=300 propagation=range "
+    "mobility=rwp transport=udp flows=20 cbrBps=512\n"
+)
+ROUTE_ROWS = (
+    "##ROUTE## 1 anthocnet 2.0578 94.0028 0 0.07351 10.000 91 3.0397 3.0541\n"
+    "##ROUTE## 1 aodv 2.2718 14.0058 0 0.23022 6.000 256 3.0910 3.0910\n"
+    "##ROUTE## 1 olsr 2.0145 3.0072 0 0.00000 -1.000 0 2.9631 2.9631\n"
+    "##ROUTE## 1 oracle 2.0128 2.0417 0 0.00000 -1.000 0 2.9639 2.9639\n"
+)
+
+
+@case("#294 coherent ##ROUTE## rows on a static disk field stay quiet")
+def _route_clean_quiet():
+    # AntHocNet's 3.0397 vs 3.0541 is the held-packet TTL offset, exempt by
+    # design; every other rule holds on these rows.
+    _levels, out = run_cell(ISL_CELL + ROUTE_CONFIG_STATIC + ROUTE_ROWS)
+    expect("#294" not in out, "route-clean", f"coherent rows flagged\n{out}")
+
+
+@case(
+    "#294 pathChg > 1, mis-mapped setup/lifetime, a baseline path/TTL "
+    "gap and a blind path hook FAIL"
+)
+def _route_incoherent_fires():
+    rows = (
+        "##ROUTE## 1 aodv 2.2718 14.0058 0 1.20000 6.000 256 3.0910 3.0910\n"
+        "##ROUTE## 2 aodv 14.0058 2.2718 0 0.20000 6.000 256 3.0910 3.0910\n"
+        "##ROUTE## 3 dsdv 2.0200 3.0145 0 0.19124 -1.000 249 3.2769 3.2769\n"
+        "##ROUTE## 4 olsr 2.0145 3.0072 0 0.00000 -1.000 0 2.5000 2.9631\n"
+        "##ROUTE## 5 gpsr 2.0274 8.0230 0 0.00000 -1.000 0 0.0000 1.8309\n"
+    )
+    _levels, out = run_cell(ISL_CELL + rows)
+    for needle, name in (
+        ("pathChg 1.2 outside", "route-chg"),
+        ("setup latency median 14.0058", "route-setup"),
+        ("pathLifeN 249", "route-life"),
+        ("path length 2.5 hops", "route-identity"),
+        ("pathHopsMean 0 with hopsMean 1.8309", "route-blind"),
+    ):
+        expect(needle in out, name, f"expected {needle!r}\n{out}")
+
+
+@case(
+    "#294 the oracle control: path change on a static disk field FAILs, "
+    "the same row on a moving field is quiet"
+)
+def _route_oracle_control():
+    row = "##ROUTE## 1 oracle 2.0128 2.0417 0 0.00100 40.0 3 2.9639 2.9639\n"
+    _levels, out = run_cell(ISL_CELL + ROUTE_CONFIG_STATIC + row)
+    expect(
+        "oracle pathChg 0.001 on a static disk" in out,
+        "route-oracle",
+        f"a moving oracle path on a static field was not flagged\n{out}",
+    )
+    moving = ROUTE_CONFIG_STATIC.replace("pause=900", "pause=0")
+    _levels, out = run_cell(ISL_CELL + moving + row)
+    expect(
+        "#294" not in out,
+        "route-oracle-moving",
+        f"an oracle path change on a moving field was flagged\n{out}",
+    )
+
+
+@case("#294 a ##ROUTE## row under transport=tcp FAILs")
+def _route_tcp_fires():
+    tcp = ROUTE_CONFIG_STATIC.replace("transport=udp", "transport=tcp")
+    _levels, out = run_cell(ISL_CELL + tcp + ROUTE_ROWS)
+    expect("under transport=tcp" in out, "route-tcp", f"a TCP ##ROUTE## row was not flagged\n{out}")
+
+
+# --- #521 source schedule -----------------------------------------------------
+
+
+@case(
+    "#521 a ##CONFIG## row without offTime WARNs as pre-#521, offTime=1 "
+    "WARNs as legacy, offTime=0 is quiet"
+)
+def _source_schedule():
+    cfg0 = ROUTE_CONFIG_STATIC.replace("cbrBps=512", "cbrBps=512 offTime=0")
+    _levels, out = run_cell(ISL_CELL + cfg0)
+    expect("#521" not in out, "sched-cbr", f"a CBR cell was flagged\n{out}")
+    _levels, out = run_cell(ISL_CELL + ROUTE_CONFIG_STATIC)
+    expect("pre-#521 cell" in out, "sched-pre", f"a cell without offTime was not flagged\n{out}")
+    cfg1 = ROUTE_CONFIG_STATIC.replace("cbrBps=512", "cbrBps=512 offTime=1")
+    _levels, out = run_cell(ISL_CELL + cfg1)
+    expect(
+        "offTime=1 — the legacy" in out,
+        "sched-legacy",
+        f"a legacy-schedule cell was not flagged\n{out}",
+    )
+
+
+# --- #297 leo-walker dynamics: handover clock + outage accounting --------------
+
+# A real leo-walker cell (16x16 at 1150 km, 60 s, ISL overlay 2 %, mass failure
+# at 30 s), one arm and seed: the ticks at 12/27/42/57 s are the 15 s clock at
+# second 12, and every # account line closes (222 = 215 + 7 + 0, ...).
+LEO_CELL = """\
+##CONFIG## harness=leo-walker planes=16 sats=16 phasing=1 altitude=1150 inclination=53 time=60 runs=1 firstRun=1 flows=4 cbrBps=2048 minElevation=25 clock=15 clockOffset=12 islDown=0.02 islMeanDown=2 massFailAt=30 massFailFrac=0.05 delayUpdate=0.1 oracleInterval=0 protocols=anthocnet
+# visibility minElevation=25.000 NewYork=9 London=7 SaoPaulo=3 Johannesburg=5 Tokyo=6 Sydney=7
+# handover anthocnet seed=1 scheduled=3 forced=1 islFailures=317 ticks=4
+# account anthocnet seed=1 flow=0 offered=222 refused=0 delivered=215 received=215 dup=0 outageLost=7 scatteredLost=0
+# account anthocnet seed=1 flow=1 offered=224 refused=0 delivered=172 received=172 dup=0 outageLost=51 scatteredLost=1
+# account anthocnet seed=1 flow=2 offered=231 refused=0 delivered=204 received=204 dup=0 outageLost=25 scatteredLost=2
+# account anthocnet seed=1 flow=3 offered=229 refused=0 delivered=155 received=155 dup=0 outageLost=70 scatteredLost=4
+# outage anthocnet seed=1 class=startup n=0 lost=0 p50=nan p90=nan max=nan
+# outage anthocnet seed=1 class=scheduled n=5 lost=40 p50=2.000 p90=2.500 max=2.500
+# outage anthocnet seed=1 class=unplanned n=13 lost=93 p50=1.750 p90=2.500 max=4.000
+# outage anthocnet seed=1 class=massfail n=2 lost=20 p50=2.750 p90=2.750 max=2.750
+# outage anthocnet seed=1 class=other n=0 lost=0 p50=nan p90=nan max=nan
+##RUN## 1 anthocnet 82.34 80.72 199.00 9.15 147.31 266.27 5.34
+protocol        PDR%  delay(ms)  delay99(ms)  thrput(kbps)      NRL   NRLbytes  jitter(ms)
+anthocnet      82.34      80.72       199.00          9.15   147.31     266.27        5.34
+"""
+
+
+def _leo_fails(text):
+    _levels, out = run_cell(text)
+    return [ln for ln in out.splitlines() if ln.startswith("FAIL")], out
+
+
+@case("#297 a real leo-walker cell passes both dynamics rules")
+def _leo_clean():
+    fails, out = _leo_fails(LEO_CELL)
+    expect(not fails, "leo-clean", f"a coherent leo-walker cell FAILed\n{out}")
+
+
+@case(
+    "#297 a handover clock that ticked a different number of times FAILs; "
+    "the t=time boundary tick may be missing"
+)
+def _leo_clock():
+    fails, out = _leo_fails(LEO_CELL.replace("ticks=4", "ticks=3"))
+    expect(
+        any("handover clock ticked 3 times" in f for f in fails),
+        "leo-ticks",
+        f"a 3-tick clock on a 4-tick config was not flagged\n{out}",
+    )
+    # time=57: ticks at 12/27/42 and exactly at 57 — 3 or 4 both legitimate.
+    edge = LEO_CELL.replace("time=60", "time=57").replace("ticks=4", "ticks=3")
+    fails, out = _leo_fails(edge)
+    expect(
+        not any("handover clock" in f for f in fails),
+        "leo-boundary",
+        f"the t=time boundary tick was flagged\n{out}",
+    )
+
+
+@case("#297 more scheduled handovers than ticks x stations FAILs (double counting)")
+def _leo_double_count():
+    fails, out = _leo_fails(LEO_CELL.replace("scheduled=3", "scheduled=25"))
+    expect(
+        any("exceed ticks x stations = 24" in f for f in fails),
+        "leo-sched",
+        f"25 scheduled handovers on 4 ticks x 6 stations was not flagged\n{out}",
+    )
+
+
+@case("#297 an account line that does not close FAILs, and so does delivered != received")
+def _leo_books():
+    bad = LEO_CELL.replace(
+        "delivered=215 received=215 dup=0 outageLost=7",
+        "delivered=215 received=215 dup=0 outageLost=6",
+    )
+    fails, out = _leo_fails(bad)
+    expect(
+        any("the outage books do not close" in f for f in fails),
+        "leo-close",
+        f"222 != 215 + 6 + 0 was not flagged\n{out}",
+    )
+    bad = LEO_CELL.replace("delivered=172 received=172", "delivered=172 received=171")
+    fails, out = _leo_fails(bad)
+    expect(
+        any("distinct sequence numbers received 171" in f for f in fails),
+        "leo-recv",
+        f"delivered != received was not flagged\n{out}",
+    )
+
+
+@case("#297 # outage classes that lose a different count than the flows FAIL")
+def _leo_classes():
+    fails, out = _leo_fails(
+        LEO_CELL.replace("class=massfail n=2 lost=20", "class=massfail n=2 lost=0")
+    )
+    expect(
+        any("an outage is missing from or double counted" in f for f in fails),
+        "leo-classes",
+        f"classes summing to 133 vs 153 was not flagged\n{out}",
+    )
+
+
+@case("#297 a ##RUN## PDR that disagrees with the # account books FAILs")
+def _leo_pdr():
+    fails, out = _leo_fails(
+        LEO_CELL.replace("##RUN## 1 anthocnet 82.34", "##RUN## 1 anthocnet 84.10")
+    )
+    expect(
+        any("100 x delivered/offered = 82.340" in f for f in fails),
+        "leo-pdr",
+        f"a PDR off the books was not flagged\n{out}",
+    )
+
+
+@case("v2.4.0 a cell collected from seed blocks checks each block's oracle against its own block")
+def _seed_blocks_grouped():
+    # Two 5-seed blocks of one static-mesh cell, concatenated by campaign.py
+    # collect. Each block's oracle sits at its own arms' hop count; block 1's
+    # oracle (2.61) is above block 2's OLSR (2.23), which is not a finding.
+    # Before the fix every block's rows shared one group, and the first
+    # block's oracle was compared with the second block's arms.
+    def block(first, o_hops, p_hops):
+        return (
+            f"##CONFIG## scenario=paper nNodes=50 time=900 runs=5 firstRun={first} "
+            "protocols=olsr,oracle\n"
+            "olsr  100.0 0.8 1.5 13.14 1.76 0.06 0.5 1.5 3.175 36847.0 2.2945 "
+            f"{p_hops} 0.9959 0.10\n"
+            "oracle 99.9 0.8 1.7 13.12 0.00 0.26 0.5 1.5 0.000 36829.6 2.2961 "
+            f"{o_hops} 0.9957 3.19\n"
+        )
+
+    text = block(1, "2.61", "2.60") + block(6, "2.23", "2.23")
+    levels, out = run_cell(text)
+    expect(
+        "FAIL" not in levels, "blocks-grouped", f"an oracle was compared across seed blocks\n{out}"
+    )
+    # Inside one block the rule still fires.
+    levels, out = run_cell(block(1, "2.61", "2.23") + block(6, "2.23", "2.23"))
+    expect(
+        "FAIL" in levels and "oracle mean hops 2.61 exceeds olsr's 2.23" in out,
+        "blocks-still-checked",
+        out,
+    )
+
+
+@case("#580 --buildings: outside the field FAILs, off the urban channel FAILs, a good list passes")
+def _buildings_rules():
+    good = "120,170,320,330;680,170,880,330"
+    _, out = run_preflight(
+        areaX=1000.0, areaY=500.0, propagation="urban", mobility="trace", buildings=good
+    )
+    expect("FAIL: --buildings" not in out, "buildings-good", out)
+    _, out = run_preflight(
+        areaX=1000.0,
+        areaY=500.0,
+        propagation="urban",
+        mobility="trace",
+        buildings="900,170,1100,330",
+    )
+    expect("leaves the 1000 x 500 m field" in out, "buildings-outside", out)
+    _, out = run_preflight(areaX=1000.0, areaY=500.0, propagation="range", buildings=good)
+    expect("--buildings needs --propagation=urban" in out, "buildings-channel", out)
+    _, out = run_preflight(
+        areaX=1000.0,
+        areaY=500.0,
+        propagation="urban",
+        mobility="trace",
+        buildings="320,170,120,330",
+    )
+    expect("needs xmin < xmax" in out, "buildings-malformed", out)
+
+
+@case("#581 with --sagin each HAPS is an access site: the ticks x sites bound counts them")
+def _leo_sagin_sites():
+    vis = (
+        "# visibility minElevation=25.000 NewYork=9 London=7 SaoPaulo=3 "
+        "Johannesburg=5 Tokyo=6 Sydney=7"
+    )
+    sagin = " ".join(
+        f"{c}#{k}=5"
+        for c in ("NewYork", "London", "SaoPaulo", "Johannesburg", "Tokyo", "Sydney")
+        for k in range(3)
+    )
+    cell = LEO_CELL.replace(vis, f"# visibility minElevation=25.000 {sagin}")
+    # 4 ticks x 18 HAPS = 72: 40 scheduled handovers is legitimate here.
+    fails, out = _leo_fails(cell.replace("scheduled=3", "scheduled=40"))
+    expect(
+        not any("exceed ticks x stations" in f for f in fails),
+        "sagin-sites",
+        f"40 handovers on 4 ticks x 18 HAPS was flagged\n{out}",
+    )
+    fails, out = _leo_fails(cell.replace("scheduled=3", "scheduled=73"))
+    expect(
+        any("exceed ticks x stations = 72" in f for f in fails),
+        "sagin-sites-bound",
+        f"73 handovers on 4 ticks x 18 HAPS was not flagged\n{out}",
+    )
+
+
+# #741: the scale-500-v240 block-1 row, where NRL 10114.56 fills its 8-wide
+# field and merges with thrput, so every later column shifts by one.
+MERGED_CELL = """\
+##RUN## 1 anthocnet 10.79 392.5 3118.0 1.08 10114.56 415.50 inf inf 24206.1460
+##RUN## 1 aodv 16.37 264.0 2709.0 1.64 3934.86 283.25 inf inf 2185.9900
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes   energy(J)       J/pkt        hops        jain   jitterEq51
+anthocnet       10.8      392.5       3118.0         1.0810114.56      415.50         inf         inf   24206.146    129744.4    348.7869        7.56      0.3270      3853.47
+aodv            16.4      264.0       2709.0         1.64 3934.86      283.25         inf         inf    2185.990    127078.0    192.6068        4.37      0.4626      5313.08
+"""
+
+
+@case("#741 a merged-column table row is a format error, not a shifted Jain FAIL")
+def _merged_columns():
+    _levels, out = run_cell(MERGED_CELL)
+    expect(
+        "13 fields under a 14-column header" in out,
+        "merged-columns",
+        f"the merged row was not reported as a format error\n{out}",
+    )
+    expect(
+        "Jain" not in out, "merged-columns-shift", f"the merged row was mapped by position\n{out}"
+    )
+    _levels, out = run_cell(MERGED_CELL.replace("1.0810114.56", "1.08 10114.56"))
+    expect("#741" not in out, "separated-columns", f"a well-formed row was flagged\n{out}")
+
+
+# --- what the port added (ns3-tools#28) ---------------------------------------
+# Anchors from a file, arm roles from the command line, and no protocol or
+# anchor name in the module's code.
+
+
+def run_text(text, suffix=".txt", **args):
+    """cmd_results on one file with exactly these arguments (no ROLES)."""
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        sc.issues = []
+        ns = argparse.Namespace(files=[path], **dict({"anchor": None}, **args))
+        code = 0
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                sc.cmd_results(ns)
+            except SystemExit as e:
+                code = e.code
+        return list(sc.issues), out.getvalue(), code
+    finally:
+        os.unlink(path)
+
+
+def csv_text(**overrides):
+    row = dict(CLEAN, **overrides)
+    return ",".join(row) + "\n" + ",".join(str(v) for v in row.values()) + "\n"
+
+
+def write_tmp(text):
+    fd, path = tempfile.mkstemp(suffix=".yml")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    return path
+
+
+@case("port: the anchors file parses as AntHocNet's check-anchors.sh reads it")
+def _anchors_parse():
+    a = sc.load_anchors(ANCHORS)
+    expect(
+        a.get("single_hop_pdr_min") == 99.0
+        and a.get("sat_hop_delay_slack_ms") == 1.5
+        and a.get("disaster_arm_pdr_min") == 50.0,
+        "anchors-parse",
+        f"{a}",
+    )
+    expect(len(a) == 23, "anchors-parse", f"{len(a)} keys")
+    path = write_tmp("ok_pdr_min: 90.0  # a comment\nbroken_pdr_min: ninety\n")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                sc.load_anchors(path)
+                code = None
+            except SystemExit as e:
+                code = str(e.code)
+    finally:
+        os.unlink(path)
+    expect(
+        code is not None and ":2: expected 'key: number'" in code,
+        "anchors-bad-line",
+        f"a non-numeric floor was not refused: {code}",
+    )
+
+
+@case("port: an --anchor name is a key of the file or its stem, else refused with the list")
+def _anchor_names():
+    a = sc.load_anchors(ANCHORS)
+    expect(sc.anchor_key("single-hop", a) == "single_hop_pdr_min", "anchor-stem", "")
+    expect(
+        sc.anchor_key("broch-low-mobility-aodv", a) == "broch_low_mobility_aodv_pdr_min",
+        "anchor-stem",
+        "",
+    )
+    expect(sc.anchor_key("mesh_hwmp_stretch_max", a) == "mesh_hwmp_stretch_max", "anchor-key", "")
+    try:
+        sc.anchor_key("broch-low-mobility", a)
+        code = None
+    except SystemExit as e:
+        code = str(e.code)
+    expect(
+        code is not None and "broch-low-mobility-aodv" in code,
+        "anchor-unknown",
+        f"an unknown name was not refused with the file's names: {code}",
+    )
+    _l, _o, code = run_text(csv_text(protocol="aodv"), suffix=".csv", anchor="single-hop")
+    expect(code and "needs --anchors" in str(code), "anchor-no-file", f"{code}")
+
+
+@case("port: an anchor floor judges --anchor-arms rows, or every row when none is named")
+def _anchor_arms():
+    text = csv_text(protocol="anthocnet", pdr_pct="80.0")
+    _l, out, _c = run_text(text, suffix=".csv", anchors=ANCHORS, anchor="single-hop")
+    expect("floor 99.0 violated (ANTHOCNET PDR 80.0)" in out, "anchor-every-row", out)
+    _l, out, _c = run_text(
+        text, suffix=".csv", anchors=ANCHORS, anchor="single-hop", anchor_arms="aodv"
+    )
+    expect("single-hop" not in out, "anchor-arms-scoped", out)
+
+
+@case("port: without --anchors the single-ISL floor skips; a file without the key skips")
+def _sat_floor_needs_file():
+    cell = (
+        "protocol,runs,rows,cols,torus,nodes,links,isl_delay_ms,pdr_pct,delay_ms,"
+        "delay99_ms,throughput_kbps,nrl,jitter_ms\n"
+        "aodv,2,1,2,false,2,1,5.0,97.0,5.2,5.4,4.0,0.5,0.1\n"
+    )
+    _l, out, _c = run_text(cell, suffix=".csv")
+    expect("sat_single_isl_pdr_min" not in out, "sat-floor-no-file", out)
+    path = write_tmp("single_hop_pdr_min: 99.0\n")
+    try:
+        _l, out, _c = run_text(cell, suffix=".csv", anchors=path)
+    finally:
+        os.unlink(path)
+    expect("sat_single_isl_pdr_min" not in out, "sat-floor-no-key", out)
+    _l, out, _c = run_text(cell, suffix=".csv", anchors=ANCHORS)
+    expect("sat_single_isl_pdr_min 99.0 violated (AODV PDR 97.0)" in out, "sat-floor-file", out)
+
+
+@case("port: the path-identity rule judges the --single-path arms only")
+def _route_roles():
+    row = "##ROUTE## 1 olsr 2.0145 3.0072 0 0.00000 -1.000 0 2.5000 2.9631\n"
+    _l, out, _c = run_text(ISL_CELL + PROV + row)
+    expect("path length 2.5 hops" not in out, "route-no-role", out)
+    _l, out, _c = run_text(ISL_CELL + PROV + row, single_path="olsr")
+    expect("path length 2.5 hops" in out, "route-role", out)
+
+
+@case("port: the oracle is the arm of the ##ORACLE## rows unless --oracle names one")
+def _oracle_from_marker():
+    row = (
+        "##ORACLE## 1 ctl mode=disk approx=0 nodes=20 edges=40 recomputes=10 "
+        "changes=3 range=300 noRoute=0 nrl=0.5\n"
+    )
+    _l, out, _c = run_text(ISL_CELL + PROV + row)
+    expect("NRL 0.5 on the oracle arm" in out and "/ctl" in out, "oracle-marker", out)
+    expect("only the oracle arm can emit one" not in out, "oracle-marker", out)
+    _l, out, _c = run_text(ISL_CELL + PROV + row, oracle_arm="oracle")
+    expect("a ##ORACLE## row for 'ctl'" in out, "oracle-named", out)
+
+
+@case("port: --multipath names the arm whose diversity excess is read")
+def _multipath_role():
+    cell = (
+        csv_text(protocol="aodv", path_div_used="1.000")
+        + csv_text(protocol="anthocnet", path_div_used="1.303").split("\n", 1)[1]
+    )
+    _l, out, _c = run_text(cell, suffix=".csv", single_path="aodv", multipath="anthocnet")
+    expect("path diversity readable — anthocnet 1.303" in out, "multipath-role", out)
+    _l, out, _c = run_text(cell, suffix=".csv", single_path="aodv")
+    expect(
+        "single-path diversity floor 1.0 (aodv)" in out and "anthocnet" not in out,
+        "multipath-unset",
+        out,
+    )
+
+
+@case("port: --hold-ceiling sets the default bound and one arm's bound")
+def _hold_ceiling_roles():
+    cell = (
+        "beeadhoc 93.4 86.9 849.5 5.37 3.66\n"
+        "##HOLD## 1 beeadhoc 40 650.00 12000.00 3 900.00 2100.00 5 30.00 80.00\n"
+    )
+    _l, out, _c = run_text(cell)
+    expect("exceeds 5000.0 ms" in out, "hold-default", out)
+    _l, out, _c = run_text(cell, hold_ceiling=["20000"])
+    expect("exceeds" not in out, "hold-default-raised", out)
+    _l, out, _c = run_text(cell, hold_ceiling=["beeadhoc=10000"])
+    expect("exceeds 10000.0 ms" in out, "hold-arm", out)
+
+
+@case("port: no protocol or anchor name is a literal in the module's code (rule 12)")
+def _no_names_in_code():
+    import tokenize
+
+    names = {
+        "anthocnet",
+        "aodv",
+        "olsr",
+        "dsdv",
+        "hwmp",
+        "oracle",
+        "gpsr",
+        "gpcr",
+        "gpsr3d",
+        "ara",
+        "termite",
+        "qrouting",
+        "beeadhoc",
+        "opspf",
+        "aomdv",
+        "single-hop",
+        "broch-low-mobility",
+        "grid-tworay",
+        "grid-nakagami",
+    }
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "ns3_tool", "scenario_check.py"
+    )
+    hits = []
+    with open(path, "rb") as fh:
+        for tok in tokenize.tokenize(fh.readline):
+            if tok.type == tokenize.STRING:
+                try:
+                    value = eval(tok.string)  # a literal, read from our own source
+                except Exception:
+                    continue
+                if isinstance(value, str) and value.strip().lower() in names:
+                    hits.append((tok.start[0], value))
+    expect(not hits, "no-names", f"protocol/anchor literals in the code: {hits}")
+
+
+@case("port: the command line runs end to end with no AntHocNet checkout")
+def _cli():
+    import subprocess
+
+    mod = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "ns3_tool", "scenario_check.py"
+    )
+    cell = os.path.join(FIXTURES, "cells", "fanet-main-6arm.txt")
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            mod,
+            "results",
+            cell,
+            "--anchors",
+            ANCHORS,
+            "--anchor",
+            "fanet-single-hop-3d",
+            "--anchor-arms",
+            "aodv",
+            "--single-path",
+            "aodv,olsr,dsdv",
+            "--multipath",
+            "anthocnet",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    expect(
+        r.returncode == 1 and "anchor 'fanet-single-hop-3d' floor 99.0 violated" in r.stdout,
+        "cli-results",
+        f"rc={r.returncode}\n{r.stdout[-2000:]}{r.stderr}",
+    )
+    r = subprocess.run(
+        [sys.executable, "-I", mod, "preflight", "--pathWindowS", "2"],
+        capture_output=True,
+        text=True,
+    )
+    expect(
+        r.returncode == 0 and r.stdout.rstrip().endswith("(0 fail, 1 warn)"),
+        "cli-preflight",
+        f"rc={r.returncode}\n{r.stdout}{r.stderr}",
+    )
+
+
+def main():
+    for name, fn in CASES:
+        fn()
+        print(f"ok   {name}")
+    print(f"\n{len(CASES)} cases passed")
+
+
+if __name__ == "__main__":
+    main()

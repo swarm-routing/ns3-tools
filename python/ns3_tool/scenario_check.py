@@ -1,0 +1,3475 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)
+# SPDX-License-Identifier: MIT OR GPL-2.0-only
+"""Scenario validation (#134): pre-flight config checks + result plausibility.
+
+Ported from danieljoppi/AntHocNet tools/bench/scenario_check.py (MIT OR
+GPL-2.0-only, the same licence; ns3-tools#28). A bare #N in this file is an
+AntHocNet issue. What changed in the port, so that no protocol and no anchor
+is special-cased here (ns3-tools AGENTS.md rule 12):
+
+- the anchor floors come from the file given with --anchors (the key schema
+  of AntHocNet's ns3/tools/anchors.yml: one `key: number` per line, `#`
+  comments). An --anchor name is a key of that file, or its stem (the key
+  without `_pdr_min`, with `-` for `_`), never an entry of a table here;
+- the arms a rule needs are inputs, never names in the code: --anchor-arms
+  (whose rows an anchor floor judges; default every row), --single-path (the
+  arms that install one route per destination), --multipath (the arm whose
+  path-diversity excess is read), --oracle (the shortest-path control; by
+  default the arm that writes a file's ##ORACLE## rows) and --hold-ceiling
+  (the pending-queue hold bound, per arm);
+- the rules that belong to one protocol stay in its repository: AntHocNet's
+  re-injection books (##REINJ##, #386/#402), the opspf arm's LSA rule (#707),
+  and the per-arm preflight refusals (hwmp's radio, gpcr off a street grid,
+  the planar GPSR in 3-D, isl-grid's arm list, dsdv on a multi-ISL grid, the
+  canonical isl-grid arm order). The harness refuses those cells itself.
+
+Two failure classes this script catches before they cost a dispatch cycle
+(#121 budget) or a corrupted conclusion:
+- a degenerate scenario config (partitioned field, overloaded channel,
+  accidental single-hop, too-short sim) dispatched as if meaningful;
+- an implausible or anchor-violating result trusted, compared, or quoted.
+
+All arithmetic happens here; only the verdict lines reach LLM context.
+
+Usage:
+    scenario_check.py preflight [--nodes 50] [--areaX 1500] [--areaY 300] [--areaZ 0]
+                                [--range 300] [--time 300] [--pause 30]
+                                [--speed 20] [--flows 20] [--pktBytes 64]
+                                [--pktPerSec 1 | --cbrBps 512] [--rateMbps 2]
+        # defaults = the paper base scenario; override what your dispatch
+        # overrides. Exit 1 on any FAIL-level degeneracy.
+
+    scenario_check.py preflight --harness isl-grid
+                                [--rows 6] [--cols 6] [--torus true|false]
+                                [--islDelayMs 5] [--islRate 10Mbps]
+                                [--time 60] [--flows 4] [--cbrBps 4096]
+                                [--breakLink r1,c1,r2,c2] [--breakAt <s>]
+                                [--corridorLoad 12Mbps] [--corridorLoadAt 15]
+                                [--removeLinks r1,c1,r2,c2[;...]]
+                                [--protocols ARM[,ARM...]] [--oracle ARM]
+        # #444: pre-flight a satellite (isl-grid) cell instead of the MANET
+        # field. Defaults mirror the harness's own; the rules mirror its
+        # dispatch-time NS_ABORTs plus the checks it cannot do at t=0 (the
+        # break-on-a-flow's-shortest-path BFS, the corridor rho echo).
+        # Exit 1 on any FAIL.
+
+    scenario_check.py results FILE [FILE ...]
+                              [--anchors ANCHORS.yml [--anchor NAME]
+                               [--anchor-arms ARM[,ARM...]]]
+                              [--single-path ARM[,ARM...]] [--multipath ARM]
+                              [--oracle ARM] [--hold-ceiling [ARM=]MS ...]
+        # FILE = a saved ##BENCH## cell / results-table text, a classified
+        # campaign CSV (sniffed by header), or isl-grid output (#259): its
+        # --csv schema (sniffed by the 'protocol,runs,rows,cols,...' header)
+        # or the human satellite-results.txt ('+Grid' summary + ##RUN## rows
+        # + table). --anchor additionally enforces that floor of the
+        # --anchors file on the --anchor-arms rows (#59, single source of
+        # thresholds); the single-ISL floor (sat_single_isl_pdr_min) fires
+        # automatically when the input identifies that topology and the
+        # file has the key. Exit 1 on any FAIL.
+"""
+
+import argparse
+import csv
+import math
+import os
+import re
+import sys
+
+# The anchor file's floor that a 2-satellite / 1-ISL input triggers on its own
+# (#259), and the suffix an --anchor stem leaves out.
+SAT_SINGLE_ISL_KEY = "sat_single_isl_pdr_min"
+ANCHOR_SUFFIX = "_pdr_min"
+
+# #217: the cap on any path a delivered data packet can report (AntHocNet's
+# Config::maxPathLength; --max-hops). Above it is an instrumentation error,
+# not a long route.
+MAX_PATH_LENGTH = 100
+# #308 phase 2: a pending-queue hold is bounded by the arm's queue timeout
+# (AntHocNet's QueueTimeout, 3 s); 5 s leaves headroom for a raised attribute
+# while still catching an accounting error, which is what this rule is for.
+# --hold-ceiling MS replaces it; --hold-ceiling ARM=MS sets one arm's bound
+# (#805: an arm that holds data for ns-3 AODV's 30 s MaxQueueTime needs 35000).
+HOLD_CEILING_MS = 5000.0
+HOLD_CEILING_MS_BY_ARM = {}
+
+# The arm roles the rules read (set from the command line by set_roles()).
+# SINGLE_PATH_PROTOS: --single-path. MULTI_PATH_PROTO: --multipath.
+# ORACLE_PROTO: --oracle; None = the arm a file's ##ORACLE## rows name.
+SINGLE_PATH_PROTOS = ()
+MULTI_PATH_PROTO = None
+ORACLE_PROTO = None
+
+# #230: the baselines all install exactly one route per destination at a time,
+# so their path_div_used is 1.0 by construction. Anything materially above that
+# is the diversity *window* counting route replacement as concurrent multipath —
+# it calibrates the window, and it is the only external check on whether an
+# AntHocNet diversity figure means anything.
+#
+# That excess is NOT correctable by moving this number, and the rule is
+# deliberately no longer a FAIL. Two measured facts decide it:
+#
+#   - The floor is a function of the scenario knobs, not a constant. The #230
+#     window sweep at 900 s (paper knobs, one binary, one seed) reads
+#     olsr/aodv 1.000/1.000 at windowS=2, 1.116/1.109 at 4, 1.198/1.190 at 6,
+#     1.322/1.311 at 10; the dedicated 8 pkt/s cell reads aodv 1.133 at
+#     windowS=2. So it also rises with offered rate, and no absolute threshold
+#     is simultaneously satisfiable (windowS<=2 pins every protocol, AntHocNet
+#     included, at ~1.00 — the sample-starvation floor) and informative.
+#   - The excess never invalidates a cell. divUsed is accumulated in its own
+#     (node, dest, window) map off the WifiMac AckedMpdu trace
+#     (routing-bench-run.cc CountAckedDataHop / FlushDiversityWindow); PDR,
+#     delay, delay99, throughput, NRL and jitter come from FlowMonitor and the
+#     energy columns from the energy model. A churn-inflated divUsed cannot
+#     move a single published number.
+#
+# So a contaminated floor makes exactly the diversity columns unquotable and is
+# reported once per cell as a WARN naming the floor, not as three per-row FAILs
+# that condemn the whole cell (14/14 campaign cells FAILed on nothing else, and
+# every one was waved through — the cry-wolf failure SKILL.md warns about).
+# The readable quantity is AntHocNet's EXCESS over the in-run floor, so that is
+# what gets printed whether the cell is contaminated or clean.
+SINGLE_PATH_DIV_MAX = 1.10
+# The dedicated diversity-measurement cell (#230, run 30650903707): window
+# <= DIV_CELL_WINDOW_S is the calibrated churn-free window, where a raised
+# offered rate feeds the cells and the single-path baselines legitimately sit
+# ABOVE 1.10 (a route break at 8 pkt/s lands packets on both routes within one
+# short window — floor measured at aodv=1.133). In that cell diversity is read
+# as EXCESS over the in-run single-path floor, so the absolute bound relaxes to
+# a sanity ceiling: a baseline above DIV_CELL_SANITY_MAX means the window is
+# not churn-free at this rate and the cell is unreadable.
+DIV_CELL_WINDOW_S = 2.0
+DIV_CELL_SANITY_MAX = 1.50
+
+# --- #296 item 1 / #216: the oracle shortest-path CONTROL ---------------------
+# A control is only worth its runtime if its value is known a priori and
+# asserted. Three things are known before the oracle runs:
+#
+#   1. NRL is exactly 0. It opens no socket and sends nothing, so any non-zero
+#      routing load means the arm started talking and is no longer a control.
+#   2. Its path to a destination is a shortest path, so no protocol can route
+#      the SAME packet in fewer hops.
+#   3. On a static, lossless topology with no congestion cell, nothing can
+#      deliver more than it: full knowledge, zero setup, zero churn.
+#
+# (2) needs care, and the care is the rule. `path_hops_mean` is a mean over
+# DELIVERED packets, so it is survivorship-biased: an arm that delivers less
+# skims the short flows and scores a LOWER mean hop count without routing
+# anything better. Measured at paper-base/range, 300 s, 2 seeds: olsr 1.90 hops
+# at 75.4 % PDR against the oracle's 2.09 at 95.9 %. So the hop rule fires only
+# where survivorship cannot explain it — the other arm delivered at least as
+# much as the oracle and still shows a shorter mean path.
+# Mean hops print to 2 dp; 0.01 is one printed unit, so a fire is a real gap.
+ORACLE_HOP_TOL = 0.01
+# "delivered at least as much": within a rounding unit of the oracle's PDR.
+ORACLE_PDR_TIE = 0.05
+# #431: tolerance for the per-seed hop bound on the identity-matched ##COMMON##
+# set — oracle hopsC <= arm hopsC + eps, per seed, unguarded (a real FAIL).
+# On the matched set survivorship is eliminated BY CONSTRUCTION (every arm
+# delivered the same (flow, seq) packets), so unlike the whole-run mean below
+# this needs no PDR-tie guard — which is exactly why #419's guard suppressed
+# the rule on wifi (the oracle dominates PDR there, the guard never released,
+# and the +0.17..+0.74 hop violation in all six published fading cells went
+# unflagged until #431 measured it by hand). Sizing, from the #431 study:
+#   - the defect class is STRUCTURAL but SUB-1-HOP: mean matched-hop excess
+#     +0.27..+0.45 at 20 nodes, +0.17..+0.74 across the six published 50-node
+#     cells, yet <= +1 hop for 95.5-97.8 % of individual packets — so any
+#     per-packet or ">= 1 hop" tolerance stays green through the whole
+#     regression and would never have caught #431;
+#   - per-seed sd of the matched-hop diff is ~0.03-0.08, so 0.05 is draw-noise
+#     headroom, not slack for structural excess: at the mis-set 300 m radius it
+#     fires on every seed of every fading cell, and at the #431-derived radii
+#     it stays quiet on tworay (diff -0.04..-0.10 per seed) while still
+#     flagging a wrong solve.
+ORACLE_COMMON_HOP_EPS = 0.05
+# #431: severity of an eps-exceeding seed is MODE-aware, matching the published
+# scoping (methodology.md: on fading the oracle bounds delivery everywhere,
+# hops only where its adjacency is propagation-exact). Modes that CLAIM the
+# hop bound — wired, disk, decode-approx, and fail-closed any seed whose mode
+# is unknown — FAIL at eps. p50-approx does NOT claim it: the Nakagami median
+# disk is calibrated to the delivery bound, and a probabilistic link has no
+# true radius, so an honest residual remains — measured at the calibrated
+# radius: -0.02..+0.08 per seed, vs +0.17..+0.74 for the defect class. There
+# an eps-exceeding seed reports as a loud WARN, not a publication-blocking
+# FAIL (otherwise the gate would forbid landing the very re-measurement that
+# closes #431) — UNLESS the excess is defect-class-sized:
+# ORACLE_COMMON_HOP_DEFECT = 0.15 sits between the largest honest residual
+# observed at the calibrated radius (+0.083) and the smallest defect-class
+# excess in the six published cells (+0.17), so every published violation
+# would still FAIL even on a p50-approx cell.
+ORACLE_COMMON_HOP_DEFECT = 0.15
+# The ##COMMON## row re-read per (run, protocol) for the #431 gate — COMMON_LINE
+# folds extrema per protocol and drops the run number, which a per-seed bound
+# cannot use. Groups: run, proto, nCommon, hopsC (absent pre-instrumentation).
+ORACLE_COMMON_SEED_LINE = re.compile(
+    r"^\s*##COMMON##\s+(\d+)\s+([a-z][\w-]*)\s+\d+\s+(\d+)\s+\S+\s+\S+\s+\S+"
+    r"(?:\s+(\S+)\s+\S+)?\s*$"
+)
+
+# --- #444 satellite (isl-grid) preflight -------------------------------------
+# The MANET preflight above is field geometry (nodes/area/range on a wifi
+# disk); none of it can express an ISL cell, which is why the #432 dispatch had
+# to hand-build a validator and discard it. These constants and the sat_*
+# helpers below mirror ns3/anthocnet/examples/isl-grid.cc's own dispatch-time NS_ABORT
+# rules (the #230 design lesson: derive from the harness, never paraphrase —
+# a validator that drifts from the harness is worse than none), plus the two
+# checks the harness cannot do at t=0: the BFS proving the cut ISL lies on a
+# configured flow's shortest path, and the rho = load/capacity echo that makes
+# a corridor overload declared rather than accidental.
+#
+# The arm rules of AntHocNet's isl-grid preflight (its arm list, dsdv on a
+# multi-ISL grid #420, the canonical order #362) name protocols, so they stay
+# with that harness; only the oracle's coherence note is kept, keyed on
+# --oracle.
+# #260 timing headroom. Flow start times are drawn in [1, 11] s and the
+# corridor cell's default onset (15 s) is documented as "after route discovery
+# settles"; a break before that conflates route setup with reconvergence.
+SAT_SETTLE_S = 15.0
+# Post-break runtime: tReconverge measured up to 4.49 +/- 1.03 s (olsr, #432
+# cell B) on top of the per-flow CBR-gap floor, and flows stop at time-1; 30 s
+# keeps the tail measurable without policing the knob (#432 left 450 s).
+SAT_POST_BREAK_S = 30.0
+# ns-3 DataRate strings the rho arithmetic understands ("12Mbps", "500kb/s").
+# Anything else is left unchecked with a WARN rather than guessed at.
+SAT_RATE = re.compile(r"^([\d.]+)\s*([kMG]?)(?:b/s|bps)$")
+SAT_RATE_MULT = {"": 1.0, "k": 1e3, "M": 1e6, "G": 1e9}
+
+ROW = re.compile(r"^\s*(?:##BENCH##\s+)?([a-z][\w-]*)((?:\s+[-\d.]+|\s+inf)+)\s*$")
+
+# #259: isl-grid human-mode output. The '+Grid' summary line carries the
+# topology context the per-row rules need (node/link count identifies the
+# single-ISL anchor topology; the ISL delay is the propagation floor), and its
+# presence disambiguates the whole file — the isl-grid table shares ROW's shape
+# but orders columns pdr/delay/delay99/thrput/nrl/nrlbytes/jitter, so the MANET
+# mapping would silently bind jitter to nrl_bytes.
+ISL_GRID = re.compile(
+    r"^\+Grid \w+ \d+x\d+ = (\d+) satellites, (\d+) ISLs"
+    r".* @ ([\d.]+) ms",
+    re.MULTILINE,
+)
+# Per-run line: '##RUN## <seed> <proto> <pdr> <delay> <delay99> <thrput> <nrl>
+# <nrlBytes> <jitter>'.
+ISL_RUN = re.compile(
+    r"^\s*##RUN##\s+(\d+)\s+([a-z][\w-]*)"
+    r"((?:\s+[-\d.]+|\s+inf)+)\s*$"
+)
+
+# Diagnostic lines of a saved cell ('# paths anthocnet divUsed=1.104 ...').
+# anthocnet-compare prints one per (family, protocol) after the table; they are
+# structured key=value, so parse_results() folds them into the protocol's row
+# and the CSV-born rules fire unchanged on text input (#230 finding 3 — the
+# results gate returned OK on a cell whose diversity figures were out of band,
+# because ROW can never match a '# ' line). '# stddev' is deliberately not a
+# family here: no results-mode rule reads dispersion, so parsing it would be
+# dead weight.
+DIAG_LINE = re.compile(r"^\s*#\s+(paths|energy|drops|reorder)\s+([a-z][\w-]*)\s+(.+)$")
+# #365: the workflow-emitted provenance line, last in the compact block.
+#   ##PROV## commit=<sha> ref=.. run_id=.. attempt=.. image=.. profile=..
+# Only the commit is matched here — it is the field whose absence makes a cell
+# unreproducible, and the rest are context a human reads off the same line.
+PROV_LINE = re.compile(r"^\s*##PROV##\s+commit=([0-9a-fA-F]{7,40})\b")
+# #377: raw drop-identity counters, one row per (seed, protocol).
+#   ##DROPID## <seed> <proto> hopTx=.. ... overlap=.. unackedRx=..
+# Only the two derived fields are matched: `overlap > 0` is the defect
+# condition, and `unackedRx` is what discriminates its cause.
+DROPID_LINE = re.compile(
+    r"^\s*##DROPID##\s+(\d+)\s+([a-z][\w-]*)\s+.*\boverlap=(-?\d+)\b"
+    r".*\bunackedRx=(-?\d+)\b"
+)
+# #761: the adaptive arms' per-packet terminal-fate tail (ara/termite/qrouting
+# only). `unseen` is offered minus every partition class, so it can only go
+# negative if one packet was booked in two classes.
+DROPID_FATE = re.compile(r"^\s*##DROPID##\s+(\d+)\s+([a-z][\w-]*)\s+.*\bunseen=(-?\d+)\b")
+# #800: the same tail's `delivered` (distinct (flow, seq) keys at the sinks)
+# against ##MATCH##'s rxSelf (every FlowMonitor delivery). More deliveries
+# than distinct packets means the arm delivers copies, and its PDR counts them.
+DROPID_DELIVERED = re.compile(r"^\s*##DROPID##\s+(\d+)\s+([a-z][\w-]*)\s+.*\bdelivered=(\d+)\b")
+MATCH_RX = re.compile(r"^\s*##MATCH##\s+(\d+)\s+([a-z][\w-]*)\s+(\d+)\s")
+# #296: the oracle arm's self-description, one row per (seed, oracle):
+#   ##ORACLE## <seed> oracle mode=.. approx=0|1 nodes=.. edges=.. recomputes=..
+#     changes=.. range=.. noRoute=.. nrl=..
+# Absent for every other arm (absence encoding, #382) — the oracle is the only
+# protocol that can describe the ground truth, because it is the only one that
+# is handed it.
+ORACLE_LINE = re.compile(
+    r"^\s*##ORACLE##\s+(\d+)\s+([a-z][\w-]*)\s+mode=(\S+)\s+approx=([01])"
+    r"\s+nodes=(\d+)\s+edges=(\d+)\s+recomputes=(\d+)\s+changes=(\d+)"
+    r"\s+range=(-?[\d.]+)\s+noRoute=(\d+)"
+    # #464: optional, so cells measured before the split still parse. Absence
+    # means "this cell predates the fix", which the gate below reports rather
+    # than silently treating as zero.
+    r"(?:\s+noRouteOrigin=(\d+)\s+noRouteFwd=(\d+))?"
+    r"\s+nrl=([\d.]+)"
+)
+
+# #308 phase 2: the per-run common-set rows. Unlike the diagnostic lines above
+# there is one per (run, protocol), so they are folded into the protocol's row
+# as an extremum rather than merged field-by-field — the rules below ask "did
+# ANY run produce an impossible hopsCommon", which is what a broken flow key or
+# an unconnected TTL hook would show up as.
+#   ##COMMON## <run> <proto> <nSelf> <nCommon> <p99C> <meanC> <p99S> [<hopsC> <hopsS>]
+# The two hop fields are absent on inputs predating the instrumentation; those
+# skip, exactly like an absent CSV column.
+COMMON_LINE = re.compile(
+    r"^\s*##COMMON##\s+\d+\s+([a-z][\w-]*)\s+\d+\s+(\d+)\s+\S+\s+\S+\s+\S+"
+    r"(?:\s+(\S+)\s+\S+)?\s*$"
+)
+# #308 phase 2 step 3: per-run channel occupancy.
+#   ##AIR## <run> <proto> <txS> <rxS> <ccaBusyS> <busyPct>
+# Absent entirely when --energyJ=0 leaves the PHY State trace unconnected, which
+# is why "row present but all-zero" is a failure rather than a configuration:
+# the harness prints no row at all in that case (see docs/benchmarks/metrics.md).
+# #308 phase 2 step 4: per-run pending-queue hold rows, AntHocNet only.
+#   ##HOLD## <run> <proto> <setupN> <setupMean> <setupMax> <reconvN> ... <repairMax>
+# Absent for every protocol without the instrumentation, deliberately: a zero row
+# would assert "never held a packet" where the truth is "nobody looked".
+HOLD_LINE = re.compile(r"^\s*##HOLD##\s+\d+\s+([a-z][\w-]*)((?:\s+[-\d.]+){9})\s*$")
+AIR_LINE = re.compile(
+    r"^\s*##AIR##\s+\d+\s+([a-z][\w-]*)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)"
+    r"\s+([-\d.]+)\s*$"
+)
+DIAG_KEYS = {
+    "paths": {
+        "hopsMean": "hops",
+        "hopsMax": "hops_max",
+        "divUsed": "div",
+        "divMax": "div_max",
+        "entropyBits": "entropy",
+        "windowS": "div_window",
+    },
+    # energy(J)/J-per-pkt live at table positions 10/11, which the 9-number
+    # ##BENCH## block does not carry; the '# energy' line adds the residual
+    # bounds. 'pdr' on the '# drops' line is deliberately unmapped — the
+    # table row's pdr is the authoritative one and must not be overwritten
+    # by a rounded duplicate.
+    "energy": {"initJ": "energy_init", "resMinJ": "res_min", "resMeanJ": "res_mean"},
+    "drops": {
+        "route": "drop_route",
+        "queue": "drop_queue",
+        "mac": "drop_mac",
+        "chan": "drop_chan",
+        "ttl": "drop_ttl",
+        "setup": "drop_setup",
+        "reconv": "drop_reconv",
+        "repair": "drop_repair",
+    },
+    "reorder": {
+        "ratio": "reorder_ratio",
+        "ratioWorstFlow": "reorder_ratio_max",
+        "extentMean": "reorder_extent_mean",
+        "extentMax": "reorder_extent_max",
+        "bufMax": "reorder_buf_max",
+    },
+}
+
+issues = []
+
+
+def report(level, msg):
+    issues.append(level)
+    print(f"{level}: {msg}")
+
+
+def load_anchors(path):
+    """The --anchors file as {key: float}: `key: number` lines, where `#`
+    starts a comment (the schema of AntHocNet's ns3/tools/anchors.yml, whose
+    tools/checks/check-anchors.sh reads it the same way). A key line whose
+    value is not a number is an error, never a silently skipped floor."""
+    anchors = {}
+    try:
+        fh = open(path)
+    except OSError as e:
+        sys.exit(f"FAIL: --anchors {path}: {e}")
+    with fh:
+        for k, line in enumerate(fh, 1):
+            body = line.split("#", 1)[0].strip()
+            if not body:
+                continue
+            key, sep, value = body.partition(":")
+            try:
+                if not sep or not key.strip():
+                    raise ValueError
+                anchors[key.strip()] = float(value)
+            except ValueError:
+                sys.exit(f"FAIL: {path}:{k}: expected 'key: number', got {line.strip()!r}")
+    return anchors
+
+
+def anchor_names(anchors):
+    """The --anchor names a file offers: each PDR floor's stem (the key
+    without the _pdr_min suffix, `-` for `_`), plus every key as written."""
+    stems = [
+        k[: -len(ANCHOR_SUFFIX)].replace("_", "-") for k in anchors if k.endswith(ANCHOR_SUFFIX)
+    ]
+    return sorted(stems) + sorted(anchors)
+
+
+def anchor_key(name, anchors):
+    """The anchors-file key an --anchor name selects, or exit with the names
+    the file offers."""
+    if name in anchors:
+        return name
+    key = name.replace("-", "_") + ANCHOR_SUFFIX
+    if key in anchors:
+        return key
+    sys.exit(
+        f"FAIL: --anchor {name}: no such floor in the --anchors file; it offers: "
+        + ", ".join(anchor_names(anchors))
+    )
+
+
+def csv_arms(spec):
+    """'a,b' -> ('a', 'b'); None or '' -> ()."""
+    return tuple(x for x in (spec or "").split(",") if x)
+
+
+def set_roles(a):
+    """Bind the arm roles and the hold ceilings from the command line. getattr
+    keeps callers that build their own namespace (the self-test) working."""
+    global SINGLE_PATH_PROTOS, MULTI_PATH_PROTO, ORACLE_PROTO, HOLD_CEILING_MS, MAX_PATH_LENGTH
+    SINGLE_PATH_PROTOS = csv_arms(getattr(a, "single_path", None))
+    MULTI_PATH_PROTO = getattr(a, "multipath", None) or None
+    ORACLE_PROTO = getattr(a, "oracle_arm", None) or None
+    MAX_PATH_LENGTH = getattr(a, "max_hops", None) or 100
+    HOLD_CEILING_MS = 5000.0
+    HOLD_CEILING_MS_BY_ARM.clear()
+    for spec in getattr(a, "hold_ceiling", None) or ():
+        arm, sep, ms = spec.rpartition("=")
+        try:
+            value = float(ms)
+        except ValueError:
+            sys.exit(f"FAIL: --hold-ceiling {spec}: expected MS or ARM=MS")
+        if sep:
+            HOLD_CEILING_MS_BY_ARM[arm] = value
+        else:
+            HOLD_CEILING_MS = value
+
+
+def oracle_arm(text):
+    """The oracle control's arm: --oracle, else the arm that writes this
+    file's ##ORACLE## rows (only the oracle can describe the ground truth,
+    #296), else None (the oracle rules skip)."""
+    if ORACLE_PROTO:
+        return ORACLE_PROTO
+    rows = (ORACLE_LINE.match(line) for line in text.splitlines())
+    return next((m.group(2) for m in rows if m), None)
+
+
+def sat_rate_bps(s):
+    """Parse an ns-3 DataRate string to bits/s, or None if unrecognised."""
+    m = SAT_RATE.match(s.strip())
+    return float(m.group(1)) * SAT_RATE_MULT[m.group(2)] if m else None
+
+
+def sat_axis_links(n, torus):
+    """Mirror of isl-grid.cc AxisLinks(): links along one axis of length n.
+
+    None for a single element, a ring (n) when the torus wraps it, a path
+    (n-1) otherwise. An axis of length 2 is never wrapped — the wrap would
+    duplicate the forward link.
+    """
+    if n < 2:
+        return 0
+    return n if (torus and n > 2) else n - 1
+
+
+def sat_grid_links(rows, cols, torus):
+    """Mirror of isl-grid.cc GridLinks(): every ISL once, forward walks only.
+
+    cmd_preflight_sat cross-checks this against the AxisLinks closed form,
+    the same dual-entry bookkeeping the harness's CheckTopology does (#226):
+    the two are written independently so an edit to one trips the other.
+    """
+    links = []
+    for r in range(rows):
+        for c in range(cols):
+            if c + 1 < cols:
+                links.append((r * cols + c, r * cols + c + 1))
+            elif torus and cols > 2:
+                links.append((r * cols + c, r * cols))
+            if r + 1 < rows:
+                links.append((r * cols + c, (r + 1) * cols + c))
+            elif torus and rows > 2:
+                links.append((r * cols + c, c))
+    return links
+
+
+def sat_bfs(adj, src):
+    """Hop distances from src over an adjacency dict; unreachable = absent."""
+    dist = {src: 0}
+    q = [src]
+    for u in q:
+        for v in adj[u]:
+            if v not in dist:
+                dist[v] = dist[u] + 1
+                q.append(v)
+    return dist
+
+
+def sat_removals(spec, rows, cols, links):
+    """#432 item 3: parse and validate --removeLinks, mirroring the harness's
+    NS_ABORT rules (quadruple format, endpoints in-grid, distinct, adjacent on
+    the grid, no ISL removed twice). Returns the normalized (lo, hi)
+    node-index pairs of the valid removals; an invalid quadruple reports FAIL
+    and is skipped, so every later rule judges the constellation the valid
+    removals leave. Connectivity of the remainder is checked by the caller,
+    where the post-removal adjacency exists.
+    """
+    removed = []
+    if not spec:
+        return removed
+    built = {(min(x, y), max(x, y)) for x, y in links}
+    quads = spec.split(";")
+    if quads and quads[-1] == "":
+        quads.pop()  # a trailing ';' yields no extra token in the harness
+    for quad in quads:
+        try:
+            rc = [int(t) for t in quad.split(",")]
+        except ValueError:
+            rc = []
+        if len(rc) != 4 or min(rc, default=-1) < 0:
+            report("FAIL", f"--removeLinks expects r1,c1,r2,c2[;...], got '{quad}' (harness abort)")
+            continue
+        if rc[0] >= rows or rc[2] >= rows or rc[1] >= cols or rc[3] >= cols:
+            report(
+                "FAIL",
+                f"--removeLinks endpoint outside the {rows}x{cols} grid: '{quad}' (harness abort)",
+            )
+            continue
+        ra, rb = rc[0] * cols + rc[1], rc[2] * cols + rc[3]
+        if ra == rb:
+            report("FAIL", f"--removeLinks endpoints are the same node: '{quad}' (harness abort)")
+            continue
+        key = (min(ra, rb), max(ra, rb))
+        if key not in built:
+            report(
+                "FAIL",
+                "--removeLinks names no built ISL: "
+                f"({rc[0]},{rc[1]}) and ({rc[2]},{rc[3]}) are not "
+                "adjacent on this grid (harness abort)",
+            )
+            continue
+        if key in removed:
+            report("FAIL", f"--removeLinks removes the ISL '{quad}' twice (harness abort)")
+            continue
+        removed.append(key)
+    return removed
+
+
+def cmd_preflight_sat(a):
+    """#444: pre-flight an isl-grid cell (satellite counterpart of the MANET
+    preflight below; see the SAT_* constants for where each rule comes from)."""
+    if getattr(a, "cbrBps", None) is None:
+        a.cbrBps = 4096.0
+    rows, cols = a.rows, a.cols
+    torus = str(a.torus).lower() not in ("false", "0")
+    time = 60.0 if a.time is None else a.time
+    flows = 4 if a.flows is None else a.flows
+    protocols = a.protocols
+    n = rows * cols
+    kind = "torus" if torus else "open"
+    links = sat_grid_links(rows, cols, torus)
+    # #226, mirrored: the link walk and the closed form are independent
+    # bookkeeping; a disagreement means this script no longer builds the graph
+    # isl-grid.cc builds, and every rule below would judge the wrong topology.
+    # Checked on the FULL +Grid, before the #432 removals reshape `links` —
+    # the closed form describes the construction, not the built remainder.
+    expected = rows * sat_axis_links(cols, torus) + cols * sat_axis_links(rows, torus)
+    if len(links) != expected:
+        report(
+            "FAIL",
+            f"topology mirror out of sync: walked {len(links)} "
+            f"links but the closed form says {expected} for "
+            f"{rows}x{cols} torus={torus} — this script no longer "
+            "matches isl-grid.cc GridLinks/AxisLinks (#226); fix "
+            "the mirror before trusting any rule below",
+        )
+    # #432 item 3: apply the static removals here, so the adjacency, degree,
+    # dsdv and BFS arithmetic below all judge the constellation actually
+    # built, exactly as the harness does (RemoveIsls after CheckTopology).
+    removed = sat_removals(a.removeLinks, rows, cols, links)
+    if removed:
+        cut = set(removed)
+        links = [lk for lk in links if (min(lk), max(lk)) not in cut]
+    adj = {i: [] for i in range(n)}
+    for x, y in links:
+        adj[x].append(y)
+        adj[y].append(x)
+    deg = [len(adj[i]) for i in range(n)] or [0]
+    print(
+        f"+Grid {kind} {rows}x{cols} = {n} satellites, {len(links)} ISLs "
+        f"(mean degree {2.0 * len(links) / n if n else 0.0:.2f}) @ "
+        f"{a.islDelayMs:g} ms {a.islRate}"
+    )
+    print(f"  degree min={min(deg)} max={max(deg)}, {time:g} s, {flows} standard flow(s)")
+    if removed:
+        # The connectivity half of the #432 knob's contract: the harness
+        # aborts on a disconnecting removal, and this is where the dispatch
+        # finds out first. A disconnected remainder makes PDR measure
+        # connectivity, not routing.
+        reach = sat_bfs(adj, 0) if n else {}
+        if len(reach) != n:
+            report(
+                "FAIL",
+                "--removeLinks disconnects the constellation: "
+                f"only {len(reach)} of {n} satellites reachable — "
+                "PDR would measure connectivity, not routing "
+                "(#432, harness abort)",
+            )
+        else:
+            print(
+                f"  removed: {len(removed)} ISL(s) (--removeLinks) — "
+                "deliberately irregular constellation, still connected "
+                "(#432)"
+            )
+    if n < 2:
+        report(
+            "FAIL",
+            f"{rows}x{cols} = {n} node(s) — no flow has two "
+            "distinct endpoints, so the run measures nothing",
+        )
+    # Degenerate "torus" claims. The harness accepts these (its degree-4
+    # assertion applies only where the +Grid claim does), so they are WARNs
+    # about what the dispatch record would say, not aborts. The 1x2 single-ISL
+    # anchor (#237) is deliberately below both conditions and stays quiet.
+    wraps = torus and (rows > 2 or cols > 2)
+    if torus and n > 2 and not wraps:
+        report(
+            "WARN",
+            "torus=true wraps nothing (an axis of length <= 2 is "
+            "never wrapped — the wrap would duplicate the forward "
+            "link), so the built graph is the open grid; pass "
+            "--torus=false to say what is actually built",
+        )
+    elif torus and min(rows, cols) == 1 and max(rows, cols) > 2:
+        report(
+            "WARN",
+            f"a 1x{max(rows, cols)} torus is a ring (degree 2), "
+            "not a +Grid constellation — the 4-ISL torus intuition "
+            "(equal-cost alternates everywhere) does not apply; "
+            "fine only if a ring cell is the design",
+        )
+    # Flow endpoints are fully derivable: isl-grid pairs i -> n-1-i (skipping
+    # the odd middle), and the corridor adds the probe (0,0) -> (0, cols/2).
+    # That determinism is what lets the break BFS below be exact.
+    flow_pairs = [(i, n - 1 - i) for i in range(min(flows, n)) if i != n - 1 - i]
+    corridor = bool(a.corridorLoad)
+    if corridor and n:
+        flow_pairs.append((0, cols // 2))
+    if n >= 2 and not flow_pairs:
+        report(
+            "FAIL",
+            "--flows=0 with no --corridorLoad: not a single data "
+            "flow, so the run measures nothing. flows=0 is valid "
+            "only under the corridor probe contract (#280)",
+        )
+    # --- arms ----------------------------------------------------------------
+    # Unset --protocols leaves the arm list to the harness: no arm rule fires.
+    arms = [x for x in (protocols or "").split(",") if x]
+    if protocols is not None and not arms:
+        report("FAIL", "--protocols selected nothing (harness abort)")
+    if ORACLE_PROTO and ORACLE_PROTO in arms:
+        if len(arms) == 1:
+            report(
+                "WARN",
+                f"--protocols={ORACLE_PROTO} alone: an upper bound with "
+                "nothing under it measures nothing (#296)",
+            )
+        print(
+            f"  {ORACLE_PROTO}: wired substrate — adjacency read off the p2p "
+            "channels, exact; expect mode=wired approx=0 on the ##ORACLE## "
+            "row (#296)"
+        )
+    # --- corridor cell (#216 cell 1 / #280) ----------------------------------
+    if corridor:
+        if not torus or cols < 4 or cols % 2 != 0:
+            report(
+                "FAIL",
+                "--corridorLoad needs a torus with an even number "
+                "of columns >= 4 (two equal-length row corridors; "
+                "harness abort)",
+            )
+        # #432: the corridor construction IS the row-0 ring — two equal-length
+        # corridors between (0,0) and (0,cols/2). A removal inside row 0
+        # breaks that premise silently (the harness has no such check), and
+        # the corridor counters would then describe a corridor that does not
+        # exist.
+        if any(lo < cols and hi < cols for lo, hi in removed):
+            report(
+                "FAIL",
+                "--removeLinks cuts a row-0 ISL with the corridor "
+                "cell on: the two-equal-length-corridors "
+                "construction no longer holds, so the corridor "
+                "counters and the rho arithmetic describe a "
+                "corridor that does not exist (#216, #432)",
+            )
+        if a.corridorLoadAt <= 0.0 or a.corridorLoadAt >= time - 1.0:
+            report(
+                "FAIL",
+                f"--corridorLoadAt={a.corridorLoadAt:g}s must "
+                "fall inside the run (0 < t < time-1 = "
+                f"{time - 1.0:g}s; harness abort)",
+            )
+        for i in range(min(flows, n)):
+            if n - 1 - i == cols // 2:
+                report(
+                    "FAIL",
+                    f"standard flow {i} also targets the probe "
+                    f"destination (node {cols // 2}): the probe "
+                    "is identified by destination address + port, "
+                    "so that flow's packets would silently count "
+                    "into the probe's numbers (harness abort); "
+                    "lower --flows or grow the grid",
+                )
+        if flows > 0:
+            report(
+                "WARN",
+                f"--flows={flows} with --corridorLoad: the "
+                "headline row mixes the probe with the standard "
+                "flows. The #280 contract — headline row IS the "
+                "probe, zero new parsing — needs --flows=0; with "
+                "flows on, probe numbers exist only on the "
+                "'# corridor' lines",
+            )
+        load, cap = sat_rate_bps(a.corridorLoad), sat_rate_bps(a.islRate)
+        if load is None or not cap:
+            report(
+                "WARN",
+                f"cannot parse --corridorLoad={a.corridorLoad} / "
+                f"--islRate={a.islRate} as ns-3 DataRate strings "
+                "— rho unchecked (and a rate ns-3 cannot parse "
+                "aborts the run at t=0)",
+            )
+        elif torus and cols >= 4 and cols % 2 == 0:
+            hops = cols // 2
+            rho = load / cap
+            print(
+                f"  corridor: probe (0,0)->(0,{hops}), two {hops}-hop "
+                f"corridors; background (0,1)->(0,2) at {a.corridorLoad} "
+                f"constant duty = rho={rho:.2f} of the {a.islRate} ISL"
+            )
+            if rho >= 1.0:
+                print(
+                    "  note: rho>=1 is the declared-overload regime (#216 "
+                    "round-2 recipe) — the loaded corridor saturates and "
+                    "tail-drops by design"
+                )
+            else:
+                report(
+                    "WARN",
+                    f"rho={rho:.2f} < 1: the background load does "
+                    "not saturate the loaded ISL, so the corridor "
+                    "cannot show congestion avoidance — raise "
+                    "--corridorLoad or record why an unsaturated "
+                    "corridor is the design (#216)",
+                )
+    # --- scripted break (#260) -----------------------------------------------
+    if a.breakLink or a.breakAt > 0.0:
+        if not a.breakLink or a.breakAt <= 0.0:
+            report("FAIL", "--breakLink and --breakAt must be given together (harness abort)")
+        else:
+            if a.breakAt >= time:
+                report("FAIL", f"--breakAt={a.breakAt:g}s is past --time={time:g}s (harness abort)")
+            else:
+                if a.breakAt < SAT_SETTLE_S:
+                    report(
+                        "WARN",
+                        f"--breakAt={a.breakAt:g}s is inside the "
+                        "settle window (flow starts are drawn in "
+                        "[1,11] s; the corridor cell settles to "
+                        "15 s) — the break conflates route setup "
+                        "with reconvergence (#260)",
+                    )
+                left = time - 1.0 - a.breakAt
+                if left < SAT_POST_BREAK_S:
+                    gap_ms = 64 * 8 / a.cbrBps * 1000.0
+                    report(
+                        "WARN",
+                        f"only {left:g}s of post-break traffic "
+                        "(flows stop at time-1): tReconverge "
+                        "measured up to ~4.5 s (olsr, #432 cell "
+                        f"B) on top of the ~{gap_ms:.0f} ms "
+                        "CBR-gap floor — leave >= "
+                        f"{SAT_POST_BREAK_S:g}s (#260)",
+                    )
+            try:
+                rc = [int(x) for x in a.breakLink.split(",")]
+            except ValueError:
+                rc = []
+            if len(rc) != 4 or min(rc, default=-1) < 0:
+                report(
+                    "FAIL", f"--breakLink expects r1,c1,r2,c2, got '{a.breakLink}' (harness abort)"
+                )
+            elif rc[0] >= rows or rc[2] >= rows or rc[1] >= cols or rc[3] >= cols:
+                report(
+                    "FAIL", f"--breakLink endpoint outside the {rows}x{cols} grid (harness abort)"
+                )
+            else:
+                ba, bb = rc[0] * cols + rc[1], rc[2] * cols + rc[3]
+                built = {(min(x, y), max(x, y)) for x, y in links}
+                if ba == bb:
+                    report("FAIL", "--breakLink endpoints are the same node (harness abort)")
+                elif (min(ba, bb), max(ba, bb)) not in built:
+                    report(
+                        "FAIL",
+                        "--breakLink names no built ISL: "
+                        f"({rc[0]},{rc[1]}) and ({rc[2]},{rc[3]}) "
+                        f"are not adjacent on this {kind} grid — "
+                        "wrap links exist only on axes > 2 "
+                        "(harness abort)",
+                    )
+                elif flow_pairs:
+                    # The check that made #432 cell B interpretable, and the
+                    # one the harness cannot make: does anyone actually route
+                    # over the cut ISL? Exact, because the flow endpoints are
+                    # derived above, not guessed.
+                    dist = {}
+
+                    def dfrom(s):
+                        if s not in dist:
+                            dist[s] = sat_bfs(adj, s)
+                        return dist[s]
+
+                    adj_cut = {
+                        u: [v for v in vs if (u, v) not in ((ba, bb), (bb, ba))]
+                        for u, vs in adj.items()
+                    }
+                    cut_off = [f for f in flow_pairs if f[1] not in sat_bfs(adj_cut, f[0])]
+                    on_path = [
+                        (s, d)
+                        for s, d in flow_pairs
+                        if dfrom(s).get(ba, n) + 1 + dfrom(d).get(bb, n) == dfrom(s).get(d)
+                        or dfrom(s).get(bb, n) + 1 + dfrom(d).get(ba, n) == dfrom(s).get(d)
+                    ]
+                    if cut_off:
+                        names = ", ".join(f"{s}->{d}" for s, d in cut_off)
+                        report(
+                            "FAIL",
+                            f"the break disconnects flow(s) "
+                            f"{names}: post-break PDR measures "
+                            "connectivity, not reconvergence "
+                            "(#260)",
+                        )
+                    elif not on_path:
+                        report(
+                            "FAIL",
+                            "the cut ISL lies on no configured "
+                            "flow's shortest path (flows are the "
+                            "deterministic i -> n-1-i pairing"
+                            + (" plus the corridor probe" if corridor else "")
+                            + ") — a break nobody routes over "
+                            "measures nothing; tReconverge "
+                            "degenerates to the CBR gap "
+                            "(#260, #432)",
+                        )
+                    else:
+                        names = ", ".join(f"{s}->{d}" for s, d in on_path)
+                        print(
+                            f"  break: cut ISL ({rc[0]},{rc[1]})-"
+                            f"({rc[2]},{rc[3]}) at t={a.breakAt:g}s lies "
+                            f"on a shortest path of flow(s) {names} — "
+                            "reconvergence is exercised; alternate path(s) "
+                            "survive the cut"
+                        )
+    verdict()
+
+
+# #481: pairs sampled for the 3-D in-range probability. A fixed-seed Monte
+# Carlo, so the verdict is deterministic; at 100k pairs the standard error on
+# the probability is <= 0.0016, far below what moves a degree verdict.
+BOX_DEGREE_SAMPLES = 100_000
+
+
+def box_in_range_prob(ax, ay, az, r, samples=BOX_DEGREE_SAMPLES):
+    """P(|X - Y| < r) for X, Y independent and uniform in an ax*ay*az box.
+
+    The 2-D rule approximates the in-range area with a strip cap. In a box
+    the sphere is clipped by up to three faces at once, and each dimension
+    may be shorter or longer than 2r. Rather than stack caps, this measures
+    the probability directly, boundary effects included (#481).
+    """
+    import random
+
+    rng = random.Random(481)
+    r2 = r * r
+    hits = 0
+    for _ in range(samples):
+        dx = (rng.random() - rng.random()) * ax
+        dy = (rng.random() - rng.random()) * ay
+        dz = (rng.random() - rng.random()) * az
+        if dx * dx + dy * dy + dz * dz < r2:
+            hits += 1
+    return hits / samples
+
+
+# #488: the VANET street grid. Same fixed-seed Monte Carlo as the box rule,
+# over pairs of points drawn uniformly on the street network.
+STREET_DEGREE_SAMPLES = 50_000
+# The harness PHY's two-ray decode radius (#431): where the deterministic
+# two-ray power at the shipped radio crosses the -82 dBm decode floor. Read
+# off a live run (`##ORACLE## ... range=423.3`); the oracle derives the same
+# number from the installed objects.
+TWO_RAY_DECODE_RADIUS_M = 423.3
+# Two-ray crossover 4*pi*ht*hr/lambda at the harness's 1.5 m antennas and
+# 2.4 GHz: Friis (1/d^2) inside it, 1/d^4 beyond.
+TWO_RAY_CROSSOVER_M = 4 * math.pi * 1.5 * 1.5 * 2.4e9 / 299_792_458.0
+# Sommer et al. (WONS 2011) building shadowing at Veins' shipped defaults,
+# the harness's --propagation=urban (UrbanObstacleShadowingLossModel).
+URBAN_DB_PER_CUT = 9.0
+URBAN_DB_PER_M = 0.4
+
+
+def two_ray_margin_db(d):
+    """dB by which two-ray power at distance d exceeds the decode floor."""
+    big_r, dc = TWO_RAY_DECODE_RADIUS_M, TWO_RAY_CROSSOVER_M
+    if d >= dc:
+        return 40 * math.log10(big_r / d)
+    return 40 * math.log10(big_r / dc) + 20 * math.log10(dc / max(d, 0.5))
+
+
+def urban_obstacle_db(p, q, ax, ay, bx, by, street):
+    """The harness's building loss on segment p->q (mirrors the C++ model)."""
+    wx, wy, h = ax / bx, ay / by, street / 2.0
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    length = math.hypot(dx, dy)
+    if length <= 0:
+        return 0.0
+
+    def idx(v, size, n):
+        return int(min(max(math.floor(v / size), 0), n - 1))
+
+    loss = 0.0
+    for i in range(idx(min(p[0], q[0]), wx, bx), idx(max(p[0], q[0]), wx, bx) + 1):
+        for j in range(idx(min(p[1], q[1]), wy, by), idx(max(p[1], q[1]), wy, by) + 1):
+            xmin, xmax = i * wx + h, (i + 1) * wx - h
+            ymin, ymax = j * wy + h, (j + 1) * wy - h
+            if xmin >= xmax or ymin >= ymax:
+                continue
+            t0, t1, out = 0.0, 1.0, False
+            for pp, qq in (
+                (-dx, p[0] - xmin),
+                (dx, xmax - p[0]),
+                (-dy, p[1] - ymin),
+                (dy, ymax - p[1]),
+            ):
+                if pp == 0:
+                    if qq < 0:
+                        out = True
+                        break
+                else:
+                    t = qq / pp
+                    if pp < 0:
+                        t0 = max(t0, t)
+                    else:
+                        t1 = min(t1, t)
+            if out or t0 >= t1:
+                continue
+            cuts = (1 if t0 > 0 else 0) + (1 if t1 < 1 else 0)
+            loss += URBAN_DB_PER_CUT * cuts + URBAN_DB_PER_M * (t1 - t0) * length
+    return loss
+
+
+def street_in_range_prob(
+    ax, ay, bx, by, r, urban=False, street=20.0, samples=STREET_DEGREE_SAMPLES
+):
+    """P(two uniform street points are linked) on a bx*by Manhattan grid.
+
+    Nodes live on the 1-D streets of a 2-D grid (#488), so the strip/disk
+    area rules do not apply: two vehicles 300 m apart on parallel streets may
+    be in range of a disk but blocked by a building. Disk mode: link iff
+    within r. Urban mode: link iff the two-ray margin at the pair's distance
+    covers the building loss on the line between them -- the oracle's
+    decode-los-approx rule at the harness's shipped PHY.
+    """
+    import random
+
+    rng = random.Random(488)
+    h_len, v_len = (by + 1) * ax, (bx + 1) * ay
+    wx, wy = ax / bx, ay / by
+
+    def point():
+        u = rng.random() * (h_len + v_len)
+        if u < h_len:
+            return (u % ax, min(int(u // ax), by) * wy)
+        u -= h_len
+        return (min(int(u // ay), bx) * wx, u % ay)
+
+    hits = 0
+    for _ in range(samples):
+        p, q = point(), point()
+        d = math.hypot(p[0] - q[0], p[1] - q[1])
+        if urban:
+            if d < r and two_ray_margin_db(d) >= urban_obstacle_db(p, q, ax, ay, bx, by, street):
+                hits += 1
+        elif d < r:
+            hits += 1
+    return hits / samples
+
+
+def check_replay_files(a):
+    """#639: validate --traceFile / --flowsFile as the harness will, before a
+    dispatch: the trace names its nodes (and so sets --nodes), stays inside the
+    field; each flow line is 'src dst start stop cbrBps' with ids in range and
+    a start inside the run. Returns the node count the trace implies, or None."""
+    nodes = None
+    trace = getattr(a, "traceFile", None)
+    if getattr(a, "mobility", "rwp") == "trace" and not trace:
+        report("FAIL", "--mobility trace needs --traceFile (#639)")
+    if trace:
+        try:
+            with open(trace) as fh:
+                text = fh.read()
+        except OSError as e:
+            report("FAIL", f"--traceFile {trace}: {e}")
+            return None
+        ids = [int(m) for m in re.findall(r"\$node_\((\d+)\)", text)]
+        if not ids:
+            report("FAIL", f"--traceFile {trace} names no $node_(i) (#639)")
+            return None
+        nodes = max(ids) + 1
+        xs = [float(v) for v in re.findall(r"set X_ (-?[0-9.eE+-]+)", text)]
+        ys = [float(v) for v in re.findall(r"set Y_ (-?[0-9.eE+-]+)", text)]
+        dests = re.findall(r"setdest (-?[0-9.eE+-]+) (-?[0-9.eE+-]+)", text)
+        xs += [float(x) for x, _ in dests]
+        ys += [float(y) for _, y in dests]
+        out = [v for v in xs if v < 0 or v > a.areaX] + [v for v in ys if v < 0 or v > a.areaY]
+        print(f"  trace {trace}: {nodes} nodes, {len(dests)} setdest legs")
+        if out:
+            report(
+                "WARN",
+                f"--traceFile moves nodes outside the {a.areaX:g} x {a.areaY:g} m "
+                f"field ({len(out)} coordinates); the field-geometry rules "
+                "below reason about --areaX/--areaY, not the trace (#639)",
+            )
+        if a.nodes != nodes:
+            print(f"  --nodes {a.nodes} -> {nodes} (the harness takes it from the trace)")
+            a.nodes = nodes
+    flows = getattr(a, "flowsFile", None)
+    if flows:
+        try:
+            with open(flows) as fh:
+                lines = fh.read().splitlines()
+        except OSError as e:
+            report("FAIL", f"--flowsFile {flows}: {e}")
+            return nodes
+        n = 0
+        for k, line in enumerate(lines, 1):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            f = line.split()
+            try:
+                src, dst = int(f[0]), int(f[1])
+                start, stop, bps = float(f[2]), float(f[3]), float(f[4])
+                if len(f) != 5:
+                    raise ValueError
+            except (ValueError, IndexError):
+                report("FAIL", f"{flows}:{k}: expected 'src dst start stop cbrBps' (#639)")
+                continue
+            if not (0 <= src < a.nodes and 0 <= dst < a.nodes and src != dst):
+                report(
+                    "FAIL", f"{flows}:{k}: node ids must be distinct and in [0, {a.nodes}) (#639)"
+                )
+            if not (0 <= start < stop and start < a.time and bps > 0):
+                report(
+                    "FAIL",
+                    f"{flows}:{k}: need 0 <= start < stop, start < --time {a.time:g} "
+                    "and cbrBps > 0 (#639)",
+                )
+            n += 1
+        if n == 0:
+            report("FAIL", f"--flowsFile {flows} lists no flows (#639)")
+        else:
+            print(f"  flows {flows}: {n} flows")
+            a.flows = n
+    return nodes
+
+
+def parse_buildings(spec):
+    """#580: --buildings 'xmin,ymin,xmax,ymax;...' as the harness parses it.
+    None when not given; malformed rectangles are reported and skipped."""
+    if not spec:
+        return None
+    rects = []
+    for item in spec.split(";"):
+        if not item.strip():
+            continue
+        try:
+            x0, y0, x1, y1 = (float(v) for v in item.split(","))
+        except ValueError:
+            report(
+                "FAIL",
+                f"--buildings: '{item}' is not 'xmin,ymin,xmax,ymax'; "
+                "the harness refuses it (#580)",
+            )
+            continue
+        if not (x0 < x1 and y0 < y1):
+            report(
+                "FAIL",
+                f"--buildings: '{item}' needs xmin < xmax and ymin < ymax; "
+                "the harness refuses it (#580)",
+            )
+            continue
+        rects.append((x0, y0, x1, y1))
+    return rects
+
+
+def check_buildings(a, rects, urban, mobility):
+    """#580: explicit buildings replace the street grid on the urban channel
+    (the disaster scene). They must sit in the field, and the run needs the
+    urban channel and a scene whose nodes are placed with them in mind."""
+    if not urban:
+        report(
+            "FAIL",
+            "--buildings needs --propagation=urban: they are its "
+            "obstacle shadowing; the harness refuses it (#580)",
+        )
+    if mobility != "trace":
+        report(
+            "WARN",
+            f"--buildings with --mobility={mobility}: the mobility "
+            "model knows nothing of the buildings, so nodes walk "
+            "through walls. The disaster scene is a --mobility=trace "
+            "replay (tools/bench/disaster_scene.py, #580)",
+        )
+    for x0, y0, x1, y1 in rects:
+        if x0 < 0 or y0 < 0 or x1 > a.areaX or y1 > a.areaY:
+            report(
+                "FAIL",
+                f"--buildings: {x0:g},{y0:g},{x1:g},{y1:g} leaves the "
+                f"{a.areaX:g} x {a.areaY:g} m field (#580)",
+            )
+    trace = getattr(a, "traceFile", None)
+    if trace and rects:
+        try:
+            with open(trace) as fh:
+                text = fh.read()
+        except OSError:
+            return
+        start = {}
+        for i, axis, v in re.findall(r"\$node_\((\d+)\) set ([XY])_ (-?[0-9.eE+-]+)", text):
+            start.setdefault(int(i), {})[axis] = float(v)
+        pts = [(p["X"], p["Y"]) for p in start.values() if "X" in p and "Y" in p]
+        indoor = sum(
+            any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in rects) for x, y in pts
+        )
+        print(f"  buildings: {len(rects)}; {indoor} of {len(pts)} nodes start indoors")
+        if indoor == 0:
+            report(
+                "WARN",
+                "--buildings: no node starts inside a building, so the "
+                "walls only shadow links that cross them, and the "
+                "indoor/outdoor split the disaster family measures "
+                "is absent at t = 0 (#580)",
+            )
+
+
+def cmd_preflight(a):
+    set_roles(a)
+    # #444: the satellite harness has its own geometry; everything below this
+    # dispatch is MANET field arithmetic and would be meaningless for it.
+    if getattr(a, "harness", "compare") == "isl-grid":
+        return cmd_preflight_sat(a)
+    # Knobs whose defaults differ per harness (MANET 300 s / 20 flows vs
+    # isl-grid's 60 s / 4 flows): argparse holds None and each branch fills
+    # its own harness's default.
+    if a.time is None:
+        a.time = 300.0
+    if a.flows is None:
+        a.flows = 20
+    if a.protocols is None:
+        a.protocols = ""
+    # #483: anthocnet-compare sets the per-flow rate with --cbrBps (the fanet
+    # preset uses 2048), but this preflight read only --pktPerSec, so a
+    # dispatch-faithful `--cbrBps 2048` was silently judged at 1 pkt/s: the
+    # offered load and the #230 window rule both used the wrong rate. Derive
+    # the packet rate from --cbrBps the way the harness does, and refuse a
+    # pair that disagrees rather than pick one silently.
+    cbr = getattr(a, "cbrBps", None)
+    pps = getattr(a, "pktPerSec", None)
+    if cbr is not None:
+        derived = cbr / (8.0 * a.pktBytes)
+        if pps is not None and abs(pps - derived) > 1e-9:
+            report(
+                "FAIL",
+                f"--cbrBps {cbr:g} is {derived:g} pkt/s at "
+                f"{a.pktBytes} B, but --pktPerSec says {pps:g}; "
+                "pass one of them",
+            )
+        a.pktPerSec = derived
+    elif pps is None:
+        a.pktPerSec = 1.0
+    # #639: a replayed scene sets the node and flow counts from its files.
+    if (
+        getattr(a, "traceFile", None)
+        or getattr(a, "flowsFile", None)
+        or getattr(a, "mobility", "rwp") == "trace"
+    ):
+        check_replay_files(a)
+        if a.mobility == "trace":
+            report(
+                "WARN",
+                "--mobility trace: the degree, link-lifetime and "
+                "diversity-window rules use --speed/--pause, not the "
+                "trace's own motion; read them as nominal (#639)",
+            )
+    # #481: --areaZ is the harness's 3-D field knob (#480). getattr keeps
+    # callers that predate it (and the self-test's namespaces) on the 2-D path.
+    area_z = getattr(a, "areaZ", 0.0) or 0.0
+    if area_z < 0:
+        report(
+            "FAIL",
+            f"--areaZ={area_z}: must be >= 0 (the harness aborts on a negative extent, #480)",
+        )
+        area_z = 0.0
+    mobility = getattr(a, "mobility", "rwp")
+    blocks_x = getattr(a, "blocksX", 5) or 5
+    blocks_y = getattr(a, "blocksY", 5) or 5
+    street = getattr(a, "streetWidth", 20.0) or 20.0
+    urban = a.propagation == "urban"
+    # #488: the radius the link-lifetime rules below reason with. Under the
+    # urban channel --range is inert and the shipped radio's two-ray decode
+    # radius bounds every link.
+    eff_range = TWO_RAY_DECODE_RADIUS_M if urban else a.range
+    if mobility == "manhattan" and area_z == 0:
+        # #488: nodes on the street network, not uniform over the area.
+        prob = street_in_range_prob(
+            a.areaX, a.areaY, blocks_x, blocks_y, eff_range, urban=urban, street=street
+        )
+        degree = (a.nodes - 1) * prob
+        what = "urban: two-ray margin vs building loss" if urban else f"disk {a.range} m"
+        print(
+            f"field {a.areaX}x{a.areaY} m, {blocks_x}x{blocks_y} street grid "
+            f"(road network; {what}), {a.nodes} nodes"
+        )
+    elif area_z > 0:
+        # Mean node degree in a box: (n-1) * P(two uniform nodes in range),
+        # measured rather than approximated, because the sphere is clipped by
+        # up to three faces (#481).
+        prob = box_in_range_prob(a.areaX, a.areaY, area_z, a.range)
+        degree = (a.nodes - 1) * prob
+        print(f"field {a.areaX}x{a.areaY}x{area_z:g} m (3-D), {a.nodes} nodes, range {a.range} m")
+    else:
+        area = a.areaX * a.areaY
+        # Mean node degree on a random geometric graph: n * (disk ∩ area) /
+        # area. Cap the disk by the area's short edge (the 1500x300 field is a
+        # strip).
+        disk = math.pi * a.range**2
+        # In a strip narrower than the disk (the paper's 1500x300 field), a
+        # node's in-range area is ~2r x short-edge, not the full disk.
+        reach = min(disk, 2 * a.range * min(a.areaY, a.areaX), area)
+        degree = (a.nodes - 1) * reach / area
+        print(f"field {a.areaX}x{a.areaY} m, {a.nodes} nodes, range {a.range} m")
+    print(
+        f"  expected mean degree ~{degree:.1f} "
+        f"(connectivity wants >~{math.log(max(a.nodes, 2)):.1f})"
+    )
+    if not urban and a.range >= max(a.areaX, a.areaY, area_z):
+        report(
+            "WARN", "range >= long edge — effectively single-hop (fine only for an anchor scenario)"
+        )
+    if degree < math.log(max(a.nodes, 2)):
+        report(
+            "FAIL",
+            "expected degree below ln(n) — field likely "
+            "partitioned; results will measure connectivity, "
+            "not routing",
+        )
+    elif degree < 2 * math.log(max(a.nodes, 2)):
+        report(
+            "WARN",
+            "expected degree < 2·ln(n) — intermittent partitions "
+            "likely (sparse regime; intended for the paper field, "
+            "but don't read absolute PDR as protocol quality)",
+        )
+    offered = a.flows * a.pktBytes * 8 * a.pktPerSec  # bps at the app layer
+    frac = offered / (a.rateMbps * 1e6)
+    print(
+        f"  offered load {offered / 1000:.1f} kbps = {frac * 100:.1f}% of the "
+        f"{a.rateMbps} Mbit/s channel (single collision domain)"
+    )
+    if frac > 0.5:
+        report(
+            "FAIL",
+            "offered load >50% of channel rate — MAC saturation; "
+            "every protocol will collapse (#121: don't dispatch)",
+        )
+    elif frac > 0.2:
+        report(
+            "WARN",
+            "offered load >20% of channel rate — contention-"
+            "dominated; deltas will mix routing with MAC effects",
+        )
+    if a.time < 120:
+        report(
+            "WARN",
+            f"time={a.time}s — shorter than the convergence "
+            "horizon used for the quick CI preset; PDR includes "
+            "a large startup transient",
+        )
+    if a.pause >= a.time:
+        report(
+            "WARN",
+            "pause >= sim time — the field is static; that is "
+            "the sparse-static regime, not the paper's mobile "
+            "one",
+        )
+    # #61 mobility-model coherence. Same shape as the #230 pathWindowS rule:
+    # a knob that the selected model ignores costs nothing to check here and,
+    # unchecked, produces a sweep that believes it varied something it did not.
+    if a.mobility == "gaussmarkov" and a.pause != 0:
+        report(
+            "FAIL",
+            f"--pause={a.pause}s with --mobility=gaussmarkov: "
+            "Gauss-Markov nodes never stop, so pause is inert. A "
+            "pause sweep under this model would produce N identical "
+            "cells and read as 'pause has no effect' (#61); pass "
+            "--pause=0 to state that explicitly",
+        )
+    # #488: the Manhattan grid and the urban channel, mirroring the harness's
+    # refusals so a bad VANET cell fails here at zero dispatches.
+    if mobility == "manhattan" and a.pause != 0:
+        report(
+            "FAIL",
+            f"--pause={a.pause}s with --mobility=manhattan: the "
+            "Manhattan model never pauses, so pause is inert; a "
+            "pause sweep would produce N identical cells (#488). "
+            "Pass --pause=0",
+        )
+    buildings = parse_buildings(getattr(a, "buildings", None))
+    if buildings is not None:
+        check_buildings(a, buildings, urban, mobility)
+    elif urban and mobility not in ("manhattan", "trace"):
+        report(
+            "FAIL",
+            "--propagation=urban needs --mobility=manhattan: the "
+            "buildings are the street grid's blocks, and vehicles "
+            "off the streets would sit inside them; the harness "
+            "refuses it (#488)",
+        )
+    if mobility == "manhattan" and area_z > 0:
+        report(
+            "FAIL",
+            f"--mobility=manhattan with --areaZ={area_z:g}: a "
+            "street grid is planar; the harness refuses it (#488)",
+        )
+    if urban and buildings is None and not 0 < street < min(a.areaX / blocks_x, a.areaY / blocks_y):
+        report(
+            "FAIL",
+            f"--streetWidth={street:g} must be > 0 and narrower "
+            f"than a block ({a.areaX / blocks_x:g} x "
+            f"{a.areaY / blocks_y:g} m); the harness refuses it "
+            "(#488)",
+        )
+    if a.mobility == "ssrwp" and a.speed <= 0:
+        report(
+            "FAIL",
+            "--mobility=ssrwp needs a positive speed: the "
+            "steady-state distribution divides by speed and is "
+            "undefined at zero (#61)",
+        )
+    # #60 channel-model coherence. The degree/connectivity arithmetic above is
+    # a *disk-model* calculation: it treats `range` as a hard link cutoff. Under
+    # tworay and nakagami there is no cutoff — links are governed by tx power
+    # vs receiver sensitivity, and under nakagami by a random draw on top of
+    # that — so `range` bounds nothing and the estimate is indicative only.
+    # Pre-existing for tworay; stated now rather than left for the fading arm
+    # to discover.
+    if a.propagation != "range" and not (urban and mobility == "manhattan"):
+        report(
+            "WARN",
+            f"--propagation={a.propagation}: --range is inert (no "
+            "hard cutoff), so the node-degree and connectivity "
+            "figures above are a disk-model estimate and do not "
+            "bound this channel's links (#24, #60)",
+        )
+    # #63: a saturating TCP arm invalidates the offered-load arithmetic above.
+    # BulkSend sends as fast as the window allows, so `cbrBps`, `pktPerSec` and
+    # the channel-saturation check are all computed from a load the run does
+    # not actually offer.
+    if a.transport == "tcp":
+        report(
+            "WARN",
+            "--transport=tcp is a SATURATING arm: BulkSend ignores "
+            "cbrBps/pktPerSec, so the offered-load and "
+            "channel-saturation figures above do not describe this "
+            "run. It is its own regime, not a variant of the base "
+            "scenario — do not compare its cells to UDP ones, and "
+            "read ##GOODPUT## rather than pdr/thrput (#63)",
+        )
+    if a.propagation == "nakagami":
+        report(
+            "WARN",
+            "nakagami is the harness's first stochastic channel: "
+            "link existence is a random draw, so per-seed "
+            "dispersion is higher than on the deterministic "
+            "channels and the #293 runs floor should be treated as "
+            "a minimum, not a target — check the interval widths "
+            "before quoting a tail metric (#60)",
+        )
+    # #708: the radio. The harness refuses each FAIL below at startup;
+    # caught here, before a runner is spent on it. getattr keeps callers that
+    # predate the knob on the 802.11b path. (An arm's own radio needs, such as
+    # 802.11s on 5 GHz, are the arm's refusal, not a rule here.)
+    standard = getattr(a, "standard", "80211b") or "80211b"
+    rate_mgr = getattr(a, "rateManager", "constant2") or "constant2"
+    if standard == "80211a":
+        if a.propagation != "range":
+            report(
+                "FAIL",
+                f"--standard 80211a with --propagation="
+                f"{a.propagation}: the two-ray family is set at "
+                "2.4 GHz; only the disk is frequency-free, and the "
+                "harness refuses the pair (#708)",
+            )
+        if rate_mgr not in ("constant6", "arf", "ideal"):
+            report(
+                "FAIL",
+                f"--standard 80211a with --rateManager {rate_mgr}: "
+                "a DSSS (802.11b) rate; use constant6, arf or ideal "
+                "(#708)",
+            )
+        if rate_mgr == "constant6" and a.rateMbps != 6:
+            report(
+                "WARN",
+                f"--rateManager constant6 is a 6 Mbit/s channel, "
+                f"but --rateMbps {a.rateMbps:g} sets the offered-"
+                "load rule's rate; pass --rateMbps 6 (#708)",
+            )
+        report(
+            "WARN",
+            "--standard 80211a: the static-mesh cell's radio "
+            "(#708), not comparable to the 802.11b corpus; every "
+            "arm in it must run on the same radio",
+        )
+    elif rate_mgr == "constant6":
+        report("FAIL", "--rateManager constant6 is an OFDM rate: it needs --standard 80211a (#708)")
+    # #296 item 1 / #216: the oracle control's coherence, checked before the
+    # dispatch rather than after it. Two ways to spend runtime on a meaningless
+    # oracle cell, and one way to abort mid-run.
+    arms = [x for x in a.protocols.split(",") if x]
+    if ORACLE_PROTO and ORACLE_PROTO in arms:
+        if len(arms) == 1:
+            report(
+                "WARN",
+                f"--protocols={ORACLE_PROTO} alone: an upper bound with "
+                "nothing under it measures nothing. The oracle is "
+                "read as a GAP against the protocols in the same "
+                "cell, so run it alongside them (#296)",
+            )
+        if a.propagation != "range":
+            # #431: the oracle derives its own radius on the fading channels —
+            # the decode-threshold disk on tworay, the closed-form fading-median
+            # disk on nakagami — so --range neither pins it nor is required
+            # (before #431 it was both, and the 300 m pin was the measured hop
+            # violation). Still WARN: derived or not, the cell is approx=1.
+            report(
+                "WARN",
+                f"--propagation={a.propagation} with the oracle "
+                "arm: adjacency is auto-derived from the installed "
+                "PHY's decode threshold (#431 — decode disk on "
+                "tworay, fading-median disk on nakagami, per pair "
+                "through the buildings on urban, #488) and the "
+                "arm is flagged approx=1: a calibrated reference "
+                "point, not a proven upper bound. --range does not "
+                "pin the oracle's radius any more; to force one, "
+                "set the oracle arm's link-range attribute (see "
+                "its README)",
+            )
+    # #481: the harness's #480 refusals, mirrored so a bad 3-D cell fails here
+    # at zero dispatches instead of aborting on the runner.
+    if area_z > 0:
+        if a.propagation != "range":
+            report(
+                "FAIL",
+                f"--propagation={a.propagation} with --areaZ="
+                f"{area_z:g}: two-ray ground reflection (and nakagami "
+                "on top of it) assumes antennas over a ground plane, "
+                "meaningless between aircraft; the harness refuses "
+                "it. Use the disk channel (#480)",
+            )
+        if a.mobility == "ssrwp":
+            report(
+                "FAIL",
+                f"--mobility=ssrwp with --areaZ={area_z:g}: ns-3's "
+                "steady-state RWP is planar and the harness refuses "
+                "it. Use rwp or gaussmarkov (#480)",
+            )
+        report(
+            "WARN",
+            f"3-D field (--areaZ={area_z:g}): a FANET cell, not "
+            "comparable to the published planar corpus (#300). "
+            "Validate with the analytic 3-D anchors of the "
+            "--anchors file (#482), not the planar Broch or grid "
+            "floors. The gaussmarkov pitch values are a recorded "
+            "assumption, not a citation (#482)",
+        )
+    elif mobility == "manhattan":
+        report(
+            "WARN",
+            "--mobility=manhattan: a VANET cell (#301), not "
+            "comparable to the published MANET corpus. The Broch "
+            "and grid floors do not apply; validate against the "
+            "analytic VANET anchors of the --anchors file "
+            "(#488)"
+            + (
+                ""
+                if urban
+                else ". The disk channel erases the buildings that make it "
+                "VANET: label this cell harness validation only and "
+                "use --propagation=urban for any claim"
+            ),
+        )
+    elif a.mobility != "rwp":
+        report(
+            "WARN",
+            f"--mobility={a.mobility} is not the model the "
+            "published corpus was measured under (rwp), so its "
+            "results are not comparable to the published cells. "
+            "The Broch floor is RWP-specific and does not apply; "
+            "validate with the grid regression floors of the "
+            "--anchors file instead, which are measured floors "
+            "rather than literature values (#59, #61, #60)",
+        )
+    # #230: the diversity window must be short relative to how fast the
+    # topology changes, or a route being *replaced* inside one window reads as
+    # two concurrent paths and path_div_used stops meaning multipath. Two nodes
+    # close at up to 2*speed, so a link survives on the order of
+    # range/(2*speed); a multi-hop route breaks faster still, making this the
+    # generous bound. Skipped on a static field, where nothing churns — which is
+    # exactly why sparse-static was the only scenario whose baselines read ~1.
+    #
+    # This is the rule that would have caught #230 before spending a campaign:
+    # at the paper-base defaults it fires on the shipped 10 s default.
+    if a.pause < a.time and a.speed > 0:
+        churn = eff_range / (2 * a.speed)
+        # #481: hello interval vs link lifetime. Neighbour loss is detected by
+        # missed hellos (detector A), so when a link lives only a few hello
+        # periods the protocol spends much of each link's life not yet knowing
+        # it exists, or not yet knowing it is gone. The #300 FANET envelope
+        # (30 m/s) is where this bites; the published MANET cells all sit
+        # well clear of it (paper-base: 300 m / 40 m/s = 7.5 s vs 1 s).
+        hello = getattr(a, "helloInterval", 1.0) or 1.0
+        print(
+            f"  hello interval {hello:g}s vs ~{churn:.1f}s link lifetime "
+            f"({churn / hello:.1f} hello periods)"
+        )
+        if churn < hello:
+            report(
+                "FAIL",
+                f"link lifetime ~{churn:.1f}s is shorter than the "
+                f"{hello:g}s hello interval: links appear and vanish "
+                "between hellos, so neighbour discovery cannot "
+                "track the topology and every protocol measures "
+                "detection lag, not routing (#481)",
+            )
+        elif churn < 3 * hello:
+            report(
+                "WARN",
+                f"link lifetime ~{churn:.1f}s is under 3 hello "
+                f"periods ({hello:g}s): neighbour-detection lag is a "
+                "large share of each link's life. Expected in the "
+                "FANET envelope; state it next to any result, and "
+                "treat a HelloInterval change as an A/B follow-up "
+                "(#300 watchlist), not a pre-tuning (#481)",
+            )
+        # #537: on a street grid under the urban channel, distance is not what
+        # ends a link. A vehicle keeps line of sight to the cross street only
+        # while it is inside the intersection, so a link to a car round the
+        # corner lives about streetWidth / speed. The distance bound above
+        # reads 10.6 hello periods for the vanet preset; the measured
+        # shortest-path lifetime there is 0.50 s (AODV's routes 1.32 s), about
+        # 21x shorter, and it is the corner bound that matches. WARN rather
+        # than replace the distance bound: links along one street still obey
+        # it, so the truth is a mix the preflight cannot weigh.
+        if urban and mobility == "manhattan":
+            corner = street / a.speed
+            if corner < churn:
+                print(
+                    f"  corner-limited link lifetime ~{corner:.1f}s "
+                    f"(streetWidth {street:g} m / {a.speed:g} m/s) vs the "
+                    f"~{churn:.1f}s distance bound"
+                )
+                report(
+                    "WARN",
+                    f"urban street grid: a link round a corner lives "
+                    f"~{corner:.1f}s (streetWidth/speed), not the "
+                    f"~{churn:.1f}s distance bound — "
+                    f"{corner / hello:.1f} hello periods. Measured on "
+                    "the vanet preset: shortest paths change every "
+                    "0.50 s (#537). Route-churn and path-diversity "
+                    "readings are corner-dominated; HelloInterval "
+                    "and ReconvHoldCap are #537's A/B, not "
+                    "pre-tuning",
+                )
+        print(
+            f"  path-diversity window {a.pathWindowS}s vs ~{churn:.1f}s "
+            f"link lifetime at {a.speed} m/s over {eff_range:g} m"
+        )
+        # #663: a WARN, not a FAIL. Only the path_div_* diagnostics read the
+        # window; PDR, delay, delay99 and NRL do not. Every published grid
+        # and FANET cell runs the 10 s default past this bound, and their
+        # pages leave path_div_* unquoted (metrics.md, "Caveats (route
+        # quality)"), so a FAIL here refused every cell the corpus publishes.
+        if a.pathWindowS > churn:
+            report(
+                "WARN",
+                f"pathWindowS={a.pathWindowS}s exceeds the ~"
+                f"{churn:.1f}s link lifetime — route replacement "
+                "will be counted as concurrent multipath, so "
+                "path_div_* from this cell is unquotable (#230). "
+                "PDR, delay, delay99 and NRL are unaffected; quote "
+                "diversity only from the dedicated cell "
+                "(cbrBps=4096, pathWindowS=2)",
+            )
+        elif a.pathWindowS > churn / 2:
+            report(
+                "WARN",
+                f"pathWindowS={a.pathWindowS}s is over half the ~"
+                f"{churn:.1f}s link lifetime — path_div_* will be "
+                "inflated by route churn; verify the single-path "
+                "baselines read <=1.05 before quoting it",
+            )
+        # #230: the other end of the same squeeze. A (node, destination,
+        # window) cell can only report diversity > 1 if at least two packets
+        # land in it, so shortening the window to escape churn eventually
+        # forces every cell to exactly 1.0 — measured: at 0.5-2 s on paper-base
+        # all four protocols read 1.000-1.002, AntHocNet included. Sampling is
+        # per flow, so packets-per-cell is bounded above by pktPerSec*window.
+        samples = a.pktPerSec * a.pathWindowS
+        print(f"  ~{samples:.1f} packet(s) per diversity cell ({a.pktPerSec}/s x {a.pathWindowS}s)")
+        if samples < 2.0:
+            report(
+                "FAIL",
+                f"pathWindowS={a.pathWindowS}s at {a.pktPerSec} "
+                f"pkt/s gives ~{samples:.1f} packets per cell — a "
+                "cell needs >=2 to report diversity above 1, so "
+                "path_div_used is pinned at 1.0 for every protocol "
+                "(#230)",
+            )
+        elif samples < 4.0:
+            # Measured, not guessed: paper-base at 1 pkt/s x 2 s (exactly the
+            # 2-sample floor) reads anthocnet 1.002 and aodv 1.002 — the floor
+            # is necessary but nowhere near sufficient, because a cell holding
+            # two packets can only ever report 1.0 or 2.0.
+            report(
+                "WARN",
+                f"~{samples:.1f} packets per diversity cell is at "
+                "the floor — measured at paper-base, 2 packets/cell "
+                "gave anthocnet 1.002 vs aodv 1.002, i.e. no "
+                "separation. Treat path_div_* as underpowered here "
+                "(#230)",
+            )
+        if a.pathWindowS > churn and samples < 4.0:
+            report(
+                "FAIL",
+                "no usable pathWindowS at these knobs: churn needs "
+                f"<={churn:.1f}s, adequate sampling needs "
+                f">={4.0 / a.pktPerSec:.1f}s. Raise pktPerSec or "
+                "measure diversity per-packet instead of "
+                "per-window (#230)",
+            )
+    verdict()
+
+
+def parse_results(path):
+    """Yield dicts with proto/pdr/delay/delay99/nrl/jitter (+context) per row.
+
+    Energy fields (#209) are present only for runs produced after energy
+    instrumentation landed; older inputs simply omit them and the energy rules
+    below are skipped. The results table carries the two headline energy
+    columns (energy(J), J/pkt) at positions 10/11; the residual spread, the
+    configured initial energy and the first-death time live in the CSV only
+    (the human output puts them on a '# energy' line, which ROW does not match).
+
+    Reordering (#212), drop-cause (#215) and route-quality (#217) fields ride
+    the '# reorder' / '# drops' / '# paths' / '# energy' diagnostic lines of a
+    saved cell rather than the fixed-width table, and until #230's second
+    finding they were **not parsed at all** on text input — every rule below
+    silently skipped, so `results` on a ##BENCH## cell certified only the four
+    headline invariants while returning the same OK it returns for a fully
+    checked CSV. That is exactly the input the skill's own order-of-operations
+    recommends validating *before* a taxonomy sweep, so the cheap pre-sweep
+    check was the one that could not see the defects the sweep would be full
+    of. DIAG_LINE/DIAG_KEYS below close that: the diagnostic lines are
+    structured key=value, so they parse into the same row dict the CSV branch
+    yields and every existing rule fires unchanged on both input formats.
+
+    Fields absent from an input (older runs predating an instrumentation, the
+    energy table columns the 9-number ##BENCH## block does not carry, the
+    AntHocNet-only drop causes printed as '-' for the other protocols) parse
+    to None and their rules skip, exactly like an absent CSV column. If a file
+    holds several tables for the same protocol, diagnostics attach to that
+    protocol's last row — a saved single-point cell has one row per protocol,
+    which is the intended input.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    first = text.lstrip().splitlines()[0] if text.strip() else ""
+    # #259: isl-grid --csv. One row per protocol; rows/cols/nodes/links/
+    # isl_delay_ms are topology context the satellite rules read, mapped under
+    # sat_*/isl_delay keys so they can never collide with a MANET column.
+    if first.startswith("protocol,runs,rows,cols,"):
+        for r in csv.DictReader(text.splitlines()):
+            yield {
+                "where": f"isl-grid {r.get('rows')}x{r.get('cols')}",
+                "proto": r.get("protocol"),
+                "runs": r.get("runs"),
+                "pdr": r.get("pdr_pct"),
+                "delay": r.get("delay_ms"),
+                "delay99": r.get("delay99_ms"),
+                "nrl": r.get("nrl"),
+                "jitter": r.get("jitter_ms"),
+                "isl_delay": r.get("isl_delay_ms"),
+                "sat_nodes": r.get("nodes"),
+                "sat_links": r.get("links"),
+            }
+        return
+    # #259: isl-grid human mode (the satellite-results.txt artifact). The
+    # '+Grid' summary identifies the format and supplies the topology context;
+    # ##RUN## per-seed rows and the aggregate table rows both map into the
+    # standard row dict — note jitter sits at position 6 here (position 5 is
+    # nrl_bytes), which is why this input must not fall through to the MANET
+    # ROW mapping below. '# diag' ant-tally lines are deliberately not parsed:
+    # no results-mode rule reads them.
+    grid = ISL_GRID.search(text)
+    if grid:
+        ctx = {"isl_delay": grid.group(3), "sat_nodes": grid.group(1), "sat_links": grid.group(2)}
+        base = os.path.basename(path)
+        for line in text.splitlines():
+            m = ISL_RUN.match(line)
+            if m:
+                seed, proto = m.group(1), m.group(2)
+                nums = m.group(3).split()
+                if len(nums) >= 7:
+                    yield {
+                        "where": f"{base} run{seed}",
+                        "proto": proto,
+                        "pdr": nums[0],
+                        "delay": nums[1],
+                        "delay99": nums[2],
+                        "nrl": nums[4],
+                        "jitter": nums[6],
+                        **ctx,
+                    }
+                continue
+            m = ROW.match(line)
+            if not m:
+                continue
+            proto, nums = m.group(1), m.group(2).split()
+            if proto in ("protocol",) or len(nums) < 7:
+                continue
+            yield {
+                "where": base,
+                "proto": proto,
+                "pdr": nums[0],
+                "delay": nums[1],
+                "delay99": nums[2],
+                "nrl": nums[4],
+                "jitter": nums[6],
+                **ctx,
+            }
+        return
+    if first.startswith("kind,") or ",protocol," in first:
+        for r in csv.DictReader(text.splitlines()):
+            yield {
+                "where": f"{r.get('group')}={r.get('x')}",
+                "proto": r.get("protocol"),
+                "runs": r.get("runs"),
+                "pdr": r.get("pdr_pct"),
+                "delay": r.get("delay_ms"),
+                "delay99": r.get("delay99_ms"),
+                "nrl": r.get("nrl"),
+                "jitter": r.get("jitter_ms"),
+                "energy": r.get("energy_j"),
+                "energy_per_pkt": r.get("energy_per_pkt_j"),
+                "res_min": r.get("energy_res_min_j"),
+                "res_mean": r.get("energy_res_mean_j"),
+                "energy_init": r.get("energy_init_j"),
+                "reorder_ratio": r.get("reorder_ratio"),
+                "reorder_ratio_max": r.get("reorder_ratio_max"),
+                "reorder_extent_mean": r.get("reorder_extent_mean"),
+                "reorder_extent_max": r.get("reorder_extent_max"),
+                "reorder_buf_max": r.get("reorder_buf_max"),
+                "drop_route": r.get("drop_route_pct"),
+                "drop_queue": r.get("drop_queue_pct"),
+                "drop_mac": r.get("drop_mac_pct"),
+                "drop_chan": r.get("drop_chan_pct"),
+                "drop_ttl": r.get("drop_ttl_pct"),
+                "drop_setup": r.get("drop_setup_pct"),
+                "drop_reconv": r.get("drop_reconv_pct"),
+                "drop_repair": r.get("drop_repair_pct"),
+                "hops": r.get("path_hops_mean"),
+                "hops_max": r.get("path_hops_max"),
+                "div": r.get("path_div_used"),
+                "div_max": r.get("path_div_max"),
+                "div_window": r.get("path_div_window_s"),
+                "entropy": r.get("path_entropy_bits"),
+                "jain": r.get("jain_pkts"),
+            }
+        return
+    rows = []  # yielded in table order
+    by_proto = {}  # diagnostics merge into the protocol's last row
+    # #293 runs-floor: a saved cell's per-seed ##RUN## rows reveal the run
+    # count the 9-number table/##BENCH## block does not carry.
+    run_counts = {}
+    for proto in re.findall(r"^##RUN##\s+\d+\s+([A-Za-z][\w-]*)", text, re.MULTILINE):
+        run_counts[proto] = run_counts.get(proto, 0) + 1
+    # A campaign cell collected from seed blocks (campaign.py) holds one
+    # summary table per block. Each table's rows are grouped apart, by the
+    # block's firstRun, so the cross-row bounds compare an oracle against the
+    # arms of its own block, never against another block's seeds (v2.4.0).
+    blocks = re.findall(r"^##CONFIG## .*\bfirstRun=(\d+)", text, re.MULTILINE)
+    where = os.path.basename(path)
+    # #741: the summary table is fixed-width, so a value that fills its field
+    # (NRL 10114.56 in an 8-wide column) merges with its neighbour and every
+    # later column shifts by one. A row whose field count differs from the
+    # header above it is reported as a format error, never mapped by position.
+    header_cols = None
+    for line in text.splitlines():
+        if line.startswith("protocol "):
+            header_cols = len(line.split()) - 1
+            continue
+        if len(blocks) > 1:
+            b = re.match(r"^##CONFIG## .*\bfirstRun=(\d+)", line)
+            if b:
+                where = f"{os.path.basename(path)} block{b.group(1)}"
+        m = ROW.match(line)
+        if m:
+            proto, nums = m.group(1), m.group(2).split()
+            if proto in ("protocol",) or len(nums) < 5:
+                continue
+            if (
+                header_cols is not None
+                and not line.startswith("##BENCH##")
+                and len(nums) != header_cols
+            ):
+                report(
+                    "FAIL",
+                    f"{where}: {proto} table row has {len(nums)} "
+                    f"fields under a {header_cols}-column header "
+                    "— merged columns, row not read (#741)",
+                )
+                continue
+            row = {
+                "where": where,
+                "proto": proto,
+                "pdr": nums[0],
+                "delay": nums[1],
+                "delay99": nums[2],
+                "nrl": nums[4],
+                "runs": run_counts.get(proto),
+            }
+            if len(nums) >= 6:
+                row["jitter"] = nums[5]
+            if len(nums) >= 11:  # #209: ... nrlBytes, energy(J), J/pkt
+                row["energy"] = nums[9]
+                row["energy_per_pkt"] = nums[10]
+            if len(nums) >= 13:  # #217: ... J/pkt, hops, jain
+                row["hops"] = nums[11]
+                row["jain"] = nums[12]
+            rows.append(row)
+            by_proto[proto] = row
+            continue
+        c = COMMON_LINE.match(line)
+        if c:
+            row = by_proto.get(c.group(1))
+            if row is None:
+                continue  # ##COMMON## with no table row above it
+            n_common, hops_c = int(c.group(2)), c.group(3)
+            if hops_c is None:
+                continue  # predates the hop instrumentation
+            if hops_c == "na" or float(hops_c) == 0.0:
+                if n_common:
+                    row["hops_common_missing"] = row.get("hops_common_missing", 0) + 1
+                continue
+            v = float(hops_c)
+            row["hops_common_min"] = min(row.get("hops_common_min", v), v)
+            row["hops_common_max"] = max(row.get("hops_common_max", v), v)
+            continue
+        h = HOLD_LINE.match(line)
+        if h:
+            row = by_proto.get(h.group(1))
+            if row is None:
+                continue
+            f = [float(x) for x in h.group(2).split()]
+            # (count, mean, max) x (setup, reconv, repair)
+            if min(f) < 0.0:
+                row["hold_negative"] = row.get("hold_negative", 0) + 1
+            worst = max(f[2], f[5], f[8])  # the three max fields
+            row["hold_max_ms"] = max(row.get("hold_max_ms", worst), worst)
+            for base in (0, 3, 6):
+                if f[base] == 0.0 and f[base + 1] > 0.0:
+                    row["hold_mean_no_count"] = row.get("hold_mean_no_count", 0) + 1
+            continue
+        a = AIR_LINE.match(line)
+        if a:
+            row = by_proto.get(a.group(1))
+            if row is None:
+                continue  # ##AIR## with no table row above it
+            tx, rx, cca = (float(a.group(2)), float(a.group(3)), float(a.group(4)))
+            busy_pct = float(a.group(5))
+            if min(tx, rx, cca) < 0.0:
+                row["air_negative"] = row.get("air_negative", 0) + 1
+            if tx + rx + cca == 0.0:
+                row["air_zero_runs"] = row.get("air_zero_runs", 0) + 1
+            row["air_busy_max"] = max(row.get("air_busy_max", busy_pct), busy_pct)
+            continue
+        d = DIAG_LINE.match(line)
+        if not d:
+            continue
+        family, proto = d.group(1), d.group(2)
+        row = by_proto.get(proto)
+        if row is None:
+            continue  # diagnostic with no table row above it — nothing to bind to
+        keys = DIAG_KEYS[family]
+        for k, v in re.findall(r"([A-Za-z]\w*)=([-\w.]+)", d.group(3)):
+            # '-' (an AntHocNet-only cause on a baseline row) and other
+            # non-numeric junk are stored as-is; num() turns them into None,
+            # so the rules skip them exactly like an absent CSV blank.
+            if k in keys:
+                row[keys[k]] = v
+    yield from rows
+
+
+def check_provenance(path):
+    """#365: a saved log cell must say which commit produced it.
+
+    Scoped to inputs carrying ##BENCH##/##RUN## rows — i.e. a fetched job-log
+    tail. Campaign CSVs are deliberately exempt: their provenance is the run ID
+    in the filename plus the ledger rule in methodology.md, not a line in the
+    data, and warning on them would train the reader to ignore this warning.
+
+    WARN rather than FAIL. A cell measured before the marker existed
+    (everything up to `v1.3.0`) legitimately has no line, and those numbers are
+    still readable — they are just pinned by release rather than by SHA. What
+    the warning catches is the case that actually costs something: a *recent*
+    run whose tail was cut above the line, or a workflow that stopped emitting
+    it, where the reader would otherwise assume provenance was recorded.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    if "##BENCH##" not in text and "##RUN##" not in text:
+        return
+    base = os.path.basename(path)
+    for line in text.splitlines():
+        m = PROV_LINE.match(line)
+        if m:
+            print(f"ok: {base}: measured at {m.group(1)[:7]}")
+            return
+    report(
+        "WARN",
+        f"{base}: no ##PROV## line — this cell does not record the "
+        "commit it was measured at (#365). Expected last in the "
+        "compact block: either the run predates the marker "
+        "(<= v1.3.0, pinned by release instead) or the log tail was "
+        "cut above it. Do not publish a number whose version is "
+        "unknown.",
+    )
+
+
+def check_source_schedule(path):
+    """#521: did the cell's CBR sources actually run at constant bit rate?
+
+    Before #521 every OnOff source kept ns-3's default 1 s on / 1 s off duty,
+    so the offered rate was half of `cbrBps`. The fix names `offTime=` in
+    the ##CONFIG## scenario row, so a row WITHOUT the key is pre-#521, and
+    `offTime` > 0 is the legacy schedule reproduced on purpose (paired A/B
+    only). Both WARN rather than FAIL. Within one cell every arm saw the same
+    schedule, so cross-protocol comparisons stand; absolute levels, the
+    offered-load fraction and any paper-parity claim do not.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    cfg = re.search(r"^##CONFIG## scenario=.*$", text, re.MULTILINE)
+    if not cfg:
+        return
+    base = os.path.basename(path)
+    m = re.search(r"\boffTime=([-\d.e+]+)", cfg.group(0))
+    if m is None:
+        report(
+            "WARN",
+            f"{base}: pre-#521 cell — the sources ran ns-3's "
+            "default 1 s on / 1 s off, so the offered rate was HALF "
+            "of cbrBps. Within-cell comparisons stand; absolute "
+            "levels and offered-load claims do not",
+        )
+    elif float(m.group(1)) > 0.0:
+        report(
+            "WARN",
+            f"{base}: offTime={m.group(1)} — the legacy "
+            "on/off source schedule (#521), for paired A/B against "
+            "the pre-#521 corpus only; not a publishable cell",
+        )
+
+
+def check_drop_identity(path):
+    """#377: the drop-cause books must not overlap.
+
+    `drop_chan_pct` is a residual — hopLoss minus the counted causes — so it is
+    only non-negative while those causes are a subset of hopLoss. `overlap > 0`
+    on a ##DROPID## row means they are not, and every percentage in the
+    `drop_*` family for that cell is then an attribution of packets to causes
+    that double-count each other.
+
+    Since the residual carves out `macLost` (retry-limit drops minus the
+    delivered-but-ACK-lost ones) rather than the raw MAC-drop count, `overlap`
+    can no longer go positive for the reason #377 reported — `macLost` is a
+    subset of hopLoss by construction. The rule is kept anyway, and that is
+    deliberate: a positive value now means the books have overlapped for some
+    *other* reason, which is exactly the case nobody is watching for.
+
+    The existing rule catches this from the other side (drop_chan_pct outside
+    [0,100]), but only in aggregate and only once the percentages exist. Here
+    it is per seed, in counts, and it also reports `unackedRx` — the
+    delivered-but-ACK-lost count — because that is what says whether the
+    overlap has the hypothesised cause or another one.
+
+    WARN, not FAIL: the headline metrics (pdr/delay/delay99/thrput/nrl) come
+    from FlowMonitor and never touch these counters, so a cell with an overlap
+    is still readable for everything except the drop family. Failing it would
+    block reads that are perfectly sound.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    if "##DROPID##" not in text:
+        return
+    worst = {}
+    distinct = {}
+    rx_self = {}
+    for line in text.splitlines():
+        dm = DROPID_DELIVERED.match(line)
+        if dm:
+            distinct[(dm.group(1), dm.group(2))] = int(dm.group(3))
+        mm = MATCH_RX.match(line)
+        if mm:
+            rx_self[(mm.group(1), mm.group(2))] = int(mm.group(3))
+        # #761: the per-packet partition must not exceed the offered packets.
+        fm = DROPID_FATE.match(line)
+        if fm and int(fm.group(3)) < 0:
+            report(
+                "FAIL",
+                f"{os.path.basename(path)}/{fm.group(2)}: seed "
+                f"{fm.group(1)} per-packet fate partition exceeds "
+                f"the offered packets (unseen={fm.group(3)}) — a "
+                "packet was booked under two terminal fates, so "
+                "the drop_* family is double-counting (#761)",
+            )
+        m = DROPID_LINE.match(line)
+        if not m:
+            continue
+        seed, proto, overlap, unacked = m.group(1), m.group(2), int(m.group(3)), int(m.group(4))
+        if overlap <= 0:
+            continue
+        # Report the worst seed per protocol rather than one line per seed: a
+        # 20-seed fading cell would otherwise emit 80 identical warnings and
+        # bury every other finding in the run.
+        if proto not in worst or overlap > worst[proto][1]:
+            worst[proto] = (seed, overlap, unacked)
+    # #800: deliveries beyond the distinct packets are copies; PDR counts them.
+    for key, n in sorted(distinct.items()):
+        rx = rx_self.get(key)
+        if rx is None:
+            # The harness omits a seed's ##MATCH## rows when any arm delivered
+            # nothing, so the comparison is impossible, not passed.
+            report(
+                "WARN",
+                f"{os.path.basename(path)}/{key[1]}: seed {key[0]} has "
+                "no ##MATCH## row, so duplicate deliveries cannot be "
+                "checked (an arm delivered nothing this seed) (#800)",
+            )
+            continue
+        if rx <= n:
+            continue
+        seed, proto = key
+        level = "FAIL" if rx - n > max(5, n // 100) else "WARN"
+        report(
+            level,
+            f"{os.path.basename(path)}/{proto}: seed {seed} delivered "
+            f"{rx} packets but only {n} distinct ones — the arm "
+            "delivers duplicate copies, so its PDR is inflated (#800)",
+        )
+    base = os.path.basename(path)
+    for proto, (seed, overlap, unacked) in sorted(worst.items()):
+        report(
+            "WARN",
+            f"{base}/{proto}: drop-cause books overlap by {overlap} "
+            f"packets at seed {seed} (unackedRx={unacked}) — "
+            "drop_chan_pct is a residual and goes negative here, so "
+            "the whole drop_* family is unreadable for this cell "
+            "(#377). pdr/delay/delay99/thrput/nrl are unaffected. "
+            "unackedRx of the same order supports the "
+            "delivered-but-ACK-lost mechanism; unackedRx near zero "
+            "refutes it and the cause is something else.",
+        )
+
+
+# #294 item 4: per-run route-stability rows, UDP arms only.
+#   ##ROUTE## <run> <proto> <setupMedS> <setupMaxS> <flowsNoDelivery> <pathChg>
+#             <pathLifeMedS> <pathLifeN> <pathHopsMean> <hopsMean>
+ROUTE_LINE = re.compile(r"^\s*##ROUTE##\s+(\d+)\s+([a-z][\w-]*)((?:\s+[-\d.]+){8})\s*$")
+# The arms whose path identity is measured exactly are the --single-path arms
+# and the oracle: single-path, and every hop goes through Ipv4L3Protocol's
+# forward path with one TTL decrement and one "Tx". A multipath arm is
+# excluded on purpose (see check_route), and so is an arm whose identity is
+# not verified yet (AntHocNet left GPSR and AOMDV out).
+ROUTE_IDENTITY_TOL = 0.001  # hops; the row prints both means to 4 decimals
+
+
+def check_route(path):
+    """#294 item 4: the ##ROUTE## route-stability rows.
+
+    Every rule is an a-priori fact, not a tolerance on a measured value:
+
+    - pathChg is a fraction of consecutive delivered pairs, so in [0, 1];
+      setup latencies are -1 (no flow delivered / converge mode) or >= 0 with
+      median <= max; pathLifeMedS is -1 exactly when no run completed.
+    - Path identity. On a --single-path arm or the oracle a delivered packet's
+      path length (IP "Tx" events) equals its TTL hop count, so the row's two
+      means must agree. A gap means the path hook missed hops or keyed them to
+      the wrong (flow, seq). AntHocNet is exempt. On the disk channel it
+      matches exactly since #522 compensated the loopback TTL decrement on
+      held packets; under fading, #386 re-injection adds "Tx" events and
+      duplicate deliveries enter hopsMean, so the two means sit on different
+      populations (1.66 vs 2.07 on a Nakagami cell).
+    - The control: the oracle routes by deterministic Dijkstra over ground
+      truth, so on a field that never moves (rwp with pause >= time) under the
+      disk channel its path never changes. pathChg must read exactly 0.
+    - Blindness: pathHopsMean 0 beside a positive hopsMean means the hook
+      saw no delivered packet's path (GPSR's header sits between IP and UDP);
+      the harness suppresses that row, so a row like it FAILs.
+    - Absence: under TCP there is no (flow, seq) identity, so a row is a
+      wiring regression (the #382 rule).
+    """
+    with open(path) as fh:
+        text = fh.read()
+    if "##ROUTE##" not in text:
+        return
+    base = os.path.basename(path)
+    cfg = re.search(r"^##CONFIG## scenario=.*$", text, re.MULTILINE)
+    kv = dict(re.findall(r"(\w+)=(\S+)", cfg.group(0))) if cfg else {}
+    if kv.get("transport") == "tcp":
+        report(
+            "FAIL",
+            f"{base}: ##ROUTE## rows under transport=tcp — the "
+            "(flow, seq) path identity does not exist there and the "
+            "row must be absent (#294 item 4, the #382 rule)",
+        )
+    oracle = oracle_arm(text)
+    identity_arms = SINGLE_PATH_PROTOS + ((oracle,) if oracle else ())
+    static_disk = False
+    try:
+        static_disk = (
+            kv.get("mobility") == "rwp"
+            and kv.get("propagation") == "range"
+            and float(kv["pause"]) >= float(kv["time"])
+        )
+    except (KeyError, ValueError):
+        pass
+    for line in text.splitlines():
+        m = ROUTE_LINE.match(line)
+        if not m:
+            continue
+        seed, proto = m.group(1), m.group(2)
+        (set_med, set_max, _no_deliv, chg, life_med, life_n, path_hops, hops) = (
+            float(x) for x in m.group(3).split()
+        )
+        tag = f"{base}/{proto} seed {seed}"
+        if not 0.0 <= chg <= 1.0:
+            report(
+                "FAIL",
+                f"{tag}: pathChg {chg} outside [0, 1] — it is a "
+                "fraction of consecutive delivered pairs (#294)",
+            )
+        if (set_med < 0.0) != (set_max < 0.0) or (set_med >= 0.0 and set_med > set_max):
+            report(
+                "FAIL",
+                f"{tag}: setup latency median {set_med} s vs max "
+                f"{set_max} s — both -1 or 0 <= median <= max; the "
+                "fields are mis-mapped (#294)",
+            )
+        if (life_n == 0) != (life_med < 0.0):
+            report(
+                "FAIL",
+                f"{tag}: pathLifeMedS {life_med} with pathLifeN "
+                f"{life_n:g} — the median is -1 exactly when no "
+                "path run completed (#294)",
+            )
+        if path_hops == 0.0 and hops > 0.0:
+            report(
+                "FAIL",
+                f"{tag}: pathHopsMean 0 with hopsMean {hops} — "
+                "packets were delivered but the path hook recorded "
+                "none; the harness must emit no row for an arm it "
+                "cannot see (#294 item 4, the #382 rule)",
+            )
+        if proto in identity_arms and abs(path_hops - hops) > ROUTE_IDENTITY_TOL:
+            report(
+                "FAIL",
+                f"{tag}: path length {path_hops} hops vs TTL hop "
+                f"count {hops} — on a single-path IP-forwarding arm "
+                "they are the same number, so the path hook missed "
+                "hops or mis-keyed them (#294 item 4)",
+            )
+        if proto == oracle and static_disk and chg != 0.0:
+            report(
+                "FAIL",
+                f"{tag}: oracle pathChg {chg} on a static disk "
+                "field — Dijkstra over a topology that never "
+                "changes picks the same path every time, so the "
+                "control must read exactly 0 (#294 item 4)",
+            )
+
+
+def _fnum(row, key):
+    try:
+        return float(row.get(key))
+    except (TypeError, ValueError):
+        return None
+
+
+def check_path_diversity(rows):
+    """#230: read path diversity as excess over the in-run single-path floor.
+
+    `path_div_used` counts distinct next hops that carried data for a
+    destination inside one `pathWindowS` window. A protocol that installs one
+    route per destination can only exceed 1.0 by having that route *replaced*
+    inside the window, so whatever the baselines read above 1.0 is the churn
+    floor of that scenario — measured, in-run, by three protocols at once. The
+    only claim the metric can support is the --multipath arm's excess over that floor,
+    and that is what this prints; the absolute value is uninterpretable on its
+    own (see the sweep in the SINGLE_PATH_DIV_MAX comment).
+
+    One report per cell, not per row. Contamination is a property of the
+    window, so three baselines breaching one threshold is one finding stated
+    three times, and it was the whole content of 14/14 campaign FAILs.
+
+    Rows are grouped by `where` — one saved cell is one group; a campaign CSV
+    groups per scenario, which is the level the floor is a constant at.
+    Inputs without diversity columns, and cells with no single-path row to
+    measure a floor against, produce nothing.
+    """
+    groups = {}
+    for r in rows:
+        div = _fnum(r, "div")
+        if div is None:
+            continue
+        groups.setdefault(r["where"], []).append((r["proto"], div, r))
+    for where, grp in groups.items():
+        floors = [(d, p) for p, d, _ in grp if p in SINGLE_PATH_PROTOS]
+        if not floors:
+            continue
+        floor, floor_proto = max(floors)
+        arm = MULTI_PATH_PROTO
+        multi = next((d for p, d, _ in grp if arm and p == arm), None)
+        windows = [w for w in (_fnum(r, "div_window") for _, _, r in grp) if w is not None]
+        window = max(windows) if windows else None
+        churn_free = window is not None and window <= DIV_CELL_WINDOW_S
+        excess = None if multi is None else multi - floor
+        reading = (
+            (f"no {arm} row in this cell" if arm else "no --multipath arm named")
+            if excess is None
+            else f"{arm} {multi} = {excess:+.3f} vs the floor"
+        )
+        wtxt = "unknown" if window is None else f"{window:g}"
+        if not churn_free and floor > SINGLE_PATH_DIV_MAX:
+            report(
+                "WARN",
+                f"{where}: path diversity is churn-dominated — the "
+                f"single-path floor is {floor} ({floor_proto}) at "
+                f"windowS={wtxt}, i.e. route replacement inside the "
+                f"window is being counted as concurrent multipath; "
+                f"{reading}. Do not quote path_div_*/"
+                f"path_entropy_bits from this cell. Nothing else is "
+                f"affected: PDR/delay/NRL/jitter come from "
+                f"FlowMonitor, not from the diversity window (#230)",
+            )
+        elif excess is None:
+            print(
+                f"ok: {where}: single-path diversity floor {floor} "
+                f"({floor_proto}) at windowS={wtxt} — churn-free"
+            )
+        elif excess > 0.0:
+            print(
+                f"ok: {where}: path diversity readable — {arm} {multi} "
+                f"vs single-path floor {floor} ({floor_proto}) at "
+                f"windowS={wtxt}: excess {excess:+.3f}"
+            )
+        else:
+            report(
+                "WARN",
+                f"{where}: {arm} path diversity {multi} does "
+                f"not exceed the single-path floor {floor} "
+                f"({floor_proto}) at windowS={wtxt} (excess "
+                f"{excess:+.3f}) — the multipath protocol shows no "
+                f"concurrent spreading the baselines do not also "
+                f"show, in a cell where the floor is clean enough "
+                f"to say so (#230)",
+            )
+
+
+ORACLE_SPLIT_SEEN = {}
+
+
+def check_oracle(path, rows):
+    """#296 item 1 / #216: the oracle control's a-priori values, asserted.
+
+    Two halves. The first reads the ##ORACLE## self-description — which
+    adjacency rule was in force, whether it is exact for this channel, and
+    whether the graph was ever solved. The second is cross-row and is the part
+    that makes the control falsifiable: an upper bound a competitor beats is
+    not an upper bound, and the point of shipping this arm is that we find out
+    mechanically rather than in review.
+
+    Deliberately silent when no oracle row is present: the arm is off by
+    default and most cells will never have one.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    oracle = oracle_arm(text)
+    if oracle is None:
+        return
+
+    # --- the ##ORACLE## rows ------------------------------------------------
+    seed_mode = {}  # seed -> mode tag, read by the #431 hop gate's severity
+    oracle_origin_refusals = {}  # seed -> #464 refused-send count
+    ORACLE_SPLIT_SEEN.clear()  # seed -> carried the #464 split (#521 precision)
+    for line in text.splitlines():
+        m = ORACLE_LINE.match(line)
+        if not m:
+            continue
+        (
+            seed,
+            proto,
+            mode,
+            approx,
+            nodes,
+            edges,
+            recomputes,
+            changes,
+            rng,
+            no_route,
+            no_route_origin,
+            no_route_fwd,
+            nrl,
+        ) = m.groups()
+        if proto == oracle:
+            seed_mode[seed] = mode
+        tag = f"{os.path.basename(path)} seed{seed}/{proto}"
+        if proto != oracle:
+            report(
+                "FAIL",
+                f"{tag}: a ##ORACLE## row for '{proto}' — only the "
+                "oracle arm can emit one, so this is a harness "
+                "regression (#382 absence encoding)",
+            )
+        if float(nrl) != 0.0:
+            report(
+                "FAIL",
+                f"{tag}: NRL {nrl} on the oracle arm — the control "
+                "puts NOTHING on the wire, so a non-zero routing "
+                "load means it is no longer a control (#296)",
+            )
+        if int(changes) == 0:
+            report(
+                "FAIL",
+                f"{tag}: the topology was never solved "
+                f"(changes=0 over {recomputes} recomputes) — every "
+                "lookup would have failed, so the arm routed on an "
+                "empty graph",
+            )
+        if int(nodes) > 1 and int(edges) == 0:
+            report(
+                "FAIL",
+                f"{tag}: {nodes} nodes and 0 edges — the ground-"
+                "truth topology came out empty, so this arm is "
+                "measuring a partitioned field, not routing",
+            )
+        # approx and the mode tag are two readings of one fact; a disagreement
+        # means the exactness flag cannot be trusted, which is worse than
+        # either value being wrong.
+        if (approx == "1") != ("approx" in mode):
+            report(
+                "FAIL",
+                f"{tag}: approx={approx} contradicts mode={mode} — "
+                "the exactness flag and the rule tag disagree",
+            )
+        if approx == "1":
+            report(
+                "WARN",
+                f"{tag}: the oracle is APPROXIMATE here "
+                f"(mode={mode}, radius {rng} m). A fading or "
+                "two-ray channel has no crisp adjacency, so this "
+                "arm is a reference point, not a proven upper "
+                "bound — see ns3/baselines/oracle/README.md before quoting "
+                "it as one",
+            )
+        if int(no_route) > 0:
+            report(
+                "WARN",
+                f"{tag}: {no_route} lookup(s) found no path — the "
+                "field partitioned under the oracle's own topology, "
+                "so its PDR is bounded by connectivity here, not by "
+                "routing",
+            )
+        # #464: a lookup that fails for a LOCALLY ORIGINATED packet makes
+        # RouteOutput return nullptr, so the send dies in the socket and
+        # FlowMonitor never counts it as transmitted. Unless the harness folds
+        # those back into the offered count they are missing from the PDR
+        # denominator AND from the drop book, which is how a partitioned cell
+        # came to report 100.0 % delivery on a seed with 4512 refused sends
+        # while `# drops` closed at sum=100.00. Since the fix books them under
+        # `route`, a cell with refusals and a zero route column can only come
+        # from a harness that predates it — a stale binary or a regression.
+        if no_route_origin is None:
+            if int(no_route) > 0:
+                report(
+                    "WARN",
+                    f"{tag}: noRoute={no_route} but no "
+                    "noRouteOrigin/noRouteFwd split — this cell "
+                    "predates #464, so its refused sends are "
+                    "missing from the PDR denominator and its "
+                    "oracle PDR reads high. Re-measure before "
+                    "quoting it",
+                )
+        else:
+            origin = int(no_route_origin)
+            if origin + int(no_route_fwd) != int(no_route):
+                report(
+                    "FAIL",
+                    f"{tag}: noRouteOrigin {no_route_origin} + "
+                    f"noRouteFwd {no_route_fwd} != noRoute "
+                    f"{no_route} — the split does not account for "
+                    "every failed lookup (#464)",
+                )
+            oracle_origin_refusals[seed] = origin
+            ORACLE_SPLIT_SEEN[seed] = True
+        # Pre-#464 cells carry no split. Their TOTAL is still the right input
+        # to the contradiction gate below: if any of those failures had been
+        # RouteInput ones the error callback would have booked them, so a zero
+        # route column with a non-zero noRoute means unbooked refusals either
+        # way. Using the total here keeps the gate effective on exactly the
+        # cells that predate the fix, which are the dangerous ones.
+        if no_route_origin is None and int(no_route) > 0:
+            oracle_origin_refusals[seed] = int(no_route)
+
+    # #464: with the refusals folded into the route column, a cell that has
+    # them and still reports route=0.00 can only come from a harness that
+    # predates the fix. The #215 identity cannot catch that case on its own —
+    # a pre-fix cell's book closes at sum=100.00 precisely BECAUSE the missing
+    # packets are absent from the denominator too, so the arithmetic is
+    # self-consistently wrong. This is the rule that makes it fail loudly.
+    # #521: display precision. The route column prints to 0.01 %, so a
+    # post-#464 cell (split present, refusals folded in by the harness) whose
+    # refusals are a few packets in ~10^5 offered reads 0.00 honestly — the
+    # rwp x nakagami grid cell measured 5 origin refusals over ~340k offered.
+    # When the cell carries the split and the offered count can be rebuilt
+    # (##MATCH## delivered / ##RUN## PDR, per seed), only a share that would
+    # print as >= 0.01 can contradict a 0.00 column. Pre-#464 cells (no split)
+    # keep the unconditional FAIL: their refusals were never booked at all.
+    below_print = False
+    if oracle_origin_refusals and all(ORACLE_SPLIT_SEEN.get(sd) for sd in oracle_origin_refusals):
+        pdr_by_seed, deliv_by_seed = {}, {}
+        for line in text.splitlines():
+            m = re.match(r"^\s*##RUN##\s+(\d+)\s+" + re.escape(oracle) + r"\s+([\d.]+)\s", line)
+            if m:
+                pdr_by_seed[m.group(1)] = float(m.group(2))
+            m = re.match(r"^\s*##MATCH##\s+(\d+)\s+" + re.escape(oracle) + r"\s+(\d+)\s", line)
+            if m:
+                deliv_by_seed[m.group(1)] = int(m.group(2))
+        seeds = set(pdr_by_seed) & set(deliv_by_seed)
+        if seeds and all(pdr_by_seed[sd] > 0 for sd in seeds):
+            offered = sum(100.0 * deliv_by_seed[sd] / pdr_by_seed[sd] for sd in seeds)
+            share = 100.0 * sum(oracle_origin_refusals.values()) / offered
+            below_print = share < 0.005
+    if sum(oracle_origin_refusals.values()) > 0 and not below_print:
+        for r in rows:
+            if r.get("proto") != oracle:
+                continue
+            route = _fnum(r, "drop_route")
+            if route is not None and route == 0.0:
+                total = sum(oracle_origin_refusals.values())
+                report(
+                    "FAIL",
+                    f"{os.path.basename(path)}/{oracle}: {total} "
+                    "failed route lookup(s) but the route column reads "
+                    "0.00 — refused sends are missing from both the drop "
+                    "book and the PDR denominator, so this arm's PDR is "
+                    "computed over the packets it had a route for, not "
+                    "over offered traffic. The #215 identity cannot catch "
+                    "this on its own: the book closes at sum=100.00 "
+                    "BECAUSE the same packets are absent from the "
+                    "denominator (#464)",
+                )
+
+    # --- #431: the per-seed hop bound on the identity-matched set -----------
+    # "No protocol routes the same packet in fewer hops" asserted where it is
+    # actually sound: the ##COMMON## rows are computed over the exact (flow,
+    # seq) packets EVERY arm delivered (#308), so survivorship — the reason
+    # the whole-run rule below needs its PDR-tie guard — cannot explain any
+    # difference here, and the bound is asserted per seed, unguarded, as a
+    # real FAIL. This is the check #431's acceptance section asked to "fire
+    # and pass, not stay suppressed": at the pre-#431 300 m fading radius it
+    # fires on every seed of every fading cell (matched-hop excess up to
+    # +0.45 at 20 nodes, +0.17..+0.74 across the six published cells); at the
+    # derived decode radius on tworay it passes with margin. See
+    # ORACLE_COMMON_HOP_EPS above for how the 0.05 was sized, and
+    # ORACLE_COMMON_HOP_DEFECT for why a p50-approx seed's sub-defect excess
+    # is a WARN rather than a FAIL (the P50 disk claims the delivery bound,
+    # not the hop bound); a seed with no ##ORACLE## mode row fails closed.
+    common_hops = {}
+    for line in text.splitlines():
+        m = ORACLE_COMMON_SEED_LINE.match(line)
+        if not m:
+            continue
+        run, proto, n_common, hops_c = m.groups()
+        if hops_c in (None, "na") or int(n_common) == 0 or float(hops_c) == 0.0:
+            continue  # predates the hop instrumentation, or an empty set
+        common_hops.setdefault(run, {})[proto] = float(hops_c)
+    # #506: on a 3-D (FANET) field the check's premise fails twice over --
+    # the "same" (flow, seq) is forwarded at different instants in each arm
+    # (AODV buffers it for seconds), and the oracle re-looks the route up at
+    # every hop in a graph that moves under the packet, so a delivered oracle
+    # path is a chain of several instants' shortest paths. Measured: at
+    # 10-30 m/s the oracle sits 0.6-0.7 matched hops above DSDV, at walking
+    # speed back at or below it. The excess is therefore not evidence of a
+    # missing link there, and is reported once per file as a WARN instead of a
+    # FAIL per seed; the planar corpus keeps the FAIL.
+    #
+    # #488: a moving Manhattan street grid (VANET) breaks the same premise,
+    # harder: links appear and vanish at every corner turn. Measured on the
+    # sparse vanet cell (40 vehicles, 10-20 m/s): oracle matched hops 2.1-3.0
+    # against every arm's ~1.0-1.2 on 20/20 seeds. The control is the same
+    # cell nearly static (0.01-0.02 m/s, 3 seeds): oracle 2.400 against
+    # anthocnet 2.400, aodv 2.405, olsr 2.411 -- no excess, so the per-pair
+    # building rule is not missing links. Scoped like 3-D when the grid
+    # moves (speed > 1 m/s); a near-static grid keeps the FAIL as its control.
+    m_z = re.search(r"^##CONFIG## .*\bareaZ=([0-9.]+)", text, re.MULTILINE)
+    m_grid = re.search(
+        r"^##CONFIG## .*\bspeed=([0-9.]+)\b.*\bmobility=manhattan\b", text, re.MULTILINE
+    )
+    moving_3d = (bool(m_z) and float(m_z.group(1)) > 0) or (
+        bool(m_grid) and float(m_grid.group(1)) > 1.0
+    )
+    skipped_3d = 0
+    for run in sorted(common_hops):
+        o_hops_c = common_hops[run].get(oracle)
+        if o_hops_c is None:
+            continue
+        for name in sorted(common_hops[run]):
+            if name == oracle:
+                continue
+            p_hops_c = common_hops[run][name]
+            excess = o_hops_c - p_hops_c
+            if excess <= ORACLE_COMMON_HOP_EPS:
+                continue
+            if moving_3d:
+                skipped_3d += 1
+                continue
+            mode = seed_mode.get(run)
+            if mode is not None and "p50-approx" in mode and excess <= ORACLE_COMMON_HOP_DEFECT:
+                report(
+                    "WARN",
+                    f"{os.path.basename(path)} seed{run}: oracle "
+                    f"identity-matched hops {o_hops_c} exceed "
+                    f"{name}'s {p_hops_c} (+{excess:.3f} > eps "
+                    f"{ORACLE_COMMON_HOP_EPS}) on a p50-approx "
+                    "cell — the Nakagami median disk is calibrated "
+                    "to the delivery bound, not the hop bound (a "
+                    "probabilistic link has no true radius), and "
+                    "this excess is inside the honest residual "
+                    "measured at the calibrated radius "
+                    "(-0.02..+0.08, vs +0.17..+0.74 for the defect "
+                    "class). Do not quote the hop bound from this "
+                    "cell; the probability-weighted graph (#431 "
+                    "direction 2) is the full fix",
+                )
+            else:
+                report(
+                    "FAIL",
+                    f"{os.path.basename(path)} seed{run}: oracle "
+                    f"identity-matched hops {o_hops_c} exceed "
+                    f"{name}'s {p_hops_c} (+{excess:.3f} "
+                    f"> eps {ORACLE_COMMON_HOP_EPS}) on the common "
+                    "packet set, where survivorship is eliminated "
+                    "by construction — the oracle's adjacency is "
+                    "missing links the radios actually have, or "
+                    "the solve/recompute is wrong (#431)",
+                )
+
+    if skipped_3d:
+        report(
+            "WARN",
+            f"{os.path.basename(path)}: oracle identity-matched "
+            f"hops exceed an arm's on {skipped_3d} seed x arm "
+            "pair(s) of a moving 3-D or street-grid field. Not a "
+            "hop bound here (#506, #488): "
+            "matched packets are forwarded at different instants "
+            "and the oracle re-routes per hop over a moving graph, "
+            "so quote no hop or latency bound for this family",
+        )
+
+    # --- cross-row: the bounds ---------------------------------------------
+    groups = {}
+    for r in rows:
+        groups.setdefault(r.get("where"), []).append(r)
+    # #216 builds cells where the control is SUPPOSED to lose: background load
+    # over an equal-length corridor it cannot see, and a scripted ISL break.
+    # The delivery bound does not hold there and must not be asserted.
+    adversarial = "# corridor" in text or "# failcell" in text
+    static_lossless = any(r.get("sat_nodes") for r in rows) and not adversarial
+
+    for where, group in groups.items():
+        oracles = [r for r in group if r.get("proto") == oracle]
+        if not oracles:
+            continue
+        orc = oracles[0]
+        o_pdr, o_hops = _fnum(orc, "pdr"), _fnum(orc, "hops")
+        for k in ("nrl", "nrl_bytes"):
+            v = _fnum(orc, k)
+            if v is not None and v != 0.0:
+                report(
+                    "FAIL",
+                    f"{where}/oracle: {k} {v} — the control sends "
+                    "no packets, so this must be exactly 0 (#296)",
+                )
+        for other in group:
+            if other.get("proto") in (oracle, None):
+                continue
+            p_pdr, p_hops = _fnum(other, "pdr"), _fnum(other, "hops")
+            name = other["proto"]
+            if (
+                o_hops is not None
+                and p_hops is not None
+                and o_hops > p_hops + ORACLE_HOP_TOL
+                and o_pdr is not None
+                and p_pdr is not None
+                and p_pdr >= o_pdr - ORACLE_PDR_TIE
+            ):
+                report(
+                    "FAIL",
+                    f"{where}: oracle mean hops {o_hops} exceeds "
+                    f"{name}'s {p_hops} while {name} delivered "
+                    f"{p_pdr}% against the oracle's {o_pdr}% — "
+                    "survivorship cannot explain that, so either "
+                    "the shortest-path solve is wrong or the "
+                    "recompute cadence is too coarse for this cell "
+                    "(#296)",
+                )
+            if (
+                static_lossless
+                and o_pdr is not None
+                and p_pdr is not None
+                and p_pdr > o_pdr + ORACLE_PDR_TIE
+            ):
+                report(
+                    "FAIL",
+                    f"{where}: {name} delivered {p_pdr}% against "
+                    f"the oracle's {o_pdr}% on a static, lossless "
+                    "topology with no congestion or failure cell — "
+                    "nothing can beat full knowledge there, so the "
+                    "control is broken (#216)",
+                )
+
+
+# #297: leo-walker's dynamics lines.
+#   # handover <proto> seed=N scheduled=S forced=F islFailures=I ticks=K
+#   # account  <proto> seed=N flow=f offered=O refused=R delivered=D received=V
+#              dup=U outageLost=L scatteredLost=Z
+#   # outage   <proto> seed=N class=C n=.. lost=X p50=.. p90=.. max=..
+LEO_HANDOVER = re.compile(
+    r"^#\s+handover\s+([a-z][\w-]*)\s+seed=(\d+)\s+scheduled=(\d+)\s+forced=(\d+)"
+    r"\s+islFailures=(\d+)(?:\s+ticks=(\d+))?"
+)
+LEO_ACCOUNT = re.compile(
+    r"^#\s+account\s+([a-z][\w-]*)\s+seed=(\d+)\s+flow=(\d+)\s+offered=(\d+)"
+    r"\s+refused=(\d+)\s+delivered=(\d+)\s+received=(\d+)\s+dup=(\d+)"
+    r"\s+outageLost=(\d+)\s+scatteredLost=(\d+)"
+)
+LEO_OUTAGE = re.compile(
+    r"^#\s+outage\s+([a-z][\w-]*)\s+seed=(\d+)\s+class=(\w+)\s+n=(\d+)\s+lost=(\d+)"
+)
+
+
+def check_leo_dynamics(path):
+    """#297: a leo-walker cell's handover clock and outage books must close.
+
+    Two rules, both FAIL, because the handover metric family is read from
+    exactly these lines and a broken one publishes wrong numbers silently:
+
+    1. Clock coherence. The GSL reconfiguration clock fires at
+       clockOffset mod clock (or clock, if that is 0) and every `clock` s
+       after, while t < time — so `ticks` is fixed by ##CONFIG##. A different
+       count means the clock never started, stopped, or ran on a different
+       period than the cell claims, and every `scheduled` outage class is
+       then measured against the wrong events. A tick exactly at t=time may
+       or may not run (event order at Simulator::Stop), so that boundary
+       allows one fewer. And at most one scheduled handover per station per
+       tick: `scheduled` > ticks x stations is double counting.
+    2. Outage accounting identity. Every send attempt is exactly one of
+       delivered / lost inside an outage / lost scattered:
+       offered = delivered + outageLost + scatteredLost, per flow. Each
+       delivered attempt maps to one distinct received sequence number
+       (delivered = received). Per (arm, seed), the packets the # outage
+       classes report lost must equal the flows' outageLost — otherwise an
+       outage was dropped from, or double counted into, the classes. And the
+       ##RUN## PDR must equal 100 x sum(delivered) / sum(offered), which ties
+       the headline number to the same books.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    cfg = re.search(r"^##CONFIG## harness=leo-walker\b.*$", text, re.MULTILINE)
+    if not cfg:
+        return
+    base = os.path.basename(path)
+    kv = dict(re.findall(r"(\w+)=(\S+)", cfg.group(0)))
+    vis = re.search(r"^# visibility .*$", text, re.MULTILINE)
+    # #581: one entry per access site -- a station, or with --sagin one of its
+    # HAPS, named City#k -- since each holds its own handover schedule.
+    stations = (len(re.findall(r"\b[A-Z]\w*(?:#\d+)?=\d+", vis.group(0))) if vis else 6) or 6
+
+    # --- 1. clock coherence ---------------------------------------------------
+    t_end, clock, offset = float(kv["time"]), float(kv["clock"]), float(kv["clockOffset"])
+    first = offset % clock or clock
+    span = (t_end - first) / clock
+    want = int(span) + 1 if t_end > first else 0
+    boundary = t_end > first and abs(span - round(span)) < 1e-9
+    seen = 0
+    for line in text.splitlines():
+        m = LEO_HANDOVER.match(line)
+        if not m:
+            continue
+        seen += 1
+        proto, seed, sched = m.group(1), m.group(2), int(m.group(3))
+        if m.group(6) is None:
+            report(
+                "FAIL",
+                f"{base}/{proto}: seed {seed} # handover has no ticks= — "
+                "a pre-#297-rules cell; the clock cannot be checked",
+            )
+            continue
+        ticks = int(m.group(6))
+        if ticks != want and not (boundary and ticks == want - 1):
+            report(
+                "FAIL",
+                f"{base}/{proto}: seed {seed} handover clock ticked {ticks} "
+                f"times, ##CONFIG## (time={kv['time']} clock={kv['clock']} "
+                f"clockOffset={kv['clockOffset']}) says {want} — the "
+                "scheduled-handover class is measured against the wrong events",
+            )
+        if sched > ticks * stations:
+            report(
+                "FAIL",
+                f"{base}/{proto}: seed {seed} scheduled={sched} handovers "
+                f"exceed ticks x stations = {ticks * stations} — double counting",
+            )
+    if seen == 0:
+        report("FAIL", f"{base}: leo-walker cell with no # handover lines")
+
+    # --- 2. outage accounting identity ------------------------------------------
+    flows, classes = {}, {}
+    for line in text.splitlines():
+        m = LEO_ACCOUNT.match(line)
+        if m:
+            proto, seed, flow = m.group(1), m.group(2), m.group(3)
+            off, ref, dlv, rcv, _dup, olost, slost = (int(m.group(i)) for i in range(4, 11))
+            tag = f"{base}/{proto}: seed {seed} flow {flow}"
+            if off != dlv + olost + slost:
+                report(
+                    "FAIL",
+                    f"{tag}: offered {off} != delivered {dlv} + outageLost "
+                    f"{olost} + scatteredLost {slost} — the outage books do not close",
+                )
+            if dlv != rcv:
+                report(
+                    "FAIL",
+                    f"{tag}: delivered attempts {dlv} != distinct sequence numbers received {rcv}",
+                )
+            if ref > off:
+                report("FAIL", f"{tag}: refused {ref} > offered {off}")
+            agg = flows.setdefault((proto, seed), [0, 0, 0])
+            agg[0] += off
+            agg[1] += dlv
+            agg[2] += olost
+            continue
+        m = LEO_OUTAGE.match(line)
+        if m:
+            key = (m.group(1), m.group(2))
+            classes[key] = classes.get(key, 0) + int(m.group(5))
+    for key, (off, dlv, olost) in sorted(flows.items()):
+        proto, seed = key
+        if classes.get(key, 0) != olost:
+            report(
+                "FAIL",
+                f"{base}/{proto}: seed {seed} # outage classes lost "
+                f"{classes.get(key, 0)} packets, the flows' outageLost sums to "
+                f"{olost} — an outage is missing from or double counted in the classes",
+            )
+        run = re.search(rf"^##RUN## {seed} {re.escape(proto)} ([-\d.]+)", text, re.MULTILINE)
+        if run and off:
+            want_pdr = 100.0 * dlv / off
+            if abs(float(run.group(1)) - want_pdr) > 0.006:
+                report(
+                    "FAIL",
+                    f"{base}/{proto}: seed {seed} ##RUN## PDR {run.group(1)} != "
+                    f"100 x delivered/offered = {want_pdr:.3f} from the # account books",
+                )
+    if seen and not flows:
+        report("FAIL", f"{base}: leo-walker cell with no # account lines")
+
+
+def cmd_results(a):
+    set_roles(a)
+    anchors_path = getattr(a, "anchors", None)
+    anchors = load_anchors(anchors_path) if anchors_path else {}
+    anchor = getattr(a, "anchor", None)
+    if anchor and not anchors_path:
+        sys.exit("FAIL: --anchor needs --anchors FILE (the floors are data, not code)")
+    floor = anchors[anchor_key(anchor, anchors)] if anchor else None
+    sat_floor = anchors.get(SAT_SINGLE_ISL_KEY)
+    # The arms an anchor floor judges; none named = every row.
+    anchor_arms = csv_arms(getattr(a, "anchor_arms", None))
+    n = 0
+    for path in a.files:
+        check_provenance(path)
+        check_source_schedule(path)
+        check_drop_identity(path)
+        check_route(path)
+        check_leo_dynamics(path)
+        rows = list(parse_results(path))
+        check_path_diversity(rows)
+        check_oracle(path, rows)
+        for r in rows:
+            n += 1
+            tag = f"{r['where']}/{r['proto']}"
+
+            # `row=r` binds the current row rather than closing over the loop
+            # variable (ruff B023). Every call happens inside this iteration so
+            # the behaviour is unchanged, but the late-binding footgun is gone.
+            def num(k, row=r):
+                try:
+                    return float(row.get(k))
+                except (TypeError, ValueError):
+                    return None
+
+            pdr, delay, d99 = num("pdr"), num("delay"), num("delay99")
+            nrl, jit = num("nrl"), num("jitter")
+            # #293 runs-floor: published points need >=10 runs (tail-quantile
+            # claims 20 — see docs/benchmarks/methodology.md "Statistical
+            # policy"). WARN, not FAIL: low-run cells are legitimate cheap
+            # probes, they just must not be published or quoted. Rows without
+            # a run count (a bare table with no ##RUN## rows) skip the rule.
+            runs = num("runs")
+            if runs is not None and runs < 10:
+                report(
+                    "WARN",
+                    f"{tag}: {int(runs)} run(s) — below the #293 "
+                    f"published-point floor (>=10; tail quantiles "
+                    f"need 20). Diagnostic only, do not publish.",
+                )
+            if pdr is None or not (0.0 <= pdr <= 100.0):
+                report("FAIL", f"{tag}: PDR {r.get('pdr')} outside [0,100]")
+            if delay is not None and d99 is not None and d99 < delay:
+                report("FAIL", f"{tag}: delay99 {d99} < mean delay {delay}")
+            for k, v in (("delay", delay), ("nrl", nrl), ("jitter", jit)):
+                if v is not None and v < 0:
+                    report("FAIL", f"{tag}: negative {k} ({v})")
+            if pdr is not None and pdr == 0.0:
+                report(
+                    "WARN",
+                    f"{tag}: PDR 0 — dead scenario or harness failure (#28 empty-table class)",
+                )
+            # #209 energy plausibility. Every radio is powered for the whole
+            # run, so consumption is strictly positive and residual energy can
+            # never exceed what the source started with; a violation is a
+            # harness regression (energy models not installed, read after
+            # Simulator::Destroy, wrong container indexing), not a protocol
+            # result — hence FAIL, like the rules above.
+            energy, epp = num("energy"), num("energy_per_pkt")
+            init = num("energy_init")
+            if energy is not None and not (math.isfinite(energy) and energy > 0.0):
+                report(
+                    "FAIL",
+                    f"{tag}: total energy {r.get('energy')} is "
+                    "not a positive finite number — energy "
+                    "model not installed or not read",
+                )
+            if epp is not None:
+                if not math.isfinite(epp) or epp < 0.0:
+                    report(
+                        "FAIL",
+                        f"{tag}: energy per delivered packet "
+                        f"{r.get('energy_per_pkt')} is not finite "
+                        "and non-negative",
+                    )
+                elif epp == 0.0 and pdr:
+                    report(
+                        "FAIL",
+                        f"{tag}: energy per delivered packet 0 with "
+                        f"PDR {pdr} — packets delivered but no "
+                        "energy attributed",
+                    )
+            if init is not None:
+                for k in ("res_min", "res_mean"):
+                    v = num(k)
+                    if v is None:
+                        continue
+                    if v > init:
+                        report("FAIL", f"{tag}: residual energy {k}={v} J exceeds initial {init} J")
+                    if v < 0.0:
+                        report("FAIL", f"{tag}: negative residual energy {k}={v} J")
+            # #212 reordering plausibility. These are definitional bounds, not
+            # protocol expectations: the ratios are fractions of received
+            # packets, and extents/occupancies are counts of packets. A
+            # violation means the sequence tracking at the sink is broken (flows
+            # merged under one key, sequence numbers not carried, aggregation
+            # divided by the wrong denominator), so it is a harness regression —
+            # hence FAIL. A *high* but in-range reordering figure for AntHocNet
+            # is expected multipath behaviour and is deliberately not flagged.
+            for k in ("reorder_ratio", "reorder_ratio_max"):
+                v = num(k)
+                if v is not None and not (math.isfinite(v) and 0.0 <= v <= 1.0):
+                    report(
+                        "FAIL",
+                        f"{tag}: {k} {r.get(k)} outside [0,1] — reordering instrumentation broken",
+                    )
+            for k in ("reorder_extent_mean", "reorder_extent_max", "reorder_buf_max"):
+                v = num(k)
+                if v is not None and not (math.isfinite(v) and v >= 0.0):
+                    report(
+                        "FAIL", f"{tag}: {k} {r.get(k)} is not a finite non-negative packet count"
+                    )
+            # #230: mean extent above the reorder-buffer high-water mark is
+            # legal but diagnostic. RFC 4737 tags *every* lower-sequence arrival
+            # behind one early packet, so a single forward route switch produces
+            # a run of "reordered" packets with growing extents while the buffer
+            # depth actually needed stays small. When the mean exceeds the
+            # high-water mark, the extent figure is measuring route flapping,
+            # not sustained multipath disorder — the reading that made AODV
+            # score 8x AntHocNet at dense-small (extent 45.80 vs buf_max 22.6).
+            ext_mean, buf_max = num("reorder_extent_mean"), num("reorder_buf_max")
+            if ext_mean is not None and buf_max is not None and ext_mean > buf_max:
+                report(
+                    "WARN",
+                    f"{tag}: reorder_extent_mean {ext_mean} exceeds "
+                    f"reorder_buf_max {buf_max} — the extent here is "
+                    "route flapping (few displacements tagging long "
+                    "runs), not sustained reordering; do not read it "
+                    "as a multipath signal",
+                )
+            # #215 drop-cause breakdown. The five protocol-agnostic causes are
+            # measured from three independent books — FlowMonitor's per-flow
+            # drop reasons, the Ipv4L3Protocol Tx/Rx hop tallies and the WifiMac
+            # retry-limit verdicts — so nothing forces them to add up. They must
+            # account, together with the delivered packets, for every offered
+            # packet:
+            #
+            #     pdr + route + queue + mac + chan + ttl  ==  100
+            #
+            # TOLERANCE. The one legitimate shortfall is data still sitting in a
+            # routing protocol's pending queue when the run stops; a packet can
+            # wait there at most QueueTimeout (3 s), so the residual is bounded
+            # by 3 s of offered traffic — 0.3 % of a 900 s paper run, ~2.5 % of
+            # the 120 s --quick preset. Hence WARN past 1 pp and FAIL past 5 pp,
+            # which still leaves the check able to see a #173-scale
+            # misattribution (tens of pp) without firing on run length.
+            #
+            # A FAIL here is a finding in its own right, not a formality: it
+            # means one of the three books is wrong (a drop path that fires no
+            # error callback, a trace hook not connected, a cause counted
+            # twice), and every conclusion drawn from the breakdown is unsafe
+            # until it is fixed.
+            causes = {k: num(f"drop_{k}") for k in ("route", "queue", "mac", "chan", "ttl")}
+            for k, v in causes.items():
+                if v is None:
+                    continue
+                if not math.isfinite(v) or not (0.0 <= v <= 100.0):
+                    report(
+                        "FAIL",
+                        f"{tag}: drop_{k}_pct {r.get('drop_' + k)} "
+                        "outside [0,100] — drop attribution broken "
+                        "(a negative share means causes overlap)",
+                    )
+            if pdr is not None and all(v is not None for v in causes.values()):
+                total = pdr + sum(causes.values())
+                gap = total - 100.0
+                detail = (
+                    f"pdr {pdr:.1f} + "
+                    + " + ".join(
+                        f"{k} {causes[k]:.2f}" for k in ("route", "queue", "mac", "chan", "ttl")
+                    )
+                    + f" = {total:.2f}"
+                )
+                if abs(gap) > 5.0:
+                    report(
+                        "FAIL",
+                        f"{tag}: drop causes do not account for the "
+                        f"offered packets ({detail}, off by "
+                        f"{gap:+.2f} pp) — attribution is wrong, do "
+                        "not read the breakdown",
+                    )
+                elif abs(gap) > 1.0:
+                    report(
+                        "WARN",
+                        f"{tag}: drop causes off by {gap:+.2f} pp "
+                        f"({detail}) — expected only from packets "
+                        "still queued at end of run",
+                    )
+                # #229: name the usual cause of a shortfall instead of leaving
+                # it as arithmetic. A protocol that buffers packets awaiting a
+                # route sheds them from its *own* queue, and only AntHocNet
+                # routes those discards through the L3 error callback that
+                # Ipv4FlowProbe's DROP_QUEUE / DROP_QUEUE_DISC reasons observe
+                # (those see the interface and qdisc queues, nothing else).
+                # ns-3's dsdv::PacketQueue sheds on MaxQueueLen / MaxQueueTime
+                # silently, so its packets are offered, never delivered, and
+                # attributed nowhere — the 11.46 pp shortfall at dense-small
+                # (−21.8 pp post-#388, once honest MAC accounting stopped
+                # masking part of the hole).
+                # Since the #229 fix, routing-bench-harness.cc measures those
+                # sheds itself (the PqTrackTx pending-queue conservation hook,
+                # dsdv/aodv arms) and folds them into drop_queue_pct, so a
+                # closing identity with a non-zero dsdv queue column is the
+                # expected reading. This rule stays as the regression
+                # tripwire: zero queue + a shortfall on dsdv/aodv now means
+                # the hook did not connect or parse on that ns-3 release.
+                # Gated on a real shortfall: AntHocNet and AODV also report
+                # queue 0.00 there, but their identities close, so a bare
+                # "queue is zero" heuristic would fire on protocols that are
+                # accounting correctly.
+                if gap < -1.0 and causes["queue"] == 0.0:
+                    report(
+                        "WARN",
+                        f"{tag}: drop_queue_pct is exactly 0 while "
+                        f"{-gap:.2f} pp is unaccounted — the likely "
+                        "cause is a routing-layer pending queue that "
+                        "sheds without an L3 error callback and so "
+                        "is invisible to the drop probes; since the "
+                        "#229 fix those sheds are measured by the "
+                        "harness's pending-queue conservation hook, "
+                        "so on dsdv/aodv this reading means the "
+                        "hook did not connect or parse (#229)",
+                    )
+            # The AntHocNet-only causes are a *sub-breakdown* of drop_route_pct
+            # (all three end in the same L3 error callback), never causes on top
+            # of it. A mismatch means one pending-queue exit path is unaccounted
+            # for; WARN rather than FAIL, since the identity above is the rule
+            # that decides whether the numbers are usable.
+            sub = [num(f"drop_{k}") for k in ("setup", "reconv", "repair")]
+            route = causes["route"]
+            if (
+                route is not None
+                and all(v is not None for v in sub)
+                and abs(sum(sub) - route) > 1.0
+            ):
+                report(
+                    "WARN",
+                    f"{tag}: setup+reconv+repair {sum(sub):.2f} != "
+                    f"drop_route_pct {route:.2f} — a pending-queue "
+                    "exit path is not attributed",
+                )
+            # #217 route-quality plausibility. Absent columns (inputs predating
+            # the instrumentation) simply skip, as the energy rules do. A 0 is
+            # the "empty denominator" convention shared with nrl/J-per-packet:
+            # legitimate only when nothing was delivered, and a harness failure
+            # (trace not connected on this ns-3 release, hook never fired)
+            # whenever PDR is non-zero.
+            hops, hops_max = num("hops"), num("hops_max")
+            div, div_max = num("div"), num("div_max")
+            div_window = num("div_window")
+            entropy, jain = num("entropy"), num("jain")
+            if hops is not None:
+                if hops < 0.0:
+                    report("FAIL", f"{tag}: negative path length ({hops})")
+                elif hops == 0.0 and pdr:
+                    report(
+                        "FAIL",
+                        f"{tag}: mean path length 0 with PDR {pdr} — "
+                        "packets delivered but no hop count "
+                        "recorded",
+                    )
+                elif hops > 0.0 and hops < 1.0:
+                    report(
+                        "FAIL",
+                        f"{tag}: mean path length {hops} < 1 hop — "
+                        "a delivered packet traverses at least one "
+                        "transmission",
+                    )
+                elif hops > MAX_PATH_LENGTH:
+                    report(
+                        "FAIL",
+                        f"{tag}: mean path length {hops} exceeds maxPathLength ({MAX_PATH_LENGTH})",
+                    )
+            if hops_max is not None:
+                if hops_max > MAX_PATH_LENGTH:
+                    report(
+                        "FAIL",
+                        f"{tag}: max path length {hops_max} exceeds "
+                        f"maxPathLength ({MAX_PATH_LENGTH})",
+                    )
+                if hops is not None and hops_max and hops_max < hops:
+                    report("FAIL", f"{tag}: max path length {hops_max} < mean path length {hops}")
+            if div is not None:
+                if div == 0.0 and pdr:
+                    report(
+                        "FAIL",
+                        f"{tag}: path diversity 0 with PDR {pdr} — "
+                        "data was carried but no next hop was "
+                        "attributed (MAC trace not connected?)",
+                    )
+                elif div < 0.0 or (0.0 < div < 1.0):
+                    report(
+                        "FAIL",
+                        f"{tag}: path diversity {div} < 1 — a "
+                        "carried destination uses at least one "
+                        "next hop",
+                    )
+                elif (
+                    r["proto"] in SINGLE_PATH_PROTOS
+                    and div_window is not None
+                    and div_window <= DIV_CELL_WINDOW_S
+                    and div > DIV_CELL_SANITY_MAX
+                ):
+                    report(
+                        "FAIL",
+                        f"{tag}: path diversity {div} > "
+                        f"{DIV_CELL_SANITY_MAX} for a single-path "
+                        "protocol even at the churn-free window "
+                        f"(<= {DIV_CELL_WINDOW_S} s) — the window "
+                        "is not churn-free at this offered rate, "
+                        "so the diversity cell is unreadable "
+                        "(#230)",
+                    )
+                # A churn-inflated single-path reading is not judged per row:
+                # it is a property of the cell and is read against the other
+                # protocols measured beside it, in check_path_diversity().
+            if div_max is not None and div is not None and div_max and div_max < div:
+                report("FAIL", f"{tag}: max path diversity {div_max} < mean path diversity {div}")
+            # #308 phase 2 hopsCommon. Same three a-priori facts as `hops`
+            # above — a delivered packet crosses at least one transmission and
+            # at most maxPathLength — plus the one that only this metric can
+            # get wrong: it is derived from the IP TTL under a flow key rebuilt
+            # from (source IP, UDP source port), which must match the key
+            # PacketSink reports for the delays. If that ever diverges, every
+            # hop lands under a key the common set does not contain and
+            # hopsCommon reads absent while nCommon stays large. Without this
+            # rule that failure is silent and the per-hop decomposition is
+            # simply wrong; with it the run FAILs.
+            # #308 phase 2 step 4 pending-queue hold time. Three a-priori
+            # facts: no component is negative; a hold cannot outlast the
+            # QueueTimeout that bounds it (3 s by default, so a generous 5 s
+            # ceiling catches an accounting error without policing the
+            # attribute); and a non-zero mean with a zero count is arithmetic
+            # that cannot happen, which is what a mis-ordered field mapping
+            # would look like.
+            if r.get("hold_negative"):
+                report(
+                    "FAIL",
+                    f"{tag}: {r['hold_negative']} ##HOLD## row(s) "
+                    "with a negative hold count/mean/max",
+                )
+            if r.get("hold_mean_no_count"):
+                report(
+                    "FAIL",
+                    f"{tag}: {r['hold_mean_no_count']} ##HOLD## "
+                    "reason(s) report a non-zero mean hold with a "
+                    "zero hold count — the fields are mis-mapped",
+                )
+            hold_max = r.get("hold_max_ms")
+            ceiling = HOLD_CEILING_MS_BY_ARM.get(r["proto"], HOLD_CEILING_MS)
+            if hold_max is not None and hold_max > ceiling:
+                report(
+                    "FAIL",
+                    f"{tag}: max hold {hold_max} ms exceeds "
+                    f"{ceiling} ms — a pending-queue hold is "
+                    "bounded by the arm's queue timeout (#308, #805)",
+                )
+            missing = r.get("hops_common_missing")
+            if missing:
+                report(
+                    "FAIL",
+                    f"{tag}: {missing} run(s) report a non-empty "
+                    "common set with no hopsCommon — the TTL hook "
+                    "did not fire, or the (source IP, source port) "
+                    "flow key no longer matches the one the delays "
+                    "use (#308 phase 2)",
+                )
+            # #308 phase 2 step 3 channel occupancy. Two a-priori facts: a node
+            # cannot see the medium busy for more than the whole run, and no
+            # component of the occupancy can be negative. The third rule is the
+            # harness-failure detector — a ##AIR## row is only printed when the
+            # PHY State trace is connected, so a row that IS present while
+            # reporting zero occupancy, in a run where packets were delivered,
+            # means the trace fired without recording. (--energyJ=0 prints no
+            # row at all; absence skips every rule here, as it should.)
+            if r.get("air_negative"):
+                report(
+                    "FAIL",
+                    f"{tag}: {r['air_negative']} run(s) report a "
+                    "negative channel-occupancy component",
+                )
+            if r.get("air_zero_runs") and pdr:
+                report(
+                    "FAIL",
+                    f"{tag}: {r['air_zero_runs']} run(s) report zero "
+                    f"channel occupancy with PDR {pdr} — packets "
+                    "were delivered, so the medium cannot have been "
+                    "idle throughout (#308 phase 2)",
+                )
+            busy_max = r.get("air_busy_max")
+            if busy_max is not None and busy_max > 100.0:
+                report(
+                    "FAIL",
+                    f"{tag}: channel busy {busy_max}% of node-time — "
+                    "a node cannot see the medium occupied for more "
+                    "than the whole run",
+                )
+            hc_min, hc_max = r.get("hops_common_min"), r.get("hops_common_max")
+            if hc_min is not None and hc_min < 1.0:
+                report(
+                    "FAIL",
+                    f"{tag}: hopsCommon {hc_min} < 1 hop — a "
+                    "delivered packet traverses at least one "
+                    "transmission",
+                )
+            if hc_max is not None and hc_max > MAX_PATH_LENGTH:
+                report(
+                    "FAIL", f"{tag}: hopsCommon {hc_max} exceeds maxPathLength ({MAX_PATH_LENGTH})"
+                )
+            if entropy is not None:
+                if entropy < 0.0:
+                    report("FAIL", f"{tag}: negative path entropy ({entropy})")
+                elif div_max and div_max >= 1.0 and entropy > math.log2(div_max) + 0.01:
+                    report(
+                        "FAIL",
+                        f"{tag}: path entropy {entropy} bits exceeds log2(max diversity {div_max})",
+                    )
+            if jain is not None:
+                if not (0.0 <= jain <= 1.0 + 1e-9):
+                    report("FAIL", f"{tag}: Jain's fairness index {jain} outside [0,1]")
+                elif jain == 0.0 and pdr:
+                    report(
+                        "FAIL",
+                        f"{tag}: Jain's fairness index 0 with PDR "
+                        f"{pdr} — packets delivered but no per-flow "
+                        "counts",
+                    )
+            # #259 satellite (isl-grid) rules. Present only when the input
+            # carried the topology context (the --csv columns or the '+Grid'
+            # summary line); MANET inputs never set isl_delay, so nothing here
+            # can fire on them.
+            isl = num("isl_delay")
+            if isl is not None and isl > 0:
+                # Propagation floor. Soundness: flows connect distinct
+                # satellites and every ISL is a point-to-point link with a
+                # fixed one-way delay of isl_delay_ms, so every delivered
+                # packet crosses >= 1 ISL and pays >= isl_delay_ms of pure
+                # propagation before serialisation/queueing; the mean over
+                # delivered packets inherits the bound. A mean below it is a
+                # harness/instrumentation bug (wrong clock, wrong counting
+                # point), never a fast protocol — the satellite counterpart of
+                # "path length < 1 hop". No stronger floor is derivable from
+                # the columns present: flow endpoints (and hence per-flow hop
+                # counts) are not in the output, so every flow could legally be
+                # between adjacent satellites (h=1). The h*d hop-delay identity
+                # with its sat_hop_delay_slack_ms band stays a dispatch-time
+                # gate (check-sat-anchors.sh), where h is known.
+                if delay is not None and pdr and delay < isl:
+                    report(
+                        "FAIL",
+                        f"{tag}: mean delay {delay} ms below the "
+                        f"one-ISL propagation floor {isl} ms — "
+                        "every delivered packet crosses >= 1 ISL, "
+                        "so this is a harness/instrumentation bug, "
+                        "not a fast protocol (#259)",
+                    )
+                # Single-ISL anchor, applied to a fetched result (#259): a
+                # 2-node/1-link row identifies the sat-single-isl anchor
+                # topology from the input itself, so the --anchors file's
+                # sat_single_isl_pdr_min fires without an --anchor flag (and
+                # skips when the file has no such key). Soundness: one
+                # lossless p2p link, static, no contention — physics says PDR
+                # 100; AntHocNet's floor margin (99.0) tolerates only
+                # route-setup loss at t=0. Scoped to the --anchor-arms rows
+                # (AntHocNet calibrated it on AODV), like the --anchor floors.
+                nsat, nisl = num("sat_nodes"), num("sat_links")
+                if (
+                    nsat == 2
+                    and nisl == 1
+                    and sat_floor is not None
+                    and (not anchor_arms or r["proto"] in anchor_arms)
+                    and pdr is not None
+                ):
+                    sfloor = sat_floor
+                    if pdr < sfloor:
+                        report(
+                            "FAIL",
+                            f"{tag}: single-ISL anchor floor "
+                            f"{SAT_SINGLE_ISL_KEY} {sfloor} "
+                            f"violated ({r['proto'].upper()} PDR {pdr}) — a p2p "
+                            "link is lossless, so the substrate or "
+                            "route setup is broken; do not trust "
+                            "these numbers (#259)",
+                        )
+            if (
+                floor is not None
+                and (not anchor_arms or r["proto"] in anchor_arms)
+                and pdr is not None
+            ):
+                arm = r["proto"].upper()
+                if pdr < floor:
+                    report(
+                        "FAIL",
+                        f"{tag}: anchor '{anchor}' floor "
+                        f"{floor} violated ({arm} PDR {pdr}) — "
+                        "#51-class harness/channel regression; "
+                        "do not trust or publish these numbers",
+                    )
+                else:
+                    print(f"ok: {tag}: anchor '{anchor}' floor {floor} met ({arm} PDR {pdr})")
+    if n == 0:
+        report("FAIL", "no result rows parsed from the input")
+    else:
+        print(f"checked {n} rows")
+    verdict()
+
+
+def verdict():
+    fails = issues.count("FAIL")
+    print(
+        f"verdict: {'FAIL' if fails else 'WARN' if issues else 'OK'} "
+        f"({fails} fail, {issues.count('WARN')} warn)"
+    )
+    sys.exit(1 if fails else 0)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("preflight")
+    p.add_argument("--nodes", type=int, default=50)
+    p.add_argument("--areaX", type=float, default=1500)
+    p.add_argument("--areaY", type=float, default=300)
+    # #481: the harness's --areaZ (#480). 0 = the planar field.
+    p.add_argument("--areaZ", type=float, default=0)
+    # The hello interval (s) the #481 link-lifetime rule compares with
+    # (AntHocNet's HelloInterval default).
+    p.add_argument("--helloInterval", type=float, default=1.0)
+    p.add_argument("--range", type=float, default=300)
+    # None = per-harness default (MANET 300 s / isl-grid 60 s), filled in
+    # cmd_preflight so a bare `preflight` is byte-identical to pre-#444.
+    p.add_argument("--time", type=float, default=None)
+    p.add_argument("--pause", type=float, default=30)
+    p.add_argument("--speed", type=float, default=20)
+    # None = per-harness default (MANET 20 / isl-grid 4), same mechanism.
+    p.add_argument("--flows", type=int, default=None)
+    p.add_argument("--pktBytes", type=int, default=64)
+    # None = derived: from --cbrBps when it is given (the harness's own rate
+    # knob, #483), else 1 pkt/s (the paper base scenario).
+    p.add_argument("--pktPerSec", type=float, default=None)
+    p.add_argument("--rateMbps", type=float, default=2)
+    # #708: the harness's --standard and --rateManager (the static-mesh
+    # cell's 802.11a radio).
+    p.add_argument("--standard", choices=("80211b", "80211a"), default="80211b")
+    p.add_argument("--rateManager", default="constant2")
+    # kDefaultPathWindowS in ns3/routing-bench/model/routing-bench-harness.cc (#217).
+    p.add_argument("--pathWindowS", type=float, default=10)
+    p.add_argument(
+        "--mobility", choices=("rwp", "ssrwp", "gaussmarkov", "manhattan", "trace"), default="rwp"
+    )
+    p.add_argument(
+        "--propagation", choices=("range", "tworay", "nakagami", "urban"), default="range"
+    )
+    # #488: the street grid (--mobility=manhattan) and the urban buildings.
+    p.add_argument("--blocksX", type=int, default=5)
+    p.add_argument("--blocksY", type=int, default=5)
+    p.add_argument("--streetWidth", type=float, default=20.0)
+    # #580: explicit buildings for the urban channel (the disaster scene).
+    p.add_argument("--buildings", default=None)
+    p.add_argument("--transport", choices=("udp", "tcp"), default="udp")
+    # #639: a replayed scene (the harness's --traceFile / --flowsFile).
+    p.add_argument("--traceFile", default=None)
+    p.add_argument("--flowsFile", default=None)
+    # #296: which arms the dispatch names; only the oracle rules read it.
+    # None = the harness's own default, about which no arm rule fires.
+    p.add_argument("--protocols", default=None)
+    p.add_argument(
+        "--oracle",
+        dest="oracle_arm",
+        metavar="ARM",
+        default=None,
+        help="the shortest-path control arm, for the oracle rules (#296)",
+    )
+    # --- #444 satellite mode: --harness isl-grid switches preflight to the
+    # ISL rules; the knobs and their defaults mirror AntHocNet's
+    # ns3/anthocnet/examples/isl-grid.cc.
+    p.add_argument("--harness", choices=("compare", "isl-grid"), default="compare")
+    p.add_argument("--rows", type=int, default=6)
+    p.add_argument("--cols", type=int, default=6)
+    p.add_argument("--torus", choices=("true", "false"), default="true")
+    p.add_argument("--islDelayMs", type=float, default=5.0)
+    p.add_argument("--islRate", default="10Mbps")
+    # Per-flow CBR rate (bit/s). None = per-harness: isl-grid 4096; on the
+    # MANET harness it sets pktPerSec = cbrBps / (8 x pktBytes), exactly as
+    # routing-compare's --cbrBps does (#483).
+    p.add_argument("--cbrBps", type=float, default=None)
+    p.add_argument("--breakLink", default="")
+    p.add_argument("--breakAt", type=float, default=0.0)
+    p.add_argument("--corridorLoad", default="")
+    p.add_argument("--corridorLoadAt", type=float, default=15.0)
+    # #432 item 3: static ISL removals (semicolon-separated r1,c1,r2,c2
+    # quadruples), the irregular-constellation knob.
+    p.add_argument("--removeLinks", default="")
+    r = sub.add_parser("results")
+    r.add_argument("files", nargs="+")
+    r.add_argument(
+        "--anchors",
+        metavar="FILE",
+        help="the anchor floors, 'key: number' lines (AntHocNet's ns3/tools/anchors.yml schema)",
+    )
+    r.add_argument(
+        "--anchor",
+        metavar="NAME",
+        help="enforce this floor of --anchors: a key, or its stem (no _pdr_min, - for _)",
+    )
+    r.add_argument(
+        "--anchor-arms",
+        metavar="ARM,...",
+        help="the arms whose rows the anchor floors judge (default: every row)",
+    )
+    r.add_argument(
+        "--single-path",
+        metavar="ARM,...",
+        help="arms that install one route per destination (path identity, diversity floor)",
+    )
+    r.add_argument(
+        "--multipath",
+        metavar="ARM",
+        help="the arm whose path-diversity excess over the single-path floor is read (#230)",
+    )
+    r.add_argument(
+        "--oracle",
+        dest="oracle_arm",
+        metavar="ARM",
+        help="the shortest-path control (default: the arm of a file's ##ORACLE## rows)",
+    )
+    r.add_argument(
+        "--hold-ceiling",
+        metavar="[ARM=]MS",
+        action="append",
+        help="pending-queue hold bound in ms: MS for every arm (default 5000), "
+        "ARM=MS for one; repeatable",
+    )
+    r.add_argument(
+        "--max-hops",
+        type=int,
+        default=100,
+        help="the longest path a delivered packet can report (default 100)",
+    )
+    args = ap.parse_args()
+    (cmd_preflight if args.cmd == "preflight" else cmd_results)(args)
+
+
+if __name__ == "__main__":
+    main()

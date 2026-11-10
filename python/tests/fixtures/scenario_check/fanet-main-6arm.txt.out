@@ -1,0 +1,28 @@
+# exit 0
+ok: fanet-main-6arm.txt: measured at 77098cf
+WARN: fanet-main-6arm.txt: pre-#521 cell — the sources ran ns-3's default 1 s on / 1 s off, so the offered rate was HALF of cbrBps. Within-cell comparisons stand; absolute levels and offered-load claims do not
+WARN: fanet-main-6arm.txt: path diversity is churn-dominated — the single-path floor is 1.462 (aodv) at windowS=10, i.e. route replacement inside the window is being counted as concurrent multipath; anthocnet 1.471 = +0.009 vs the floor. Do not quote path_div_*/path_entropy_bits from this cell. Nothing else is affected: PDR/delay/NRL/jitter come from FlowMonitor, not from the diversity window (#230)
+WARN: fanet-main-6arm.txt seed1/oracle: 184 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed2/oracle: 214 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed3/oracle: 193 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed4/oracle: 167 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed5/oracle: 252 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed6/oracle: 208 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed7/oracle: 306 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed8/oracle: 311 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed9/oracle: 221 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed10/oracle: 220 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed11/oracle: 351 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed12/oracle: 704 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed13/oracle: 142 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed14/oracle: 195 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed15/oracle: 280 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed16/oracle: 343 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed17/oracle: 330 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed18/oracle: 272 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed19/oracle: 340 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt seed20/oracle: 222 lookup(s) found no path — the field partitioned under the oracle's own topology, so its PDR is bounded by connectivity here, not by routing
+WARN: fanet-main-6arm.txt: oracle identity-matched hops exceed an arm's on 16 seed x arm pair(s) of a moving 3-D or street-grid field. Not a hop bound here (#506, #488): matched packets are forwarded at different instants and the oracle re-routes per hop over a moving graph, so quote no hop or latency bound for this family
+WARN: fanet-main-6arm.txt/aodv: reorder_extent_mean 5.53 exceeds reorder_buf_max 4.2 — the extent here is route flapping (few displacements tagging long runs), not sustained reordering; do not read it as a multipath signal
+checked 6 rows
+verdict: WARN (0 fail, 24 warn)
