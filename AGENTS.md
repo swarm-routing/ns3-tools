@@ -42,7 +42,7 @@ same locally:
 
 ```bash
 docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug bash -c \
-    'ns3-build-contrib --test routing-bench=/src/ns3/routing-bench &&
+    'ns3-build-contrib --strict-warnings --test routing-bench=/src/ns3/routing-bench &&
      bash /src/tools/checks/check-stock-arms.sh /opt/ns-3 "olsr dsdv hwmp"'
 ```
 
