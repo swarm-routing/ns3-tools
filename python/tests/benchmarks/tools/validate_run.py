@@ -25,7 +25,7 @@ What a full check enforces:
     schema can never say more than is checked);
   - the directory is <date>-<campaign>; the base image tag's ns-3 version is the
     manifest's; the campaign image is not a rolling tag, and a campaign tag
-    <commit7>-<basesha7> names a module commit; the harness module is a module;
+    <commit7>-<basesha7>[-optimized] names a module commit; the harness module is a module;
   - every file in the directory is listed with its sha256, and every listed file
     is there; the pre-registration, when a path, is a listed file;
   - every cell parses under the marker contract schemas/markers/v<N>.json the
@@ -63,7 +63,9 @@ MARKER = re.compile(r"^##([A-Z]+)##(?:\s+(.*))?$")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMIT = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 BASE_TAG = re.compile(r":([0-9]+\.[0-9]+(?:\.[0-9]+)?)-")
-CAMPAIGN_TAG = re.compile(r"^([0-9a-f]{7})-([0-9a-f]{7})$")
+# <commit7>-<basesha7>, or with the -optimized profile suffix that
+# swarm-routing/.github reusable-ns3-image.yml appends to every tag it pushes.
+CAMPAIGN_TAG = re.compile(r"^([0-9a-f]{7})-([0-9a-f]{7})(-optimized)?$")
 
 # --- the JSON Schema subset ---------------------------------------------------
 
@@ -210,7 +212,7 @@ def manifest_errors(m, run_name=None):
     elif repo.endswith("-ns3-campaign"):
         t = CAMPAIGN_TAG.match(tag)
         if not t:
-            errs.append(f"campaign_image: tag {tag} is not <commit7>-<basesha7>")
+            errs.append(f"campaign_image: tag {tag} is not <commit7>-<basesha7>[-optimized]")
         elif not any(c.startswith(t.group(1)) for c in commits):
             errs.append(f"campaign_image: tag commit {t.group(1)} is none of the modules' commits")
     elif not tag.endswith("-optimized"):
@@ -559,6 +561,22 @@ def self_test():
         "rolling campaign tag",
         "rolling tag",
         setp(["campaign_image", "ref"], "ghcr.io/swarm-routing/ara-ns3-campaign:latest"),
+    )
+    case(
+        "campaign tag with the profile suffix",
+        None,
+        setp(
+            ["campaign_image", "ref"],
+            "ghcr.io/swarm-routing/ara-ns3-campaign:0123456-bbbbbbb-optimized",
+        ),
+    )
+    case(
+        "campaign tag with another profile",
+        "is not <commit7>-<basesha7>[-optimized]",
+        setp(
+            ["campaign_image", "ref"],
+            "ghcr.io/swarm-routing/ara-ns3-campaign:0123456-bbbbbbb-debug",
+        ),
     )
     case(
         "campaign tag names no module",

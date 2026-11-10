@@ -58,8 +58,8 @@ commit7 is the plan's first module's commit (the protocol under test: list it
 first), base7 the resolved ns3-dev digest's first 7 hex digits
 (reusable-ns3-image.yml resolves the tag once, builds FROM that digest and
 appends -optimized; skip-existing reuses an image already built). The
-manifest names it <commit7>-<base7>, the form swarm-routing/benchmarks'
-validator takes; the digest is what pins it. Because a reused image may hold
+manifest names that pushed tag (swarm-routing/benchmarks#17 accepts the
+suffix) and its digest, which is what pins it. Because a reused image may hold
 other commits of the other modules, campaign-image.yml checks the image's
 modules against the plan (`expect`) before any cell runs.
 
@@ -633,10 +633,7 @@ def cmd_collect(plan, a):
         with open(os.path.join(run_dir, entry["path"]), "rb") as f:
             entry["sha256"] = hashlib.sha256(f.read()).hexdigest()
     base_ref, _, base_digest = provs[0]["base"].rpartition("@")
-    image_ref, _, image_digest = provs[0]["image"].rpartition("@")
-    # The pushed tag carries reusable-ns3-image.yml's -<profile>; the manifest
-    # names the campaign image <commit7>-<base7> (benchmarks' validator).
-    image_ref = image_ref.removesuffix("-optimized")
+    image_ref, _, image_digest = provs[0]["image"].rpartition("@")  # the pushed tag
     manifest = {
         "schema_version": 1,
         "campaign": plan["name"],

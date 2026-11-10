@@ -59,7 +59,7 @@
       }
     },
     "campaign_image": {
-      "description": "The image every cell pulled by digest: a campaign image <repo>-ns3-campaign:<commit7>-<basesha7>, or a release image <repo>-ns3:<version>-optimized (swarm-routing/.github#107).",
+      "description": "The image every cell pulled by digest: a campaign image <repo>-ns3-campaign:<commit7>-<basesha7> or <commit7>-<basesha7>-optimized (the tag reusable-ns3-image.yml pushes), or a release image <repo>-ns3:<version>-optimized (swarm-routing/.github#107).",
       "type": "object",
       "additionalProperties": false,
       "required": ["ref", "digest"],

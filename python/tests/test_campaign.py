@@ -400,6 +400,10 @@ def test_campaign():
                 "manifest: the campaign image digest",
             )
             check(
+                m["campaign_image"]["ref"] == f"{cp.IMAGE}:{LEAD7}-bbbbbbb-optimized",
+                "manifest: the pushed tag, -optimized included",
+            )
+            check(
                 m["base_image"]["digest"] == BASE and m["base_image"]["ns3_version"] == "3.48",
                 "manifest: the base",
             )
