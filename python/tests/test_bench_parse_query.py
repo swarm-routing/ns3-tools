@@ -27,7 +27,7 @@ import sys
 TESTS = os.path.dirname(os.path.abspath(__file__))
 HERE = os.path.join(os.path.dirname(TESTS), "ns3_tool")
 # NS3_TOOL_CELLS: a full corpus (CI points it at AntHocNet's results/cells,
-# 435 cells); otherwise the 13 fixture cells, one per scenario family.
+# 435 cells); otherwise the 14 fixture cells (one per scenario family, plus a control).
 CELLS = os.environ.get("NS3_TOOL_CELLS") or os.path.join(TESTS, "fixtures", "cells")
 MIN_CELLS = 100 if os.environ.get("NS3_TOOL_CELLS") else 13
 # Comparisons that must be non-empty (run, table, paths): AntHocNet's floors on
@@ -142,7 +142,7 @@ def test_stock_arms_verdict():
     """check-stock-arms.sh's delivery verdict, before (awk) and after (the reader).
 
     On every cell cut to one run: the reader's pdr > 0 is the old verdict for
-    every protocol; on the 13 fixtures the gate's own helper is run as well.
+    every protocol; on the 14 fixtures the gate's own helper is run as well.
     Then broken inputs, which must still fail, and a changed row the old awk
     would misread."""
     cells = sorted(glob.glob(os.path.join(CELLS, "*.txt")))

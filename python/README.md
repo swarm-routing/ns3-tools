@@ -14,6 +14,7 @@ Readers and paired statistics for the comparison harness's marker lines
 | `sweep_summary` / `ns3-sweep-summary` | summarize campaign sweep CSVs |
 | `scenario_check` / `ns3-scenario-check` | `preflight` a scenario's knobs before a dispatch; `results`: plausibility of a cell, its anchor floor from an `--anchors` file (#28) |
 | `campaign` / `ns3-campaign` | multi-protocol campaigns: a plan (`campaigns/*.toml`) built into one image, every cell run in it by digest, collected into a swarm-routing/benchmarks run with its manifest, paired verdicts (#66) |
+| `change_plan` (through `ns3-campaign`) | change-test campaigns in a protocol repository, AntHocNet's plan format (cells x arms, a `generation` key; YAML needs PyYAML, TOML and JSON are stdlib): each cell dispatched to the repository's caller of swarm-routing/.github's `reusable-benchmark-cell.yml`, pinned to the plan's `source_sha` and image digest (per arm with `pins`); `collect` rejects a cell whose `##PROV##` disagrees and lists it for re-dispatch; `verdicts` byte for byte AntHocNet's `campaign.py` (#81) |
 
 ```bash
 pip install ./python                        # console scripts above
@@ -22,7 +23,9 @@ for t in python/tests/test_*.py; do python3 "$t"; done
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_parse_query.py
 ```
 
-`tests/fixtures/cells/` holds 13 AntHocNet cells, one per scenario family
+`tests/fixtures/cells/` holds 14 AntHocNet cells, one per scenario family plus
+`anchor-bee-p1-v270a.txt`, the control `test_change_plan.py` pairs with its
+`-ringoff` arm,
 (`GPL-2.0-only` data, see `LICENSING.md`). CI also runs the query-equivalence
 test on AntHocNet's whole `results/cells/` corpus.
 
