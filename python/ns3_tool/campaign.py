@@ -19,6 +19,12 @@ protocol.
     ns3-campaign verdicts PLAN --dir RUN_DIR    # each arm minus the reference, paired per seed
     ns3-campaign image-inputs PLAN | stage PLAN # used by campaign-image.yml
 
+A change-test plan (AntHocNet's format, with a `generation` key; .yaml, .yml
+or .json, or a .toml that has the key) is routed to change_plan.py instead:
+plan, dispatch, status, collect and verdicts of cells x arms in a protocol
+repository, each cell through its caller of swarm-routing/.github's
+reusable-benchmark-cell.yml, pinned to the plan's source_sha and image (#81).
+
 State (the image, the dispatch date, the label -> run id log, downloaded
 artifacts) lives in --work, default .campaign/<name>/, so every command is
 resumable: `dispatch` dispatches until the cap and exits, and is re-run until
@@ -86,9 +92,10 @@ import tomllib
 import zipfile
 
 try:  # as the ns3_tool package, or as a script beside its siblings
-    from . import bench_parse
+    from . import bench_parse, change_plan
 except ImportError:
     import bench_parse
+    import change_plan
 
 REPO = os.environ.get("NS3_TOOL_REPO", "swarm-routing/ns3-tools")
 GIT = os.environ.get("NS3_TOOL_GIT", "https://github.com")  # where `stage` clones from
@@ -313,6 +320,35 @@ def runs_titled(workflow, title):
     return {r["id"] for r in data["workflow_runs"] if r.get("display_title") == title}
 
 
+def dispatch_command(workflow, ref, inputs):
+    """A dispatch as the gh command line that sends the same request."""
+    body = json.dumps({"ref": ref, "inputs": inputs})
+    return (
+        f"gh api -X POST repos/{REPO}/actions/workflows/{workflow}/dispatches "
+        f"--input - <<< {shlex.quote(body)}"
+    )
+
+
+def cell_inputs(plan, state, label, args):
+    """(run-name, inputs) of one cell's campaign-cell.yml dispatch."""
+    title = f"{plan['name']}/{label}"
+    return title, {
+        "image": state["image"],
+        "program": plan["program"],
+        "args": args,
+        "label": title,
+    }
+
+
+def cell_command(plan, state, args):
+    """What campaign-cell.yml runs for a cell: the image by digest, no rebuild."""
+    run = shlex.quote('./ns3 run --no-build "$PROGRAM $ARGS"')
+    return (
+        f"docker run --rm -e PROGRAM={shlex.quote(plan['program'])} -e ARGS={shlex.quote(args)} "
+        f"{state['image']} bash -c {run}"
+    )
+
+
 def dispatch_run(workflow, ref, inputs, title):
     """Dispatch and return the new run's id, found by its run-name `title`."""
     before = runs_titled(workflow, title)
@@ -484,7 +520,7 @@ def cmd_build(plan, a):
     rid = state.get("image_run")
     if not rid:
         rid = dispatch_run(IMAGE_WORKFLOW, a.ref, {"plan": path}, f"image {path}")
-        state.update(image_run=rid, ref=a.ref)
+        state.update(image_run=rid, ref=a.ref, plan=path)
         save_state(work, state)
         print(f"dispatched {IMAGE_WORKFLOW} run {rid}", file=sys.stderr)
     while (s := run_state(rid)) in ("queued", "in_progress", "waiting", "pending", "requested"):
@@ -523,8 +559,7 @@ def cmd_dispatch(plan, a):
                 )
                 return
             time.sleep(POLL * 8)
-        title = f"{plan['name']}/{label}"
-        inputs = {"image": state["image"], "program": plan["program"], "args": args, "label": title}
+        title, inputs = cell_inputs(plan, state, label, args)
         rid = dispatch_run(CELL_WORKFLOW, state.get("ref", "main"), inputs, title)
         with open(os.path.join(work, "runs.tsv"), "a") as f:
             f.write(f"{label}\t{rid}\n")
@@ -627,7 +662,14 @@ def cmd_collect(plan, a):
             for _l, _r, _a, text in parts:
                 f.write(text if text.endswith("\n") else text + "\n")
         files.append({"path": rel, "kind": "cell", "scenario": cell})
-        commands += [f"{plan['program']} {args}" for _l, _r, args, _t in parts]
+        # In order, per job: the dispatch, the container command, the harness line.
+        for label, _r, args, _t in parts:
+            _title, inputs = cell_inputs(plan, state, label, args)
+            commands += [
+                dispatch_command(CELL_WORKFLOW, state.get("ref", "main"), inputs),
+                cell_command(plan, state, args),
+                f"{plan['program']} {args}",
+            ]
     files.append({"path": "plan.toml", "kind": "preregistration"})
     for entry in files:
         with open(os.path.join(run_dir, entry["path"]), "rb") as f:
@@ -653,7 +695,12 @@ def cmd_collect(plan, a):
         ],
         "preregistration": {"path": "plan.toml"},
         "seeds": seeds(plan),
-        "commands": commands,
+        "commands": [
+            dispatch_command(
+                IMAGE_WORKFLOW, state.get("ref", "main"), {"plan": state.get("plan", plan["_path"])}
+            ),
+            *commands,
+        ],
         "markers": {"schema_version": MARKERS_VERSION},
         "files": files,
     }
@@ -694,6 +741,12 @@ COMMANDS = {
 
 
 def main(argv=None):
+    # A change-test plan (AntHocNet's format: a `generation` key; every .yaml,
+    # .yml or .json plan) runs through change_plan.py (#81).
+    args = sys.argv[1:] if argv is None else argv
+    plans = [x for x in args[1:] if not x.startswith("-") and os.path.isfile(x)]
+    if plans and change_plan.is_change_plan(plans[0]):
+        return change_plan.main(args)
     p = argparse.ArgumentParser(prog="ns3-campaign", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in COMMANDS:

@@ -52,6 +52,10 @@ jobs:
           sparse-checkout: |
             results/cells
             tools/bench/scenario_check.py
+            tools/bench/campaign.py
+            tools/bench/bench_parse.py
+            tools/bench/stats_util.py
+            tools/bench/campaigns
           persist-credentials: false
       - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
       # ns3-tools#28: the port's verdicts equal AntHocNet's script on every cell.
@@ -59,6 +63,12 @@ jobs:
           NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" \
           NS3_TOOL_SCENARIO_CHECK="$PWD/anthocnet/tools/bench/scenario_check.py" \
             python3 python/tests/test_scenario_check_corpus.py
+      # ns3-tools#81: change-plan verdicts equal AntHocNet's campaign.py on
+      # every committed plan (the plans are YAML: PyYAML, for both scripts).
+      - name: PyYAML
+        timeout-minutes: 5
+        run: python3 -m pip install --quiet pyyaml==6.0.2
+      - run: NS3_TOOL_ANTHOCNET="$PWD/anthocnet" python3 python/tests/test_change_plan.py
 
 # ruff and the self-tests under coverage (reusable-python-ci.yml) run in
 # ns3.yml, job `python-quality`: the SonarQube Cloud scan there imports their

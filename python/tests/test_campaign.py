@@ -25,6 +25,8 @@ import json
 import os
 import random
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -411,9 +413,32 @@ def test_campaign():
                 [x["name"] for x in m["modules"]] == ["anthocnet", "routing-bench"],
                 "manifest: every module",
             )
+            cmds = m["commands"]
+            check(len(cmds) == 1 + 3 * 3, "manifest: the image dispatch, then 3 commands per job")
+            sent = [json.loads(shlex.split(c)[-1]) for c in cmds[0:2]]
             check(
-                len(m["commands"]) == 3 and m["commands"][0].startswith("routing-compare "),
-                "manifest: exact commands",
+                sent == [fake.dispatched[0][1], fake.dispatched[1][1]],
+                "manifest: the dispatch commands send exactly the requests made",
+            )
+            other = os.path.join(d, "copy.toml")
+            shutil.copyfile(plan_path, other)
+            run(["collect", other, "--work", work, "--out", runs_root + "-copy"])
+            m2 = json.load(
+                open(os.path.join(runs_root + "-copy", os.path.basename(run_dir), "manifest.json"))
+            )
+            check(
+                m2["commands"][0] == cmds[0],
+                "manifest: the image dispatch names the plan path build sent, whatever path collect reads",
+            )
+            check(
+                shlex.split(cmds[2])[:3] == ["docker", "run", "--rm"]
+                and IMAGE in cmds[2]
+                and shlex.split(cmds[2])[-1] == './ns3 run --no-build "$PROGRAM $ARGS"',
+                "manifest: the container command runs the image by digest, no rebuild",
+            )
+            check(
+                cmds[3].startswith("routing-compare ") and cmds[3].endswith("--firstRun=1"),
+                "manifest: the harness line",
             )
             check(m["scenarios"][0]["parameters"]["nNodes"] == 50, "manifest: cell parameters")
             for f in m["files"]:

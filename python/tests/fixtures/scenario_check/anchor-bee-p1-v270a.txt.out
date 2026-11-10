@@ -1,0 +1,6 @@
+# exit 0
+ok: anchor-bee-p1-v270a.txt: measured at f14d5cc
+WARN: anchor-bee-p1-v270a.txt block1: path diversity is churn-dominated — the single-path floor is 1.444 (aodv) at windowS=10, i.e. route replacement inside the window is being counted as concurrent multipath; no anthocnet row in this cell. Do not quote path_div_*/path_entropy_bits from this cell. Nothing else is affected: PDR/delay/NRL/jitter come from FlowMonitor, not from the diversity window (#230)
+WARN: anchor-bee-p1-v270a.txt block6: path diversity is churn-dominated — the single-path floor is 1.449 (aodv) at windowS=10, i.e. route replacement inside the window is being counted as concurrent multipath; no anthocnet row in this cell. Do not quote path_div_*/path_entropy_bits from this cell. Nothing else is affected: PDR/delay/NRL/jitter come from FlowMonitor, not from the diversity window (#230)
+checked 6 rows
+verdict: WARN (0 fail, 2 warn)

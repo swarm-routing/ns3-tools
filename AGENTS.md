@@ -22,8 +22,8 @@ ns3/routing-bench/  the comparison harness module `routing-bench` (moved from An
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6) — MIT OR GPL-2.0-only
-python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign), stdlib only — MIT OR GPL-2.0-only
-python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 13 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
+python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
+python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
 docs/               marker-line contract, arena reference
@@ -62,6 +62,7 @@ for t in python/tests/test_*.py; do python3 "$t"; done
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_parse_query.py  # the full corpus, as CI
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells NS3_TOOL_SCENARIO_CHECK=/path/to/AntHocNet/tools/bench/scenario_check.py \
     python3 python/tests/test_scenario_check_corpus.py   # scenario_check's verdicts = AntHocNet's, as CI
+NS3_TOOL_ANTHOCNET=/path/to/AntHocNet python3 python/tests/test_change_plan.py   # change-plan verdicts = AntHocNet's campaign.py on every plan (PyYAML), as CI
 pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
@@ -87,8 +88,10 @@ Org-wide (1–9), then this repo's own.
    `LICENSING.md` in the same PR.
 2. **The licence boundary only goes one way.** GPL code may use the dual
    parts; dual code never pulls GPL-only code in: a `core/` file includes only
-   the C++ standard library and other `core/` files (CI checks it), and a dual
-   script imports no GPL-only code. Code coming from AntHocNet keeps its
+   the C++ standard library, other `core/` files and the dual-licensed `core/`
+   of a dependency pinned by commit and declared in the repo's `licence.yml`
+   `core-deps` (a protocol's `core/` on swarm-core's; CI checks it,
+   `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
    licence: its `core/`/`tools/` (dual) may land in dual or GPL paths here; its
    `ns3/` modules and `web/` (GPL-2.0-only) only in GPL paths. Third-party code
    (AntHocNet's vendored `aomdv`/`gpsr`, IITP RAS) lands only in GPL paths with
@@ -113,6 +116,10 @@ Org-wide (1–9), then this repo's own.
    carry a configured cap).
 8. **CI hygiene.** Actions pinned by full commit SHA with a `# vX.Y.Z` comment;
    buildx caches scoped per profile; transient artifacts `retention-days` <= 7.
+   Every job has a `timeout-minutes` cap, and every apt, npm or installer step
+   its own, sized from recent green runs; `apt-get update` runs with
+   `--error-on=any` inside a shell retry. Ubuntu mirror outages are the usual
+   cause of a red run.
 9. **Nothing shipped depends on `.claude/`.** Skills hold procedures; scripts
    that anything shipped needs live in `tools/` (AntHocNet ADR-0014).
 <!-- org-sync:end org-rules -->
@@ -172,6 +179,28 @@ Org-wide (1–9), then this repo's own.
   the commit on `main`, so it is a lowercase Conventional Commit
   (`feat:`/`fix:`/`docs:`/`chore:`/`ci:`…, optional scope).
 - Push with `git push -u origin <branch>`; merge when CI is green.
+- **`main` takes no direct push**, in any repo: its ruleset requires a PR, an
+  up-to-date branch and the required checks. Bots push `bot/<name>` branches
+  and open PRs; a release is the bump PR from `bot/release`, tagged after it
+  merges (CONTRIBUTING "Cutting a release").
+- When a PR falls behind `main`, update it
+  (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`) and merge PRs
+  one at a time, each after its CI on the updated branch. Never force-push a
+  branch someone else pushed. A behind `bot/release` PR is the exception:
+  dispatch the release `bump` again, so the version and changelog are rebuilt
+  on the new `main`.
+- **Settings are code.** Repository settings, rulesets, required checks and the
+  Actions allowlist change only by a PR to the repo's `[settings]` in
+  `.github/org-sync.toml` or to `templates/rulesets/` in `swarm-routing/.github`,
+  never in the UI or by a direct API write. A `templates/rulesets/` change
+  applies on merge; a repo's `[settings]` change applies when `repo-settings`
+  in `swarm-routing/.github` is dispatched with mode `apply` after the merge
+  (the daily run only checks). A required check runs on every PR (no `paths:`
+  filter; skip work inside a gate job instead) and is named exactly as its
+  check run. A new third-party action goes into `defaults.json`
+  `selected_actions` (`templates/rulesets/`) before or with the workflow that
+  uses it: in the same PR in `swarm-routing/.github`, otherwise merged there
+  first, or `repo-settings` refuses the repo.
 <!-- org-sync:end git-workflow -->
 
 <!-- org-sync:begin skills -->
@@ -211,9 +240,10 @@ here is undone by the next `org_sync.py apply`).
 
 | You want to… | Go to |
 |--------------|-------|
-| Python sources to port (MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`, `campaign.py`; `scenario_check.py` is ported, #28), `ns3/tools/run-scenarios.py` |
+| Python sources to port (MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`; `scenario_check.py` is ported, #28; `campaign.py` as `change_plan.py`, #81), `ns3/tools/run-scenarios.py` |
 | Harness to port into `ns3/` (GPL-2.0-only, so it lands as-is in a GPL path) | AntHocNet `ns3/routing-bench/`, `docs/comparison-harness.md`, ADR-0027 |
-| Run a multi-protocol campaign (one image, cells by digest, a benchmarks manifest) | `python/ns3_tool/campaign.py` (`ns3-campaign`: `validate`, `plan`, `build`, `dispatch`, `status`, `collect`, `verdicts`; its docstring is the plan format), a plan in `campaigns/`, `campaign-image.yml` + `campaign-cell.yml`; #66, swarm-routing/.github#107. AntHocNet's own `tools/bench/campaign.py` stays AntHocNet-only |
+| Run a multi-protocol campaign (one image, cells by digest, a benchmarks manifest) | `python/ns3_tool/campaign.py` (`ns3-campaign`: `validate`, `plan`, `build`, `dispatch`, `status`, `collect`, `verdicts`; its docstring is the plan format), a plan in `campaigns/`, `campaign-image.yml` + `campaign-cell.yml`; #66, swarm-routing/.github#107 |
+| Run a protocol repository's change tests (AntHocNet's plans: cells x arms) | `python/ns3_tool/change_plan.py`, reached through `ns3-campaign` for any plan with a `generation` key (`plan`, `dispatch`, `status`, `collect [--redispatch]`, `verdicts`; `--repo`, `--workflow`; its docstring is the plan format): every cell goes to the repository's caller of swarm-routing/.github's `reusable-benchmark-cell.yml` pinned to the plan's `source_sha` and image (swarm-routing/.github#157); verdicts byte for byte AntHocNet's (`NS3_TOOL_ANTHOCNET=<checkout> python3 python/tests/test_change_plan.py`, as CI); #81, epic swarm-routing/.github#156 |
 | Comparator arms (SAODV, SEAD, TAODV, DRL, DTN) and their gates | epic #15; the arm contract: AntHocNet `docs/comparison-harness.md`, ADR-0027 |
 | Open issues being migrated here | AntHocNet #764, #771, #772, #773, #791, #431, #294 |
 | The org's invariants, labels, issue shape | [`swarm-routing/.github` CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md) |
