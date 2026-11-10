@@ -10,9 +10,10 @@ Run: python3 test_native_view.py   (no pytest; exits non-zero on the first
                                     failure)
 """
 
+import contextlib
 import csv
+import io
 import os
-import subprocess
 import sys
 import tempfile
 
@@ -44,15 +45,18 @@ def main():
                 with open(os.path.join(d, f"{cell}-t.txt"), "w") as f:
                     f.write(text)
         out_csv = os.path.join(d, "out.csv")
-        run = subprocess.run(
-            [sys.executable, TOOL, "--gen", "t", "--dir", d, "--csv", out_csv],
-            capture_output=True,
-            text=True,
-        )
-        assert run.returncode == 0, run.stderr
+        # In-process (not a subprocess), so coverage sees the code under test.
+        argv, sys.argv = sys.argv, [TOOL, "--gen", "t", "--dir", d, "--csv", out_csv]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = nv.main()
+        finally:
+            sys.argv = argv
+        assert code == 0, code
         with open(out_csv) as f:
             by_cell = {r["cell"]: r for r in csv.DictReader(f)}
-    lines = {ln.split("|")[2].strip(): ln for ln in run.stdout.splitlines()[2:]}
+    lines = {ln.split("|")[2].strip(): ln for ln in out.getvalue().splitlines()[2:]}
     full = lines["fanet-main"]
     assert "| -9.00 [-9.00, -9.00] | aodv | 81.00 | +10.00 [+10.00, +10.00]" in full, full
     mesh = lines["static-mesh"]
