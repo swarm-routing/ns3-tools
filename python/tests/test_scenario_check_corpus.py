@@ -45,11 +45,18 @@ def run(cmd):
 
 def filtered(text):
     """AntHocNet's output without its own rules' lines, verdict recounted."""
-    lines = [ln for ln in text.splitlines() if not (ln.startswith(("FAIL: ", "WARN: ")) and ANTHOCNET_ONLY.search(ln))]
+    lines = [
+        ln
+        for ln in text.splitlines()
+        if not (ln.startswith(("FAIL: ", "WARN: ")) and ANTHOCNET_ONLY.search(ln))
+    ]
     fails = sum(ln.startswith("FAIL: ") for ln in lines)
     warns = sum(ln.startswith("WARN: ") for ln in lines)
     word = "FAIL" if fails else "WARN" if warns else "OK"
-    lines = [f"verdict: {word} ({fails} fail, {warns} warn)" if ln.startswith("verdict: ") else ln for ln in lines]
+    lines = [
+        f"verdict: {word} ({fails} fail, {warns} warn)" if ln.startswith("verdict: ") else ln
+        for ln in lines
+    ]
     return "\n".join(lines) + "\n", 1 if fails else 0
 
 
@@ -61,7 +68,9 @@ def ours(cell):
 def fail(name, want, got):
     import difflib
 
-    diff = "".join(difflib.unified_diff(want.splitlines(True), got.splitlines(True), "AntHocNet", "ns3-tools"))
+    diff = "".join(
+        difflib.unified_diff(want.splitlines(True), got.splitlines(True), "AntHocNet", "ns3-tools")
+    )
     print(f"FAIL {name}: the port's output differs\n{diff}")
     sys.exit(1)
 

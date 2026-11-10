@@ -3391,7 +3391,9 @@ def _anchors_parse():
     )
 
 
-@case("port: an --anchor name is a key of the file or its stem, else refused with the list")
+@case(
+    "port: an --anchor name is a _pdr_min key of the file or its stem, else refused with the list"
+)
 def _anchor_names():
     a = sc.load_anchors(ANCHORS)
     expect(sc.anchor_key("single-hop", a) == "single_hop_pdr_min", "anchor-stem", "")
@@ -3400,7 +3402,18 @@ def _anchor_names():
         "anchor-stem",
         "",
     )
-    expect(sc.anchor_key("mesh_hwmp_stretch_max", a) == "mesh_hwmp_stretch_max", "anchor-key", "")
+    expect(sc.anchor_key("vanet_gpcr_pdr_min", a) == "vanet_gpcr_pdr_min", "anchor-key", "")
+    # A bound that is not a PDR minimum is never offered as an --anchor floor.
+    try:
+        sc.anchor_key("mesh_hwmp_stretch_max", a)
+        refused = None
+    except SystemExit as e:
+        refused = str(e.code)
+    expect(
+        refused is not None and "mesh_hwmp_stretch_max" not in refused.split("offers: ")[1],
+        "anchor-not-pdr",
+        f"a stretch bound was accepted as a PDR floor: {refused}",
+    )
     try:
         sc.anchor_key("broch-low-mobility", a)
         code = None

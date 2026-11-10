@@ -10,8 +10,9 @@ is special-cased here (ns3-tools AGENTS.md rule 12):
 
 - the anchor floors come from the file given with --anchors (the key schema
   of AntHocNet's ns3/tools/anchors.yml: one `key: number` per line, `#`
-  comments). An --anchor name is a key of that file, or its stem (the key
-  without `_pdr_min`, with `-` for `_`), never an entry of a table here;
+  comments). An --anchor name is a `_pdr_min` key of that file, or its stem
+  (the key without `_pdr_min`, with `-` for `_`), never an entry of a table
+  here; the file's other bounds (stretch, pp gaps) are not PDR floors;
 - the arms a rule needs are inputs, never names in the code: --anchor-arms
   (whose rows an anchor floor judges; default every row), --single-path (the
   arms that install one route per destination), --multipath (the arm whose
@@ -398,19 +399,17 @@ def load_anchors(path):
 
 def anchor_names(anchors):
     """The --anchor names a file offers: each PDR floor's stem (the key
-    without the _pdr_min suffix, `-` for `_`), plus every key as written."""
-    stems = [
-        k[: -len(ANCHOR_SUFFIX)].replace("_", "-") for k in anchors if k.endswith(ANCHOR_SUFFIX)
-    ]
-    return sorted(stems) + sorted(anchors)
+    without the _pdr_min suffix, `-` for `_`), plus the key as written. Only
+    `_pdr_min` keys: --anchor enforces a minimum PDR, so another kind of
+    bound (a stretch maximum, a pp gap) is not offered as one."""
+    pdr = sorted(k for k in anchors if k.endswith(ANCHOR_SUFFIX))
+    return [k[: -len(ANCHOR_SUFFIX)].replace("_", "-") for k in pdr] + pdr
 
 
 def anchor_key(name, anchors):
-    """The anchors-file key an --anchor name selects, or exit with the names
+    """The `_pdr_min` key an --anchor name selects, or exit with the names
     the file offers."""
-    if name in anchors:
-        return name
-    key = name.replace("-", "_") + ANCHOR_SUFFIX
+    key = name if name.endswith(ANCHOR_SUFFIX) else name.replace("-", "_") + ANCHOR_SUFFIX
     if key in anchors:
         return key
     sys.exit(
@@ -3431,7 +3430,7 @@ def main():
     r.add_argument(
         "--anchor",
         metavar="NAME",
-        help="enforce this floor of --anchors: a key, or its stem (no _pdr_min, - for _)",
+        help="enforce this PDR floor of --anchors: a *_pdr_min key, or its stem (no _pdr_min, - for _)",
     )
     r.add_argument(
         "--anchor-arms",

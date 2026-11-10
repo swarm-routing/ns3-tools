@@ -29,7 +29,8 @@ test on AntHocNet's whole `results/cells/` corpus.
 `scenario_check` is AntHocNet's script with the protocol taken out (#28). The
 anchor floors come from a file in the schema of AntHocNet's
 `ns3/tools/anchors.yml` (`key: number` lines); `--anchor` names one of its
-keys, or the key's stem (`broch-low-mobility-aodv` for
+`_pdr_min` keys (the PDR floors; the file's other bounds are not checked
+here), or the key's stem (`broch-low-mobility-aodv` for
 `broch_low_mobility_aodv_pdr_min`). The arms a rule needs are arguments:
 `--anchor-arms` (the rows an anchor floor judges; default every row),
 `--single-path`, `--multipath`, `--oracle` (default: the arm of a cell's
@@ -39,7 +40,7 @@ and the per-arm preflight refusals. AntHocNet's verdicts, with its roles:
 
 ```bash
 ns3-scenario-check results CELL --anchors anchors.yml --anchor broch-low-mobility-aodv \
-    --anchor-arms aodv --single-path aodv,olsr,dsdv --multipath anthocnet \
+    --anchor-arms aodv --single-path aodv,olsr,dsdv --multipath anthocnet --oracle oracle \
     --hold-ceiling ara=35000 --hold-ceiling termite=35000 \
     --hold-ceiling qrouting=35000 --hold-ceiling beeadhoc=35000
 ```
