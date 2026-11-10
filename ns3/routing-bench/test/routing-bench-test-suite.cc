@@ -3,13 +3,16 @@
 
 /**
  * Unit tests for the routing-bench arm registry (ADR-0027, #766):
- * registration, lookup, the rejection of a duplicate or empty name, and the
- * stock arms' names and stream-free hwmp arm.
+ * registration, lookup, the rejection of a duplicate or empty name, the
+ * optional hooks' defaults, and the stock arms' names and stream-free hwmp
+ * arm.
  */
 
 #include "ns3/routing-bench-arm.h"
 #include "ns3/stock-arms.h"
 #include "ns3/test.h"
+
+#include <sstream>
 
 // TestSuite/TestCase enums became scoped (enum class) in ns-3.42 and the
 // unscoped aliases were removed in ns-3.47 (the oracle module's pattern).
@@ -33,6 +36,28 @@ public:
 };
 
 Ptr<Arm> MakeFakeArm() { return Create<FakeArm>(); }
+
+/// A measurement no hook may touch: every count is zero.
+class NullMeasurement : public Measurement {
+public:
+    uint64_t ControlPackets() const override { return 0; }
+    uint64_t ControlBytes() const override { return 0; }
+    double DeliveredDataBytes() const override { return 0.0; }
+    void TrackReinjectionIdentity() override {}
+    void MacReinjectedData(const Ipv4Header&, Ptr<const Packet>) override {}
+    void ArpReinjectedData(const Ipv4Header&, Ptr<const Packet>) override {}
+    uint64_t ReinjectedData() const override { return 0; }
+    void TrackPacketFate() override {}
+    void TrackPendingQueue() override {}
+    void MeshManagementEnqueue(Ptr<const BENCH_WIFI_MPDU>) override {}
+    void MeshDataEnqueue(uint32_t, Ptr<const BENCH_WIFI_MPDU>) override {}
+    uint64_t MeshPeeringFrames() const override { return 0; }
+    uint64_t MeshBeacons() const override { return 0; }
+    void TypedControlTx(uint8_t, uint8_t, bool) override {}
+    void TypedControlRx(uint8_t, uint8_t) override {}
+    uint64_t TypedControlTxCount(uint8_t) const override { return 0; }
+    uint64_t TypedControlRxCount(uint8_t) const override { return 0; }
+};
 
 }  // namespace
 
@@ -60,6 +85,52 @@ private:
         NS_TEST_ASSERT_MSG_NE(a, b, "a fresh arm for every run");
         RunContext run;
         NS_TEST_ASSERT_MSG_EQ(a->AssignStreams(run, 0), 3, "the arm's own hook");
+    }
+};
+
+class DefaultHooksTest : public TestCase {
+public:
+    DefaultHooksTest()
+        : TestCase("arm hooks: an arm that overrides none of the optional hooks changes nothing") {}
+
+private:
+    void DoRun() override {
+        Ptr<Arm> arm = MakeFakeArm();
+        RunContext run;
+        NullMeasurement m;
+        std::ostringstream out;
+        arm->Configure(run);
+        arm->Validate(run);
+        arm->EmitConfig(out);
+        NS_TEST_ASSERT_MSG_EQ(arm->ProvidesDevices(), false, "ad-hoc Wi-Fi by default");
+        NetDeviceContainer radios;
+        DeviceRequest req{};
+        NS_TEST_ASSERT_MSG_EQ(arm->InstallDevices(run, req, radios).GetN(), 0u, "no devices");
+        NS_TEST_ASSERT_MSG_EQ(radios.GetN(), 0u, "no radios");
+        NS_TEST_ASSERT_MSG_EQ(arm->AssignDeviceStreams(run, 7), 0, "no device streams");
+        arm->AfterStack(run);
+        arm->ConnectTraces(run, m);
+        arm->AfterAddresses(run, Ipv4InterfaceContainer());
+        NS_TEST_ASSERT_MSG_EQ(arm->StartReplay(run, ReplayRequest(), nullptr, nullptr), false,
+                              "no replay");
+        arm->FinishReplay(1, 1, 100.0);
+        RunCounts c;
+        c.txPackets = 10;
+        c.dropRoute = 2;
+        arm->AdjustCounts(run, c);
+        NS_TEST_ASSERT_MSG_EQ(c.txPackets, 10u, "counts untouched");
+        NS_TEST_ASSERT_MSG_EQ(c.dropRoute, 2u, "counts untouched");
+        arm->EmitRunNote(run, m, out);
+        DropDetail d;
+        arm->FillDropDetail(run, d);
+        NS_TEST_ASSERT_MSG_EQ(d.holdCauses, false, "no drop detail");
+        std::vector<HoldTime> hold;
+        NS_TEST_ASSERT_MSG_EQ(arm->CollectHoldTimes(run, hold), false, "no pending queue");
+        NS_TEST_ASSERT_MSG_EQ(hold.empty(), true, "no hold times");
+        arm->AppendDiag(run, m, out);
+        arm->EmitDiagnostics(run, m, 0.0, out);
+        arm->Check(run, m);
+        NS_TEST_ASSERT_MSG_EQ(out.str(), "", "the default hooks print nothing");
     }
 };
 
@@ -97,6 +168,7 @@ class RoutingBenchTestSuite : public TestSuite {
 public:
     RoutingBenchTestSuite() : TestSuite("routing-bench", BENCH_TEST_TYPE_UNIT) {
         AddTestCase(new RegistryRulesTest, BENCH_TEST_QUICK);
+        AddTestCase(new DefaultHooksTest, BENCH_TEST_QUICK);
         AddTestCase(new StockArmsTest, BENCH_TEST_QUICK);
     }
 };
