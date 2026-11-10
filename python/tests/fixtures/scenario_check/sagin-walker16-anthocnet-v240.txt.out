@@ -1,0 +1,4 @@
+# exit 0
+ok: sagin-walker16-anthocnet-v240.txt: measured at cd4a765
+checked 1 rows
+verdict: OK (0 fail, 0 warn)

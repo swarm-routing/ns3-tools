@@ -1,0 +1,5 @@
+# exit 0
+ok: paper-mobile-jitter-cap1s.txt: measured at 4c8482f
+WARN: paper-mobile-jitter-cap1s.txt: pre-#521 cell — the sources ran ns-3's default 1 s on / 1 s off, so the offered rate was HALF of cbrBps. Within-cell comparisons stand; absolute levels and offered-load claims do not
+checked 1 rows
+verdict: WARN (0 fail, 1 warn)

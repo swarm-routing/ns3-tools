@@ -1,0 +1,4 @@
+# exit 0
+ok: anchor-bee-p1-v270a-ringoff.txt: measured at f14d5cc
+checked 2 rows
+verdict: OK (0 fail, 0 warn)
