@@ -1,0 +1,4 @@
+# exit 0
+ok: sat-base-app517.txt: measured at 324063f
+checked 4 rows
+verdict: OK (0 fail, 0 warn)

@@ -7,7 +7,7 @@
 | Path | What | Licence |
 |------|------|---------|
 | `python/` | the `ns3-tool` CLI (reads logs and CSVs; imports no ns-3 code) | `MIT OR GPL-2.0-only` |
-| `python/tests/fixtures/` | benchmark cells copied from AntHocNet's `results/cells/` (data) | `GPL-2.0-only` |
+| `python/tests/fixtures/` | data copied from AntHocNet: benchmark cells (`results/cells/`), its `ns3/tools/anchors.yml` and replay fixtures, and its `scenario_check.py` output on those cells | `GPL-2.0-only` |
 | `tools/` | standalone scripts (checks, release, data handling) | `MIT OR GPL-2.0-only` |
 | `ns3/` | the ns-3 contrib module: probes, emitters, arenas | `GPL-2.0-only` |
 | `campaigns/` | campaign plans (the pre-registration, copied into each benchmarks run) | `GPL-2.0-only` |

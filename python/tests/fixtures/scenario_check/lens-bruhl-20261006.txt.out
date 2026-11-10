@@ -1,0 +1,3 @@
+# exit 1
+FAIL: no result rows parsed from the input
+verdict: FAIL (1 fail, 0 warn)

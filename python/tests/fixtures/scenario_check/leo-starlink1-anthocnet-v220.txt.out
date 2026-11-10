@@ -1,0 +1,4 @@
+# exit 0
+ok: leo-starlink1-anthocnet-v220.txt: measured at a8a1699
+checked 1 rows
+verdict: OK (0 fail, 0 warn)

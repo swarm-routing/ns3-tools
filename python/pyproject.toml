@@ -21,6 +21,7 @@ ns3-native-view = "ns3_tool.native_view:main"
 ns3-comparator-view = "ns3_tool.comparator_view:main"
 ns3-pool-runs = "ns3_tool.pool_runs:main"
 ns3-sweep-summary = "ns3_tool.sweep_summary:main"
+ns3-scenario-check = "ns3_tool.scenario_check:main"
 ns3-campaign = "ns3_tool.campaign:main"
 
 [tool.setuptools]
