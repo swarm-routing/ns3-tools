@@ -9,7 +9,7 @@ its output (the ##REINJ## books, #386/#402, and the opspf rule, #707) and its
 verdict line is recounted without them. The port runs with AntHocNet's arm
 roles (ROLES), which its script hard-coded.
 
-- Offline (CI's self-test step): the 13 fixture cells against
+- Offline (CI's self-test step): the 14 fixture cells against
   fixtures/scenario_check/<cell>.out, AntHocNet's output recorded once and
   filtered the same way.
 - With NS3_TOOL_CELLS=<AntHocNet>/results/cells and

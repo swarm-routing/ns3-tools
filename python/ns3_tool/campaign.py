@@ -19,6 +19,12 @@ protocol.
     ns3-campaign verdicts PLAN --dir RUN_DIR    # each arm minus the reference, paired per seed
     ns3-campaign image-inputs PLAN | stage PLAN # used by campaign-image.yml
 
+A change-test plan (AntHocNet's format, with a `generation` key; .yaml, .yml
+or .json, or a .toml that has the key) is routed to change_plan.py instead:
+plan, dispatch, status, collect and verdicts of cells x arms in a protocol
+repository, each cell through its caller of swarm-routing/.github's
+reusable-benchmark-cell.yml, pinned to the plan's source_sha and image (#81).
+
 State (the image, the dispatch date, the label -> run id log, downloaded
 artifacts) lives in --work, default .campaign/<name>/, so every command is
 resumable: `dispatch` dispatches until the cap and exits, and is re-run until
@@ -86,9 +92,10 @@ import tomllib
 import zipfile
 
 try:  # as the ns3_tool package, or as a script beside its siblings
-    from . import bench_parse
+    from . import bench_parse, change_plan
 except ImportError:
     import bench_parse
+    import change_plan
 
 REPO = os.environ.get("NS3_TOOL_REPO", "swarm-routing/ns3-tools")
 GIT = os.environ.get("NS3_TOOL_GIT", "https://github.com")  # where `stage` clones from
@@ -734,6 +741,12 @@ COMMANDS = {
 
 
 def main(argv=None):
+    # A change-test plan (AntHocNet's format: a `generation` key; every .yaml,
+    # .yml or .json plan) runs through change_plan.py (#81).
+    args = sys.argv[1:] if argv is None else argv
+    plans = [x for x in args[1:] if not x.startswith("-") and os.path.isfile(x)]
+    if plans and change_plan.is_change_plan(plans[0]):
+        return change_plan.main(args)
     p = argparse.ArgumentParser(prog="ns3-campaign", description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in COMMANDS:
