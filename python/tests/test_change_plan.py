@@ -529,6 +529,81 @@ def _routing():
     expect(out.returncode == 0 and "valid" in out.stdout, "route-release", out.stdout + out.stderr)
 
 
+@case("main, plan files and load errors, in process")
+def _main_and_load():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "p.json")
+        with open(path, "w") as f:
+            json.dump(PLAN, f)
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as out,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            cp.main(["plan", path])
+        expect(out.getvalue().count("\n") == 7, "main-plan", out.getvalue())
+        toml = os.path.join(d, "v270a.toml")
+        with open(toml, "w") as f:
+            f.write(VERDICT_PLAN)
+        expect(cp.is_change_plan(toml) and cp.is_change_plan(path), "is-change", toml)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            cp.main(["verdicts", toml, "--dir", CELLS])
+        expect(out.getvalue() == VERDICTS, "main-verdicts", out.getvalue())
+        yml = os.path.join(d, "p.yaml")
+        with open(yml, "w") as f:
+            f.write("generation: g\narms: {a: ''}\ncells: {}\njobs: []\n")
+        try:
+            import yaml  # noqa: F401
+
+            expect(cp.load_plan(yml)["generation"] == "g", "yaml", yml)
+        except ImportError:
+            pass
+        bad = {
+            "list": "[]",
+            "no jobs": '{"generation": "g", "arms": {}, "cells": {}}',
+            "legacy tag": '{"generation": "g", "arms": {}, "cells": {}, "jobs": [], '
+            '"legacy_images": {"3.42": "ghcr.io/x/ns3:3.42"}}',
+            "pins list": '{"generation": "g", "arms": {}, "cells": {}, "jobs": [], "pins": "x"}',
+            "pins key": '{"generation": "g", "arms": {"a": ""}, "cells": {}, "jobs": [], '
+            '"pins": {"a": {"ref": "main"}}}',
+            "not json": "{",
+        }
+        for name, text in bad.items():
+            with open(path, "w") as f:
+                f.write(text)
+            try:
+                cp.load_plan(path)
+            except SystemExit:
+                continue
+            expect(False, f"load-{name}", text)
+        try:
+            cp.load_plan(os.path.join(d, "missing.json"))
+            expect(False, "load-missing", "a missing plan was read")
+        except SystemExit:
+            pass
+        try:
+            cp.selected(PLAN, ns(arm="nope"))
+            expect(False, "selected-arm", "an unknown --arm was accepted")
+        except SystemExit:
+            pass
+
+
+@case("gh: a failing call raises with its stderr")
+def _gh_fails():
+    real = cp.subprocess.run
+    cp.subprocess.run = lambda *a, **k: argparse.Namespace(
+        returncode=1, stdout="", stderr="HTTP 404"
+    )
+    try:
+        raised = False
+        try:
+            _load("change_plan").gh("repos/x")  # a fresh copy: cp.gh is a fake by now
+        except RuntimeError as e:
+            raised = "HTTP 404" in str(e)
+    finally:
+        cp.subprocess.run = real
+    expect(raised, "gh-fails", "no RuntimeError")
+
+
 @case("NS3_TOOL_ANTHOCNET: verdicts equal AntHocNet's script on every committed plan")
 def _corpus():
     root = os.environ.get("NS3_TOOL_ANTHOCNET")
