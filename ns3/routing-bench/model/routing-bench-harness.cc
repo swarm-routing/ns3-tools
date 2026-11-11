@@ -139,7 +139,11 @@ PerfMark PerfNow() {
     const auto tv = [](const timeval& t) { return t.tv_sec + t.tv_usec / 1e6; };
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    return {tv(ru.ru_utime) + tv(ru.ru_stime), wall, ru.ru_maxrss};
+    long maxrssKb = ru.ru_maxrss;
+#ifdef __APPLE__
+    maxrssKb /= 1024;  // bytes on macOS, kB on Linux
+#endif
+    return {tv(ru.ru_utime) + tv(ru.ru_stime), wall, maxrssKb};
 }
 
 }  // namespace

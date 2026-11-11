@@ -129,7 +129,7 @@ jobs:
         run: ns3-build-contrib --test "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench"
       - name: Every listed arm delivers; an unknown arm aborts
         run: bash tools/checks/check-stock-arms.sh /opt/ns-3 "${{ matrix.arms }}"
-      - name: One ##PERF## line per arm and seed, and no other byte moves (#91)
+      - name: "One ##PERF## line per arm and seed, and no other byte moves (#91)"
         if: matrix.version == 'latest'
         timeout-minutes: 15
         run: bash tools/checks/check-perf-markers.sh /opt/ns-3 "olsr dsdv"

@@ -16,7 +16,8 @@ ns3=$1
 read -r -a arms <<<"$2"
 [ "${#arms[@]}" -ge 2 ] || { echo "FAIL: name at least two arms" >&2; exit 1; }
 bp="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../python/ns3_tool" && pwd)/bench_parse.py"
-tmp=$(mktemp -d)
+tmp=$(cd "$(mktemp -d)" && pwd)  # absolute: the runs below cd into NS3DIR
+trap 'rm -rf "$tmp"' EXIT
 cd "$ns3"
 
 list=$(IFS=,; echo "${arms[*]}")

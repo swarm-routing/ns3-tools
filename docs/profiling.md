@@ -23,21 +23,24 @@ for `perf`). Nothing here is committed or reaches a cell.
 
 ## Build the harness and pick a cell
 
-From a checkout of this repository (add your arm module as another
-`name=/src/path` to `ns3-build-contrib`, as in its own CI):
+From a checkout of this repository, with the arm's repository checked out
+beside it (`../ARA` here; drop that mount and the `ara=` argument to profile a
+stock arm). Add the arm's own dependencies (swarm-core, for one) the same way,
+as in its CI:
 
 ```bash
-docker run --rm -it --cap-add PERFMON -v "$PWD:/src:ro" \
+docker run --rm -it --cap-add PERFMON -v "$PWD:/src:ro" -v "$PWD/../ARA:/arm:ro" \
     ghcr.io/swarm-routing/ns3-dev:latest-debug bash
 # inside the container:
-ns3-build-contrib routing-bench=/src/ns3/routing-bench
+ns3-build-contrib routing-bench=/src/ns3/routing-bench ara=/arm/ns3
 apt-get update && apt-get install -y --no-install-recommends linux-tools-generic heaptrack valgrind
 cd /opt/ns-3
 cell="routing-compare --scenario=paper --nNodes=12 --time=10 --runs=1 --protocols=olsr --perf=0"
 ./ns3 run --no-build "${cell/--perf=0/}" | grep '^##PERF##'   # the cost the profile explains
 ```
 
-Profile **one arm, one seed**: with several arms in one process the profile
+Replace `olsr` in `--protocols=` with the arm you profile (`ara` above):
+the command profiles only the arm it names. Profile **one arm, one seed**: with several arms in one process the profile
 mixes them, and the second arm starts on the first one's heap. `--perf=0`
 keeps the profiler's own overhead out of the output you compare.
 
@@ -78,14 +81,21 @@ normal length); its "leaked" figure includes what ns-3 frees only at exit.
 ms_print /tmp/massif.out | less           # the heap graph, then the largest snapshots' trees
 ```
 
-massif shows the heap *over simulated time*, so a table that keeps growing (an
+massif shows the heap over the run, so a table that keeps growing (an
 unbounded structure, golden rule 7) shows as a rising graph instead of one peak
-number. It is slow (tens of times the normal run): keep the cell small.
+number. Its x axis is instructions executed (massif's default
+`--time-unit=i`), not simulated time, and a rising graph is a hint, not proof:
+run the cell again with a longer `--time` and compare the peaks. A bounded
+structure plateaus; an unbounded one keeps growing with simulated time. It is
+slow (tens of times the normal run): keep the cell small.
 
 ## What to do with a finding
 
 A hot function or a growing table is a finding: open an issue in the
 protocol's repository with the cell's command, the `##PERF##` line and the
 profile excerpt (AntHocNet ADR-0013). A fix that should make the protocol
-cheaper is proven by paired `##PERF##` lines on the `optimized` image before
-and after, not by a profile.
+cheaper is shown by `##PERF##` lines on the `optimized` image before and after,
+not by a profile: CPU and wall times are noisy, so run each side several times
+on the same seeds and the same kind of runner, and compare the spread, not one
+pair. A deterministic count (`events`) moves only when the simulation itself
+does.
