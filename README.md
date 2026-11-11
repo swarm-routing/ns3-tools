@@ -31,6 +31,22 @@ How to work here, for people and AI agents alike: [AGENTS.md](AGENTS.md) has
 the rules and how to build and verify; the org conventions are in
 [CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md).
 
+<!-- org-sync:begin citing -->
+## Releases & citing
+
+Versions follow [SemVer](https://semver.org) ([CHANGELOG.md](CHANGELOG.md)). Each release is listed under [Releases](https://github.com/swarm-routing/ns3-tools/releases), built by the org's release workflow and archived on [Zenodo](https://zenodo.org) with its own DOI.
+
+To cite this repository, use the “Cite this repository” button (from [CITATION.cff](CITATION.cff)):
+
+| DOI | resolves to |
+|---|---|
+| [`10.5281/zenodo.24136068`](https://doi.org/10.5281/zenodo.24136068) | **concept DOI**: always the latest release. This is the badge above, and the right citation when you mean this project. |
+
+Each release also has its own **version DOI**, listed on [its Zenodo record](https://doi.org/10.5281/zenodo.24136068): cite that one when you reproduce a number measured at that release.
+
+Using it in your work? Contributions are welcome, and citing the DOI helps just as much.
+<!-- org-sync:end citing -->
+
 ## Epics
 
 <!-- epics:begin -->
