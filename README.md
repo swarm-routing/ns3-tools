@@ -24,6 +24,8 @@ Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 and statistics (`python/`), and, planned, non-intrusive probes, universal
 arenas and the `ns3-tool` CLI. **Status:** being populated (Phase 4).
 
+What each release must show, and what blocks what: [docs/roadmap.md](docs/roadmap.md).
+
 How to work here, for people and AI agents alike: [AGENTS.md](AGENTS.md) has
 the rules and how to build and verify; the org conventions are in
 [CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md).
