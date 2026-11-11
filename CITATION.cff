@@ -1,0 +1,26 @@
+# Citation File Format (https://citation-file-format.github.io), seeded by
+# swarm-routing/.github org-sync (`citation = true`); the repository's own once
+# written. Commitizen keeps `version:` in step (`.cz.toml` version_files
+# "CITATION.cff:^version:"); swarm-routing/.github tools/zenodo reads the
+# concept DOI from `doi:` once the first release is archived on Zenodo.
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "ns3-tools"
+abstract: >-
+  Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench
+  harness every protocol arm registers with, the readers and paired statistics
+  for its marker lines, and (planned) probes, universal arenas and the
+  ns3-tool CLI.
+type: software
+authors:
+  - family-names: Joppi
+    given-names: Daniel Henrique
+    orcid: "https://orcid.org/0009-0009-6436-8174"
+version: 0.0.0
+# Per directory (LICENSING.md): python/ tools/ MIT OR GPL-2.0-only, the rest
+# GPL-2.0-only. CFF takes a list of SPDX ids, not an expression.
+license:
+  - GPL-2.0-only
+  - MIT
+repository-code: "https://github.com/swarm-routing/ns3-tools"
+url: "https://github.com/swarm-routing/ns3-tools"
