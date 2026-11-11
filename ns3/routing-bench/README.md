@@ -1,6 +1,6 @@
 # routing-bench — the protocol-agnostic comparison harness module
 
-> **Moved from [`danieljoppi/AntHocNet`](https://github.com/danieljoppi/AntHocNet)
+> **Moved from [`swarm-routing/AntHocNet`](https://github.com/swarm-routing/AntHocNet)
 > `ns3/routing-bench/`** (swarm-routing/ns3-tools#2), unchanged: GPL-2.0-only,
 > as there. The module name stays `routing-bench`, so every arm module that
 > ships a `helper/<module>-bench-arms.cc` (AntHocNet's `anthocnet`, `aomdv`,
@@ -9,8 +9,8 @@
 
 `routing-bench` is the ns-3 module that will hold the comparison harness, so
 the harness builds without AntHocNet
-([ADR-0027](https://github.com/danieljoppi/AntHocNet/blob/main/docs/adr/0027-the-comparison-harness-is-protocol-agnostic.md),
-epic [#764](https://github.com/danieljoppi/AntHocNet/issues/764)). It links
+([ADR-0027](https://github.com/swarm-routing/AntHocNet/blob/main/docs/adr/0027-the-comparison-harness-is-protocol-agnostic.md),
+epic [#764](https://github.com/swarm-routing/AntHocNet/issues/764)). It links
 only stock ns-3 and names no protocol of its own. Arm modules depend on it;
 it depends on none of them.
 
@@ -92,4 +92,4 @@ The optional hooks, in the order the harness calls them, are documented in
 
 No published number may move: the byte-identical control on the committed
 cells is #769. The user guide is
-[comparison-harness.md](https://github.com/danieljoppi/AntHocNet/blob/main/docs/comparison-harness.md).
+[comparison-harness.md](https://github.com/swarm-routing/AntHocNet/blob/main/docs/comparison-harness.md).

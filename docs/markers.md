@@ -91,7 +91,7 @@ python3 python/ns3_tool/bench_parse.py --get maxrss_kb --from perf --proto olsr 
 
 `bench_parse.parse_perf()` returns each line as a dict (plus `events_per_s`).
 It also reads AntHocNet's older per-process form,
-`##PERF## <scenario> all <wall_s> <maxrss_kb>` (danieljoppi/AntHocNet#131,
+`##PERF## <scenario> all <wall_s> <maxrss_kb>` (swarm-routing/AntHocNet#131,
 written by its `run-scenarios.py` around one process that ran every arm): the
 arm is `all` and seed, CPU and events are absent. The two forms differ in field
 count (7 against 4), which is how the reader tells them apart.
