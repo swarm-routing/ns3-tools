@@ -70,11 +70,13 @@ ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and
 ```
 
 Releases (#26; `swarm-routing/.github` CONTRIBUTING "Cutting a release"):
-first make sure the `release` environment exists with the maintainer as
-required reviewer (`[settings] release_environment = true`, written when
-`swarm-routing/.github`'s `repo-settings` runs in `apply` mode), then
-dispatch `release.yml` with `dry-run`, then `bump`; merging the bot's
-`chore(release): bump version A to B` PR tags and publishes. `make dist`
+the `release` environment is ungated for now (`[settings]
+release_environment = false`, maintainer decision 2026-11-11, written when
+`swarm-routing/.github`'s `repo-settings` runs in `apply` mode; `true`
+would make the maintainer approve each publish). Dispatch `release.yml`
+with `dry-run`, then `bump`; merging the bot's
+`chore(release): bump version A to B` PR tags and publishes with no
+approval step. `make dist`
 builds the assets locally (`DIST_CHECK=0` skips the docker suite and the
 wheel check).
 
