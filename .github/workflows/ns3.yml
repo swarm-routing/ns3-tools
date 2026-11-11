@@ -53,7 +53,10 @@ jobs:
       format: false
       # Org invariant 5: seed 1 twice byte-identical, seed 2 different
       # (swarm-routing/.github#26). OLSR: the stock arm that delivers on `latest`.
-      determinism: routing-compare --scenario=paper --nNodes=20 --time=30 --runs=1 --protocols=olsr --firstRun={seed}
+      # --perf=0: ##PERF## is CPU and wall time, which differ run to run by
+      # nature (#91); the gate compares results. check-perf-markers.sh (the
+      # stock-arms job) proves ##PERF## is the only line --perf adds.
+      determinism: routing-compare --scenario=paper --nNodes=20 --time=30 --runs=1 --protocols=olsr --perf=0 --firstRun={seed}
       # routing-compare prints the seed (`firstRun=` in ##CONFIG##, the run index
       # after each marker tag); strip both before the cross-seed comparison, so
       # "seed 2 differs" has to come from the results (swarm-routing/.github#40).
@@ -126,3 +129,7 @@ jobs:
         run: ns3-build-contrib --test "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench"
       - name: Every listed arm delivers; an unknown arm aborts
         run: bash tools/checks/check-stock-arms.sh /opt/ns-3 "${{ matrix.arms }}"
+      - name: "One ##PERF## line per arm and seed, and no other byte moves (#91)"
+        if: matrix.version == 'latest'
+        timeout-minutes: 15
+        run: bash tools/checks/check-perf-markers.sh /opt/ns-3 "olsr dsdv"
