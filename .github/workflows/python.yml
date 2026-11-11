@@ -4,6 +4,7 @@ name: Python
 
 on:
   pull_request:
+  merge_group:  # the merge queue runs the required checks on each group (swarm-routing/.github#130)
   push:
     branches: [main]
 
