@@ -39,14 +39,18 @@ sha256sum -c SHA256SUMS --ignore-missing
 gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
   --signer-workflow swarm-routing/.github/.github/workflows/reusable-release.yml
 gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
-  --predicate-type https://cyclonedx.org/bom
+  --predicate-type https://cyclonedx.org/bom \
+  --signer-workflow swarm-routing/.github/.github/workflows/reusable-release.yml
+# offline: fetch the trusted root while online (gh attestation trusted-root > trusted_root.jsonl)
 gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools \
-  --bundle ns3-tools-X.Y.Z.sigstore.json   # offline
+  --bundle ns3-tools-X.Y.Z.sigstore.json --custom-trusted-root trusted_root.jsonl \
+  --signer-workflow swarm-routing/.github/.github/workflows/reusable-release.yml
 ```
 
 The same commands verify the wheel and the sdist. The signer is the org's
-reusable workflow; this repository is in the certificate's
-workflow-repository extension. Each release also publishes the image
+reusable workflow, not this repository, so every command names it with
+`--signer-workflow` (without it `gh` expects a workflow of `--repo`); this
+repository is in the certificate's workflow-repository extension. Each release also publishes the image
 `ghcr.io/swarm-routing/ns3-tools-ns3:vX.Y.Z-optimized` and `-debug`, the
 harness built on a pinned `ns3-dev` digest, signed with cosign (keyless):
 see `swarm-routing/.github` `reusable-ns3-image.yml` for its verify commands."""
