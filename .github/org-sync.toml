@@ -1,11 +1,14 @@
 # org-sync configuration (swarm-routing/.github tools/org-sync).
 kind = "protocol"
+# CITATION.cff seed and cite badge. Once Zenodo archives a release: set zenodo_concept = "<record id>"
+# (read from Zenodo), then `org_sync.py reseed CITATION.cff` so CITATION.cff names the DOI.
+citation = true
 title = "ns3-tools"
 module = "routing-bench"
 dual = ["python/", "tools/"]
 ci_workflow = "ns3.yml"
 python = "3.11"
-badges = ["ci", "licence", "conventional", "arena", "cxx", "ns3", "ns3dev", "python", "sonar", "codecov", "coderabbit"]
+badges = ["ci", "release", "doi", "cite", "licence", "conventional", "arena", "cxx", "ns3", "ns3dev", "python", "sonar", "codecov", "coderabbit"]
 trust_boundary = """
 The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
 lines and campaign CSVs (`python/ns3_tool/`). Their input is log output that

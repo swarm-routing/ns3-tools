@@ -12,4 +12,4 @@ tag_format = "v$version"
 major_version_zero = true
 update_changelog_on_bump = true
 # Matched per line, so only the [project] version changes.
-version_files = ["python/pyproject.toml:^version = "]
+version_files = ["CITATION.cff:^version:", "python/pyproject.toml:^version = "]
