@@ -22,6 +22,8 @@ ns3/routing-bench/  the comparison harness module `routing-bench` (moved from An
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6) — MIT OR GPL-2.0-only
+tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
+.cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
@@ -67,6 +69,15 @@ pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
 
+Releases (#26; `swarm-routing/.github` CONTRIBUTING "Cutting a release"):
+first make sure the `release` environment exists with the maintainer as
+required reviewer (`[settings] release_environment = true`, written when
+`swarm-routing/.github`'s `repo-settings` runs in `apply` mode), then
+dispatch `release.yml` with `dry-run`, then `bump`; merging the bot's
+`chore(release): bump version A to B` PR tags and publishes. `make dist`
+builds the assets locally (`DIST_CHECK=0` skips the docker suite and the
+wheel check).
+
 A reader change must keep its output byte-identical on the fixtures unless the
 change is the point (then say so in the PR and update AntHocNet's callers).
 
@@ -90,8 +101,9 @@ Org-wide (1–9), then this repo's own.
    parts; dual code never pulls GPL-only code in: a `core/` file includes only
    the C++ standard library, other `core/` files and the dual-licensed `core/`
    of a dependency pinned by commit and declared in the repo's `licence.yml`
-   `core-deps` (a protocol's `core/` on swarm-core's; CI checks it,
-   `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
+   `core-deps`, with `core-roots` naming the repo's own `core/` (without it
+   the check skips core includes; a protocol's `core/` on swarm-core's; CI
+   checks it, `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
    licence: its `core/`/`tools/` (dual) may land in dual or GPL paths here; its
    `ns3/` modules and `web/` (GPL-2.0-only) only in GPL paths. Third-party code
    (AntHocNet's vendored `aomdv`/`gpsr`, IITP RAS) lands only in GPL paths with
@@ -116,7 +128,8 @@ Org-wide (1–9), then this repo's own.
    carry a configured cap).
 8. **CI hygiene.** Actions pinned by full commit SHA with a `# vX.Y.Z` comment;
    buildx caches scoped per profile; transient artifacts `retention-days` <= 7.
-   Every job has a `timeout-minutes` cap, and every apt, npm or installer step
+   Every job that runs steps has a `timeout-minutes` cap (a job that only
+   calls a reusable workflow cannot take one: the called workflow's jobs carry it), and every apt, npm or installer step
    its own, sized from recent green runs; `apt-get update` runs with
    `--error-on=any` inside a shell retry. Ubuntu mirror outages are the usual
    cause of a red run.
