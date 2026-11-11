@@ -3071,6 +3071,8 @@ Result RunOne(const std::string& proto, const Params& P, uint32_t seed) {
     arm->EmitDiagnostics(run, measurement, r.nrl, std::cout);
     arm->Check(run, measurement);
 
+    // ns3-tools#91: read before Destroy, which resets the count.
+    r.events = Simulator::GetEventCount();
     Simulator::Destroy();
     return r;
 }
