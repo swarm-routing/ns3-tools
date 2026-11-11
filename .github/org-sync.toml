@@ -67,8 +67,10 @@ description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the ro
 homepage = "https://swarm-routing.github.io/arena/ns3-tools/"
 topics = ["ns-3", "benchmarking", "routing-protocol", "manet", "network-simulation", "statistics", "reproducibility", "aodv", "olsr"]
 ruleset = "tooling"
-# The publish job of release.yml waits for the maintainer (CONTRIBUTING "Cutting a release").
-release_environment = true
+# Off for now (maintainer decision 2026-11-11): `false` strips the `release` environment's
+# required reviewer and wait timer, so release.yml's publish job no longer waits for an
+# approval. `true` turns the gate back on (swarm-routing/.github CONTRIBUTING "Automation").
+release_environment = false
 # Not `stock arms deliver (...)`: their names carry the temporary ns-3.48 pin
 # (ns3-containers#35) and change when it moves. Not `module / format` (skipped until
 # formatting is checked).
