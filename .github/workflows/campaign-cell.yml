@@ -43,6 +43,7 @@ jobs:
     steps:
       - name: Harden the runner (audit egress)
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        timeout-minutes: 2  # its download and start take seconds (swarm-routing/.github#164)
         with:
           egress-policy: audit
       - name: Check the inputs

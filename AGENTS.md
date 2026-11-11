@@ -21,12 +21,14 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
-tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6) — MIT OR GPL-2.0-only
+tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91) — MIT OR GPL-2.0-only
+tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
+.cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
-docs/               marker-line contract, arena reference
+docs/               markers.md (the marker-line contract, ##PERF## included, #91), profiling.md (perf / heaptrack / massif on one cell); arena reference (planned)
 ```
 
 ## Build & verify
@@ -67,6 +69,15 @@ pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
 
+Releases (#26; `swarm-routing/.github` CONTRIBUTING "Cutting a release"):
+first make sure the `release` environment exists with the maintainer as
+required reviewer (`[settings] release_environment = true`, written when
+`swarm-routing/.github`'s `repo-settings` runs in `apply` mode), then
+dispatch `release.yml` with `dry-run`, then `bump`; merging the bot's
+`chore(release): bump version A to B` PR tags and publishes. `make dist`
+builds the assets locally (`DIST_CHECK=0` skips the docker suite and the
+wheel check).
+
 A reader change must keep its output byte-identical on the fixtures unless the
 change is the point (then say so in the PR and update AntHocNet's callers).
 
@@ -83,16 +94,21 @@ Org-wide (1–9), then this repo's own.
    `.h`/`.hpp`/`.cc`/`.cpp`/`.py`/`.sh` starts with
    `// Copyright (c) 2026 Daniel Joppi (https://github.com/swarm-routing)` +
    `// SPDX-License-Identifier: <MIT OR GPL-2.0-only | GPL-2.0-only>` (`#`
-   comments where needed), matching its directory in `LICENSING.md`. CI
-   (`reusable-licence-check.yml`) checks it. A new directory gets its row in
-   `LICENSING.md` in the same PR.
+   comments where needed), matching its directory in `LICENSING.md`; an
+   outside contributor may add their own `Copyright (c) <year> <Name>` line
+   beneath the org line, never replace it, and signs off every commit (DCO,
+   CONTRIBUTING "Outside contributions"). CI (`reusable-licence-check.yml`)
+   checks it. A new directory gets its row in `LICENSING.md` in the same PR.
 2. **The licence boundary only goes one way.** GPL code may use the dual
    parts; dual code never pulls GPL-only code in: a `core/` file includes only
    the C++ standard library, other `core/` files and the dual-licensed `core/`
-   of a dependency pinned by commit and declared in the repo's `licence.yml`
-   `core-deps`, with `core-roots` naming the repo's own `core/` (without it
-   the check skips core includes; a protocol's `core/` on swarm-core's; CI
-   checks it, `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
+   of a dependency pinned by commit and declared as the `core-deps` input of
+   every workflow that runs the licence check (one calling
+   `reusable-licence-check.yml`, or one calling `reusable-ns3-ci.yml`, which
+   forwards it; workflow file names differ per repo), each with the same pin,
+   with `core-roots` naming the repo's own `core/`
+   (without it the check skips core includes; a protocol's `core/` on
+   swarm-core's; CI checks it, `check-headers.py --core-dep`), and a dual script imports no GPL-only code. Code coming from AntHocNet keeps its
    licence: its `core/`/`tools/` (dual) may land in dual or GPL paths here; its
    `ns3/` modules and `web/` (GPL-2.0-only) only in GPL paths. Third-party code
    (AntHocNet's vendored `aomdv`/`gpsr`, IITP RAS) lands only in GPL paths with
@@ -186,8 +202,8 @@ Org-wide (1–9), then this repo's own.
   and open PRs; a release is the bump PR from `bot/release`, tagged after it
   merges (CONTRIBUTING "Cutting a release").
 - When a PR falls behind `main`, update it
-  (`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/update-branch`) and merge PRs
-  one at a time, each after its CI on the updated branch. Never force-push a
+  (`gh api -X PUT "repos/<owner>/<repo>/pulls/<n>/update-branch"`, with
+  `<owner>/<repo>` the PR's base repository and `<n>` its number) and merge PRs one at a time, each after its CI on the updated branch. Never force-push a
   branch someone else pushed. A behind `bot/release` PR is the exception:
   dispatch the release `bump` again, so the version and changelog are rebuilt
   on the new `main`.

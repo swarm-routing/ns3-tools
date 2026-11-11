@@ -54,7 +54,10 @@ pdr_pct/delay_ms/delay99_ms/throughput_kbps) or ``paths`` (a ``key=value`` on
 the ``# paths <proto>`` line). The value prints exactly as the harness wrote
 it. When a protocol appears more than once, the last row wins, as the awk it
 replaces did. A missing value prints nothing and exits 0, so a gate under
-``set -e`` still reaches its own "no result" message.
+``set -e`` still reaches its own "no result" message. ``perf`` (ns3-tools#91)
+reads a ``##PERF##`` field by name (PERF_FIELDS: scenario seed cpu_s wall_s
+events maxrss_kb; ``--get row`` prints each of the arm's lines without the
+arm), the per-process ``all`` form included (``--proto all``).
 
 Column-mapping self-check (#293): ``##RUN##`` fields are positional, so a
 mis-ordered mapping produces a plausible table with delay where jitter should
@@ -94,9 +97,20 @@ RUN_METRICS = ["pdr", "delay", "delay99", "thrput", "nrl", "jitter", "off50", "o
 # The harness's independent dispersion line (#28):
 # "# stddev <proto> pdr=.. delay=.. delay99=.. nrl=.. nrl_bytes=.."
 STDDEV = re.compile(r"^#\s+stddev\s+([A-Za-z][\w-]*)\s+(.+)$")
-# Sim-cost line (#131): "##PERF## <scenario> all <wall_s> <maxrss_kb>" —
-# passed through verbatim so cost shows up next to the quality rows.
+# Sim-cost line, passed through verbatim so cost shows up next to the quality
+# rows. Two forms (docs/markers.md):
+#   routing-bench (ns3-tools#91), one per arm and seed:
+#     "##PERF## <scenario> <arm> <seed> <cpu_s> <wall_s> <events> <maxrss_kb>"
+#     (maxrss_kb is "-" when the process ran more than one arm)
+#   AntHocNet's run-scenarios.py (AntHocNet#131), one per process:
+#     "##PERF## <scenario> all <wall_s> <maxrss_kb>"
+# Cost, never a result: it is wall-clock-dependent, so no comparison of
+# results reads it.
 PERF = re.compile(r"##PERF##.*")
+PERF_FIELDS = ["scenario", "arm", "seed", "cpu_s", "wall_s", "events", "maxrss_kb"]
+PERF_FIELDS_PROCESS = ["scenario", "arm", "wall_s", "maxrss_kb"]
+PERF_FORMS = {len(PERF_FIELDS): PERF_FIELDS, len(PERF_FIELDS_PROCESS): PERF_FIELDS_PROCESS}
+PERF_LINE = re.compile(r"^\s*##PERF##\s+(.+?)\s*$")
 
 # Printed-precision half-ulps for the mapping check tolerance: the ##RUN##
 # rows and the '# stddev' line round differently (routing-bench-harness.cc
@@ -148,6 +162,41 @@ def parse_cell(text):
             continue
         if len(vals) == 5:
             rows[proto] = dict(zip(METRICS, vals))
+    return rows
+
+
+def _perf_value(field, tok):
+    """A ##PERF## token as a number ("-", or a token that is not one, -> None)."""
+    if field in ("scenario", "arm"):
+        return tok
+    try:
+        return int(tok) if field in ("seed", "events", "maxrss_kb") else float(tok)
+    except ValueError:
+        return None
+
+
+def parse_perf(text):
+    """Return the ##PERF## lines as dicts, in order (ns3-tools#91).
+
+    Every dict has all of PERF_FIELDS plus ``events_per_s`` (events / wall_s);
+    a field the line's form does not carry, or prints as "-", is None. The
+    per-process form (AntHocNet's ``all``, four fields) has no seed, CPU or
+    events. A line of any other length is skipped.
+    """
+    rows = []
+    for line in text.splitlines():
+        m = PERF_LINE.match(line)
+        if not m:
+            continue
+        toks = m.group(1).split()
+        names = PERF_FORMS.get(len(toks))
+        if not names:
+            continue
+        row = dict.fromkeys(PERF_FIELDS)
+        row.update({k: _perf_value(k, t) for k, t in zip(names, toks)})
+        wall, events = row["wall_s"], row["events"]
+        row["events_per_s"] = events / wall if events is not None and wall else None
+        rows.append(row)
     return rows
 
 
@@ -506,6 +555,20 @@ def query(text, proto, field, source):
                 value = d.get(name, "")
                 found = [value] if value != "" else []
         return found
+    if source == "perf":
+        for line in text.splitlines():
+            m = PERF_LINE.match(line)
+            if not m:
+                continue
+            toks = m.group(1).split()
+            names = PERF_FORMS.get(len(toks))
+            if not names or toks[1] != proto:
+                continue
+            if field == "row":
+                found.append(" ".join([toks[0]] + toks[2:]))
+            else:
+                found = [toks[names.index(field)]] if field in names else []
+        return found
     if source == "paths":
         for line in text.splitlines():
             m = PATHS.match(line.strip())
@@ -537,13 +600,13 @@ def main():
         metavar="FIELD",
         help="print one field of --proto's result (#791): a "
         "##RUN## / table / csv metric, a '# paths' key, or "
-        "'row' (whole ##RUN## rows)",
+        "'row' (whole ##RUN## or ##PERF## rows), or a ##PERF## field",
     )
     ap.add_argument(
         "--from",
         dest="source",
         default="run",
-        choices=["run", "table", "csv", "paths"],
+        choices=["run", "table", "csv", "paths", "perf"],
         help="where --get reads from (default: run)",
     )
     args = ap.parse_args()
