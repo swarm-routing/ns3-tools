@@ -21,14 +21,14 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
-tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6) — MIT OR GPL-2.0-only
+tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91) — MIT OR GPL-2.0-only
 tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
 .cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
 python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
-docs/               marker-line contract, arena reference
+docs/               markers.md (the marker-line contract, ##PERF## included, #91), profiling.md (perf / heaptrack / massif on one cell); arena reference (planned)
 ```
 
 ## Build & verify

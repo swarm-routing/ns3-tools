@@ -200,7 +200,9 @@ struct Result {
     double pathChg = 0.0;        // fraction of consecutive delivered pairs whose path differs
     double pathLifeMedS = -1.0;  // median completed path lifetime (s); -1 = none completed
     uint64_t pathLifeN = 0;      // completed (uncensored) path runs
-    double pathHopsMean = 0.0;   // mean path length over first deliveries
+    double pathHopsMean = 0.0;   // mean path length over first deliveries    // ns3-tools#91: events the simulator executed in this run, for ##PERF##
+    // (cost, never a result: it does not reach ##RUN##/##BENCH##/##DIAG##).
+    uint64_t events = 0;
 };
 
 /// One run of `proto` on seed `seed`: build the world, run it, measure it.

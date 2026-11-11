@@ -6,7 +6,7 @@ Readers and paired statistics for the comparison harness's marker lines
 
 | Module / command | What it does |
 |---|---|
-| `bench_parse` / `ns3-bench-parse` | parse a cell, per-seed 95% CIs, A/B deltas with the paired verdict (CI + Wilcoxon) |
+| `bench_parse` / `ns3-bench-parse` | parse a cell, per-seed 95% CIs, A/B deltas with the paired verdict (CI + Wilcoxon); `--get FIELD --from perf` reads a `##PERF##` cost field (#91, `docs/markers.md`) |
 | `stats_util` | the shared statistics (t half-widths, bootstrap, Wilcoxon signed-rank) |
 | `native_view` / `ns3-native-view` | each family cell against its native baselines and the oracle bound |
 | `comparator_view` / `ns3-comparator-view` | comparator arms against their anchors and a control generation |

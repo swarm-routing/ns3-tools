@@ -86,7 +86,10 @@
 // arm that brings mesh devices.
 #include "ns3/mesh-module.h"
 
+#include <sys/resource.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -119,11 +122,32 @@ std::vector<Ptr<bench::Arm>> ListedArms(const std::string& protocols) {
     return arms;
 }
 
+// ns3-tools#91: the process's cost so far, read around each run for ##PERF##.
+// CPU is user + system time (getrusage), wall is a steady clock; maxrss is the
+// process's peak resident set (kB on Linux), so it is one arm's only when the
+// process runs one arm. None of it reaches ##RUN##/##BENCH##/##DIAG## (org
+// rule 5): it is wall-clock-dependent by nature.
+struct PerfMark {
+    double cpuS;
+    double wallS;
+    long maxrssKb;
+};
+
+PerfMark PerfNow() {
+    rusage ru{};
+    getrusage(RUSAGE_SELF, &ru);
+    const auto tv = [](const timeval& t) { return t.tv_sec + t.tv_usec / 1e6; };
+    const double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    return {tv(ru.ru_utime) + tv(ru.ru_stime), wall, ru.ru_maxrss};
+}
+
 }  // namespace
 
 int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
     // Sentinels (<0 / 0) mean "unset" so a preset or the legacy defaults fill in.
     std::string scenario;
+    bool perf = true;  // ns3-tools#91: ##PERF## per arm and seed
     int32_t nNodes = 0;
     double simTime = -1, area = -1, areaX = -1, areaY = -1, areaZ = -1;
     double speed = -1, speedMin = -1, pause = -1, range = -1, cbrBps = -1;
@@ -222,6 +246,11 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                  "distribution (meanQ/maxQ/pctNonzero) — does A2 have a "
                  "signal? (#73)",
                  g_qdiag);
+    cmd.AddValue("perf",
+                 "Emit a '##PERF## <scenario> <arm> <seed> <cpu_s> <wall_s> <events> "
+                 "<maxrss_kb>' line per arm and seed (ns3-tools#91): what the run cost, "
+                 "never a result; maxrss is '-' when the process runs more than one arm",
+                 perf);
     std::string mobilityModel;  // "" = preset default: gaussmarkov for fanet, else rwp
     std::string transport = "udp";
     std::string propagation;  // "" = preset default: urban for vanet, else range
@@ -842,7 +871,9 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
     std::vector<std::vector<MatchCell>> matchGrid(list.size(), std::vector<MatchCell>(runs));
     for (std::size_t i = 0; i < list.size(); ++i) {
         for (uint32_t s = firstRun; s < firstRun + runs; ++s) {
+            const PerfMark perf0 = PerfNow();
             Result r = RunOne(list[i], P, s);
+            const PerfMark perf1 = PerfNow();
             MatchCell& mc = matchGrid[i][s - firstRun];
             mc.hist = r.delayHist;
             mc.binWidth = r.delayBinWidth;
@@ -938,6 +969,21 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                           << r.pathChg << ' ' << std::setprecision(3) << r.pathLifeMedS << ' '
                           << r.pathLifeN << ' ' << std::setprecision(4) << r.pathHopsMean << ' '
                           << std::setprecision(4) << r.hopsMean << "\n";
+            }
+            // ns3-tools#91: what this (arm, seed) run cost. Last of the run's
+            // per-seed lines; readers and the determinism checks drop it, as
+            // they drop ##PROV## (docs/markers.md). maxrss is a process-lifetime
+            // peak, so it is printed only when this process runs a single arm.
+            if (perf) {
+                std::cout << std::fixed << "##PERF## " << (scenario.empty() ? "-" : scenario)
+                          << ' ' << list[i] << ' ' << s << ' ' << std::setprecision(3)
+                          << perf1.cpuS - perf0.cpuS << ' ' << std::setprecision(3)
+                          << perf1.wallS - perf0.wallS << ' ' << r.events << ' ';
+                if (list.size() == 1)
+                    std::cout << perf1.maxrssKb;
+                else
+                    std::cout << '-';
+                std::cout << "\n";
             }
             agg[i].pdr += r.pdr;
             agg[i].delay += r.meanDelayMs;
