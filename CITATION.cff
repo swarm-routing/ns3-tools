@@ -16,8 +16,13 @@ authors:
   - family-names: Joppi
     given-names: Daniel Henrique
     orcid: "https://orcid.org/0009-0009-6436-8174"
-version: "0.0.0"
+version: "0.1.0"
 # The work as a whole; python/ tools/ also MIT OR GPL-2.0-only (LICENSING.md).
 license: GPL-2.0-only
 repository-code: "https://github.com/swarm-routing/ns3-tools"
 url: "https://github.com/swarm-routing/ns3-tools"
+doi: "10.5281/zenodo.24136068"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.24136068"
+    description: "Concept DOI: always resolves to the latest released version."
