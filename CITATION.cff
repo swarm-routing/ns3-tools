@@ -1,5 +1,6 @@
 # Citation File Format (https://citation-file-format.github.io), seeded by
-# swarm-routing/.github org-sync (`citation = true`); the repository's own once
+# swarm-routing/.github org-sync (`citation = true`; `citation_type` and
+# `[[references]]` in .github/org-sync.toml); the repository's own once
 # written. Commitizen keeps `version:` in step (`.cz.toml` version_files
 # "CITATION.cff:^version:"); swarm-routing/.github tools/zenodo reads the
 # concept DOI from `doi:` once the first release is archived on Zenodo.
@@ -26,3 +27,29 @@ identifiers:
   - type: doi
     value: "10.5281/zenodo.24136068"
     description: "Concept DOI: always resolves to the latest released version."
+references:
+  - type: software
+    title: "AntHocNet for NS-3"
+    authors:
+      - family-names: "Joppi"
+        given-names: "Daniel Henrique"
+    year: 2026
+    publisher:
+      name: "Zenodo"
+    doi: "10.5281/zenodo.20981979"
+    notes: "The source of the routing-bench harness and the ns3-tool readers, moved from it."
+  - type: book
+    title: "The ns-3 Network Simulator"
+    authors:
+      - family-names: "Riley"
+        given-names: "George F."
+      - family-names: "Henderson"
+        given-names: "Thomas R."
+    collection-title: "Modeling and Tools for Network Simulation"
+    start: "15"
+    end: "34"
+    year: 2010
+    publisher:
+      name: "Springer Berlin Heidelberg"
+    doi: "10.1007/978-3-642-12331-3_2"
+    notes: "ns-3, the simulator the harness, probes and arenas run on."

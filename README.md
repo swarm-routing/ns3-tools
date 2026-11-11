@@ -31,6 +31,27 @@ How to work here, for people and AI agents alike: [AGENTS.md](AGENTS.md) has
 the rules and how to build and verify; the org conventions are in
 [CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md).
 
+<!-- org-sync:begin citing -->
+## Releases & citing
+
+Versions follow [SemVer](https://semver.org) ([CHANGELOG.md](CHANGELOG.md)). Each release is listed under [Releases](https://github.com/swarm-routing/ns3-tools/releases), built by the org's release workflow and archived on [Zenodo](https://zenodo.org) with its own DOI.
+
+To cite this repository, use the “Cite this repository” button (from [CITATION.cff](CITATION.cff)):
+
+| DOI | resolves to |
+|---|---|
+| [`10.5281/zenodo.24136068`](https://doi.org/10.5281/zenodo.24136068) | **concept DOI**: always the latest release. This is the badge above, and the right citation when you mean this project. |
+
+Each release also has its own **version DOI**, listed on [its Zenodo record](https://doi.org/10.5281/zenodo.24136068): cite that one when you reproduce a number measured at that release.
+
+Please also cite the work it builds on:
+
+- D. H. Joppi, *AntHocNet for NS-3*, 2026, [doi:10.5281/zenodo.20981979](https://doi.org/10.5281/zenodo.20981979). The source of the routing-bench harness and the ns3-tool readers, moved from it.
+- G. F. Riley, T. R. Henderson, *The ns-3 Network Simulator*, Modeling and Tools for Network Simulation, pp. 15–34, 2010, [doi:10.1007/978-3-642-12331-3_2](https://doi.org/10.1007/978-3-642-12331-3_2). ns-3, the simulator the harness, probes and arenas run on.
+
+Using it in your work? Contributions are welcome, and citing the DOI helps just as much.
+<!-- org-sync:end citing -->
+
 ## Epics
 
 <!-- epics:begin -->
