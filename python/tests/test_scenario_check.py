@@ -2136,6 +2136,71 @@ def _oracle_refusals_below_precision():
     )
 
 
+# A campaign cell collected from two seed blocks (AntHocNet's grid-gaussmarkov-
+# nakagami-g460, swarm-routing/AntHocNet#933) holds one summary table, and so
+# one `# drops` row, per block. Seed 1's 63 origin refusals are in block 1 and
+# its row books them (route=0.04); block 2 had none and its row reads 0.00
+# honestly. The gate must hold each block's refusals against that block's own
+# row (swarm-routing/AntHocNet#935).
+TWO_BLOCK_REFUSAL_CELL = """\
+##CONFIG## scenario=paper nNodes=50 time=900 runs=1 firstRun=1 propagation=nakagami protocols=oracle
+##ORACLE## 1 oracle mode=disk approx=0 nodes=50 edges=954 recomputes=900 changes=900 range=300.0 noRoute=63 noRouteOrigin=63 noRouteFwd=0 nrl=0.00
+##RUN## 1 oracle 94.56 3.2 7.5 38.69 0.00 0.32 2.5 inf 0.0000
+##MATCH## 1 oracle 16400 16400 7.5 7.5
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          94.6        3.2          7.5        38.69    0.00        0.32         2.5         inf       0.000
+# drops oracle pdr=94.56 route=@ROUTE1@ queue=0.00 mac=0.40 chan=5.00 ttl=0.00 sum=100.00 other=0.00 [route: setup=- reconv=- repair=-]
+##CONFIG## scenario=paper nNodes=50 time=900 runs=1 firstRun=2 propagation=nakagami protocols=oracle
+##ORACLE## 2 oracle mode=disk approx=0 nodes=50 edges=962 recomputes=900 changes=900 range=300.0 noRoute=0 noRouteOrigin=0 noRouteFwd=0 nrl=0.00
+##RUN## 2 oracle 94.80 3.2 7.5 38.69 0.00 0.32 2.5 inf 0.0000
+##MATCH## 2 oracle 16500 16500 7.5 7.5
+
+protocol        PDR%  delay(ms)  delay99(ms) thrput(kbps)     NRL  jitter(ms)  dOff50(ms)  dOff90(ms)    nrlBytes
+oracle          94.8        3.2          7.5        38.69    0.00        0.32         2.5         inf       0.000
+# drops oracle pdr=94.80 route=@ROUTE2@ queue=0.00 mac=0.40 chan=4.80 ttl=0.00 sum=100.00 other=0.00 [route: setup=- reconv=- repair=-]
+"""
+
+
+@case("#464 a two-block cell checks each block's refusals against its own drop row")
+def _oracle_refusals_two_blocks():
+    def cell(route1, route2):
+        return TWO_BLOCK_REFUSAL_CELL.replace("@ROUTE1@", route1).replace("@ROUTE2@", route2)
+
+    # Booked in their block, none in the other: quiet (AntHocNet#933's false FAIL).
+    _levels, out = run_cell(cell("0.04", "0.00"))
+    expect(
+        "route column reads" not in out,
+        "oracle-refusals-two-blocks-quiet",
+        f"block 2's 0.00 row was held against block 1's refusals\n{out}",
+    )
+    # Unbooked in their own block: still a FAIL, naming that block and its count.
+    _levels, out = run_cell(cell("0.00", "0.04"))
+    expect(
+        "route column reads" in out and "block1" in out and "63 failed" in out,
+        "oracle-refusals-two-blocks-fires",
+        f"block 1's unbooked refusals were not flagged per block\n{out}",
+    )
+
+
+@case("#521 a two-block cell takes the print-precision share per block")
+def _oracle_refusals_two_blocks_precision():
+    # One refusal over block 1's ~17.3k offered (0.0058 %) would print as
+    # 0.01, so block 1's 0.00 row must FAIL; over both blocks' ~34.7k it is
+    # 0.0029 % and would not print, which a file-wide share would let pass.
+    cell = (
+        TWO_BLOCK_REFUSAL_CELL.replace("noRoute=63 noRouteOrigin=63", "noRoute=1 noRouteOrigin=1")
+        .replace("@ROUTE1@", "0.00")
+        .replace("@ROUTE2@", "0.00")
+    )
+    _levels, out = run_cell(cell)
+    expect(
+        "route column reads" in out and "block1" in out,
+        "oracle-refusals-two-blocks-precision",
+        f"a share printable in its own block was diluted by the other\n{out}",
+    )
+
+
 @case("#464 a split that does not sum to the total FAILs")
 def _oracle_refusal_split_broken():
     line = ORACLE_LINE_OK.replace(
