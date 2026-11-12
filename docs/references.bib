@@ -1,0 +1,54 @@
+% docs/references.bib: the works this repository relies on, one entry each
+% (swarm-routing/.github CONTRIBUTING "References"; checked in CI by
+% `fidelity.py bib check` once the file has an entry).
+%
+% Roles, in `keywords`: implemented (the work this repository implements),
+% restates, compared, dataset, tool, background. The implemented, tool and
+% dataset entries are rendered into CITATION.cff `references:` and the README's
+% "Releases & citing" section by org-sync: edit them here, never there.
+%
+% Every entry gives its DOI; a url only for a work that has none. Never this
+% repository's own DOI: CITATION.cff carries it. Public sources only: a work is
+% cited by its DOI link, never by where a copy of it is kept.
+%
+% Never type an entry or a field: take it from Crossref or Zenodo,
+%   python3 -I tools/fidelity/fidelity.py bib entry DOI --key K --role R
+%   python3 -I tools/zenodo/zenodo.py bibtex OWNER/REPO --key K --role tool
+% (both in swarm-routing/.github). With nothing to cite yet, the file stays
+% this header alone.
+
+@software{AHN,
+  author = {Joppi, Daniel Henrique},
+  title = {AntHocNet for NS-3},
+  year = {2026},
+  publisher = {Zenodo},
+  version = {v2.6.1},
+  doi = {10.5281/zenodo.20981979},
+  url = {https://github.com/swarm-routing/AntHocNet},
+  note = {The source of the routing-bench harness and the ns3-tool readers, moved from it.},
+  keywords = {tool}
+}
+
+@incollection{RH10,
+  author    = {Riley, George F. and Henderson, Thomas R.},
+  title     = {The ns-3 Network Simulator},
+  booktitle = {Modeling and Tools for Network Simulation},
+  pages     = {15--34},
+  publisher = {Springer Berlin Heidelberg},
+  year      = {2010},
+  doi       = {10.1007/978-3-642-12331-3_2},
+  note      = {ns-3, the simulator the harness, probes and arenas run on.},
+  keywords  = {tool}
+}
+
+@inproceedings{ZP24,
+  author    = {Zhao, Jinwei and Pan, Jianping},
+  title     = {LENS: A LEO Satellite Network Measurement Dataset},
+  booktitle = {Proceedings of the 15th ACM Multimedia Systems Conference},
+  pages     = {278--284},
+  publisher = {ACM},
+  year      = {2024},
+  doi       = {10.1145/3625468.3652170},
+  note      = {The Starlink measurements python/tests/fixtures/cells/lens-bruhl-20261006.txt derives its statistics from (dataset CC BY-SA 4.0; the traces are not redistributed).},
+  keywords  = {dataset}
+}
