@@ -76,7 +76,7 @@ release_environment = false
 # Not `stock arms deliver (...)`: their names carry the temporary ns-3.48 pin
 # (ns3-containers#35) and change when it moves. Not `module / format` (skipped until
 # formatting is checked).
-required_checks = ["module / ns-latest debug", "module / ns-latest sanitized", "module / headers / licence", "python-quality / python", "ns3-tool tests (Python 3.11)", "ns3-tool tests (Python 3.13)", "query equivalence on AntHocNet's committed cells", "check / org-sync", "title / title"]
+required_checks = ["module / ns-latest debug", "module / ns-latest sanitized", "module / headers / licence", "python-quality / python", "ns3-tool tests (Python 3.11)", "ns3-tool tests (Python 3.13)", "query equivalence on AntHocNet's committed cells", "check / org-sync", "title / title", "review / coderabbit"]
 # Merge through a merge queue (swarm-routing/.github#130); every workflow behind a required
 # check also runs on merge_group.
 merge_queue = true
