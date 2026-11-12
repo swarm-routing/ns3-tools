@@ -2183,6 +2183,24 @@ def _oracle_refusals_two_blocks():
     )
 
 
+@case("#521 a two-block cell takes the print-precision share per block")
+def _oracle_refusals_two_blocks_precision():
+    # One refusal over block 1's ~17.3k offered (0.0058 %) would print as
+    # 0.01, so block 1's 0.00 row must FAIL; over both blocks' ~34.7k it is
+    # 0.0029 % and would not print, which a file-wide share would let pass.
+    cell = (
+        TWO_BLOCK_REFUSAL_CELL.replace("noRoute=63 noRouteOrigin=63", "noRoute=1 noRouteOrigin=1")
+        .replace("@ROUTE1@", "0.00")
+        .replace("@ROUTE2@", "0.00")
+    )
+    _levels, out = run_cell(cell)
+    expect(
+        "route column reads" in out and "block1" in out,
+        "oracle-refusals-two-blocks-precision",
+        f"a share printable in its own block was diluted by the other\n{out}",
+    )
+
+
 @case("#464 a split that does not sum to the total FAILs")
 def _oracle_refusal_split_broken():
     line = ORACLE_LINE_OK.replace(
