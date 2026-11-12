@@ -80,27 +80,3 @@ required_checks = ["module / ns-latest debug", "module / ns-latest sanitized", "
 # Merge through a merge queue (swarm-routing/.github#130); every workflow behind a required
 # check also runs on merge_group.
 merge_queue = true
-
-# The work this repository implements or builds on: the README's Releases &
-# citing list and CITATION.cff's references (swarm-routing/.github org-sync,
-# #228). Every DOI confirmed with lit_search.py confirm; fields from Crossref.
-
-[[references]]
-type = "software"
-title = "AntHocNet for NS-3"
-authors = ["Joppi, Daniel Henrique"]
-year = 2026
-publisher = "Zenodo"
-doi = "10.5281/zenodo.20981979"
-role = "The source of the routing-bench harness and the ns3-tool readers, moved from it."
-
-[[references]]
-type = "book"
-title = "The ns-3 Network Simulator"
-authors = ["Riley, George F.", "Henderson, Thomas R."]
-year = 2010
-venue = "Modeling and Tools for Network Simulation"
-pages = "15-34"
-publisher = "Springer Berlin Heidelberg"
-doi = "10.1007/978-3-642-12331-3_2"
-role = "ns-3, the simulator the harness, probes and arenas run on."
