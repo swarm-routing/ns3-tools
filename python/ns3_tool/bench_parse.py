@@ -48,7 +48,8 @@ of the same cell seed by seed (FILES: that cell's runs, its seed blocks) and
 prints the paired-difference 95% CI and Wilcoxon p of P - BASE, with the
 paired verdict (PAIRED-IMPROVED / -WORSE / -MIXED / -NOISE, P's view). It is
 an anchor's read, where a comparator and a baseline run in one invocation on
-the same seeds; ``ns3-campaign verdicts`` pairs arms, not protocols.
+the same seeds; ``ns3-campaign verdicts`` gives the same read for a change plan
+with ``reference:`` (#152), over every cell of the plan.
 
 Field query (#791): ``--get FIELD --from SOURCE --proto P FILE|-`` prints one
 field of one protocol's result, so the CI gates in tools/checks/ read the

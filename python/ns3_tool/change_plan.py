@@ -73,6 +73,25 @@ file of the same cell, for every protocol P the cell's command line names, and
 prints one line per (arm, cell, protocol): byte for byte AntHocNet's output on
 the same files.
 
+An anchor pairs two protocols within one cell, not two commits (#152): ARA's
+runs `--protocols=ara,aodv` in one invocation per seed, and its rule reads ARA
+minus AODV, paired by seed. A plan says so with `reference`, one protocol or
+a list of them:
+
+    reference: aodv               # or [aodv, dsdv]
+
+Every cell must run each reference (`--protocols`); a plan naming one a cell
+does not run is refused with the cell's protocols. `verdicts` then also
+prints, for every arm (the control included) and cell, each protocol that is
+not a reference minus each reference, paired by run number in that arm's file
+(every seed block of the cell), as bench_parse.paired_stats / fmt_paired,
+one tab-separated line each:
+
+    <arm>  <cell>  <proto> - <reference>  paired 95% CI (n=20): dPDR ... d_d99 ... d_NRL ... -> VERDICT
+
+after the arm-versus-control lines, which a plan without `reference` prints
+alone, unchanged.
+
 `plan` prints one line per job: the label, the arm's ns-3 release, its image,
 its source_sha and the command line (#89). The release of a legacy arm
 (`legacy_arms.<arm>`, or a plan-wide `legacy_images`) is the cell's `version`,
@@ -110,6 +129,11 @@ import time
 import tomllib
 import urllib.request
 import zipfile
+
+try:  # as the ns3_tool package, or as a script beside its siblings
+    from . import bench_parse
+except ImportError:
+    import bench_parse
 
 CELL_KIND = "benchmark-cell.yml"  # a cell giving harness/args itself
 WORKFLOW = "benchmark-cell.yml"  # the default caller in the protocol repository
@@ -292,7 +316,30 @@ def load_plan(path):
             sys.exit(f"{path}: pins names arm '{arm}', which the plan does not define")
     plan["pins"] = pins
     plan["_path"] = path
+    if plan.get("reference") is not None:
+        plan["reference"] = check_reference(plan, path)
     return plan
+
+
+def check_reference(plan, path):
+    """The plan's `reference` as a list, each run by every cell (#152)."""
+    refs = plan["reference"]
+    refs = [refs] if isinstance(refs, str) else refs
+    if not isinstance(refs, list) or not refs or not all(isinstance(r, str) and r for r in refs):
+        sys.exit(f"{path}: reference is a protocol, or a list of protocols")
+    for cell, arm in dict.fromkeys((c, a) for _l, c, a, *_ in jobs(plan)):
+        protos = cell_protocols(plan, cell, arm)
+        missing = [r for r in refs if r not in protos]
+        if missing:
+            sys.exit(
+                f"{path}: reference {', '.join(missing)}: cell {cell} (arm {arm}) runs "
+                f"{', '.join(protos)}; a reference is one of the cell's --protocols"
+            )
+        if not [p for p in protos if p not in refs]:
+            sys.exit(
+                f"{path}: cell {cell} (arm {arm}) runs only the reference(s) {', '.join(protos)}"
+            )
+    return refs
 
 
 def pin(plan, arm):
@@ -906,6 +953,33 @@ def cmd_verdicts(plan, a):
                 None,
             )
             print(f"{arm}\t{cell}\t{proto}\t{line or '(no paired result; see bench_parse.py)'}")
+    if plan.get("reference"):
+        reference_verdicts(plan, a)
+
+
+def reference_verdicts(plan, a):
+    """Each protocol minus each reference, paired by seed within a cell (#152)."""
+    refs = plan["reference"]
+    pairs = sorted(
+        {(cell, arm) for _l, cell, arm, *_ in jobs(plan) if not a.arm or arm == a.arm},
+        key=lambda p: (list(plan["arms"]).index(p[1]), list(plan["cells"]).index(p[0])),
+    )
+    for cell, arm in pairs:
+        path = os.path.join(a.dir, out_name(plan, cell, arm))
+        if not os.path.exists(path):
+            print(f"{arm}\t{cell}\t-\t(missing {os.path.basename(path)})")
+            continue
+        with open(path) as f:
+            try:  # strict (#58): no verdict from a cell with a malformed ##RUN## field
+                runs = bench_parse.parse_runs(f.read(), bench_parse.Reader(where=path))
+            except bench_parse.Malformed as e:
+                sys.exit(f"verdicts: {e}")
+        protos = cell_protocols(plan, cell, arm)
+        for ref in refs:
+            for proto in (p for p in protos if p not in refs):
+                ps = bench_parse.paired_stats(runs.get(ref, {}), runs.get(proto, {}))
+                line = bench_parse.fmt_paired(ps) if ps else "(no paired ##RUN## rows)"
+                print(f"{arm}\t{cell}\t{proto} - {ref}\t{line}")
 
 
 COMMANDS = {
