@@ -31,6 +31,18 @@ permissions:
   packages: read
 
 jobs:
+  dev-images:
+    # The campaign images' 2-day retention (swarm-routing/.github#370, #169):
+    # ns3-tools-dev versions older than 2 days that no committed file and no
+    # open swarm-routing/benchmarks pull request pins are deleted, on main only.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    uses: swarm-routing/.github/.github/workflows/reusable-dev-image-cleanup.yml@main
+    with:
+      packages: ns3-tools-dev
+
   python-quality:
     # ruff (org ruff.toml) + the self-tests under coverage, report-only
     # (swarm-routing/.github#35, phase 1); keeps the `python-coverage` artifact.

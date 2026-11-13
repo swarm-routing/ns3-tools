@@ -53,6 +53,8 @@ def _load(name):
 cp = _load("campaign")
 cp.POLL = 0
 cp.CACHE = tempfile.mkdtemp(prefix="ns3-campaign-cache-")  # never the user's ~/.cache
+REAL_IMAGE_GONE = cp.image_gone
+cp.image_gone = lambda image: False  # no registry here; test_image_gone covers it
 
 BASE = "sha256:" + "b" * 64
 IMAGE = cp.IMAGE + "@sha256:" + "c" * 64
@@ -162,8 +164,7 @@ def test_plan_and_inputs():
     )
     check("--runs=10 --firstRun=11" in out, "plan: the second block starts at seed 11")
     check(
-        f"ns3-tools-ns3-campaign:{cp.modules(example())[0]['commit'][:7]}-{{base7}}-optimized"
-        in out,
+        f"ns3-tools-dev:{cp.modules(example())[0]['commit'][:7]}-{{base7}}-optimized" in out,
         "plan: names the image it needs",
     )
     code, out, _e = run(["image-inputs", EXAMPLE])
@@ -698,6 +699,52 @@ def test_reuse():
                 f"benchmarks validate_run.py passes a run of keyed, reused cells:\n{p.stdout}{p.stderr}",
             )
 
+            # The same cells with their flags in another order: the key sorts
+            # them, so the earlier cells are reused, and the manifest names the
+            # command each cell ran (its own ##ARGS##), not this plan's order.
+            with open(plan_path) as f:
+                toml = f.read()
+            for spec in plan["cells"].values():
+                toml = toml.replace(spec["args"], " ".join(reversed(spec["args"].split())))
+            os.makedirs(os.path.join(d, "campaigns"))
+            with open(os.path.join(d, plan_path), "w") as f:
+                f.write(toml)
+            os.chdir(d)  # build takes campaigns/<name>.toml, relative
+            plan_r = plan_path
+            cp.gh = fake
+            work_r = os.path.join(d, "r")
+            run(["build", plan_r, "--work", work_r])
+            n = len(sent(fake))
+            code, out, _e = run(["dispatch", plan_r, "--work", work_r])
+            check(
+                code is None and len(sent(fake)) == n and out.count("\treused run:") == 3,
+                f"dispatch: flags in another order, same keys, every cell reused ({out})",
+            )
+            code, _o, _e = run(["collect", plan_r, "--work", work_r, "--out", d + "/runs-r"])
+            run_r = only_run(d + "/runs-r")
+            with open(os.path.join(run_r, "manifest.json")) as f:
+                commands = json.load(f)["commands"]
+            ran = [
+                ln.removeprefix("##ARGS## ")
+                for name in sorted(os.listdir(os.path.join(run_r, "cells")))
+                for ln in open(os.path.join(run_r, "cells", name)).read().splitlines()
+                if ln.startswith("##ARGS## ")
+            ]
+            check(
+                code is None and ran and all(r in commands for r in ran),
+                f"collect: the manifest names each reused cell's own command ({code})",
+            )
+            p = subprocess.run(
+                [sys.executable, os.path.join(bench, "tools", "validate_run.py"), "check", run_r],
+                capture_output=True,
+                text=True,
+            )
+            check(
+                p.returncode == 0,
+                f"benchmarks validate_run.py passes reused cells whose flags the plan reorders:\n{p.stdout}{p.stderr}",
+            )
+            os.chdir(root)
+
             # The local cache: artifacts expired, no benchmarks, still reused, offline.
             fake.expired = set(fake.artifacts)
             work_c = fresh(d, "c", fake)
@@ -840,6 +887,70 @@ def test_reuse():
         os.chdir(old)
 
 
+def test_image_gone():
+    """#174: a campaign image the registry no longer has (HTTP 404) stops
+    dispatch before any cell; one it has, or a registry it cannot read, does not."""
+    import urllib.error
+
+    class Answer:
+        def read(self, *_a):
+            return b'{"token": "t"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def close(self):
+            pass
+
+    def registry(head):
+        def urlopen(req, timeout=None):
+            if isinstance(req, str) or head is None:  # the token, or a manifest found
+                return Answer()
+            raise head
+
+        return urlopen
+
+    def http(code):
+        return urllib.error.HTTPError("https://ghcr.io/v2/x", code, "x", {}, None)
+
+    real = cp.urllib.request.urlopen
+    try:
+        for head, want, what in (
+            (None, False, "the digest is there"),
+            (http(404), True, "the registry says 404"),
+            (http(403), False, "403: not readable, so not known gone"),
+            (urllib.error.URLError("offline"), False, "the registry cannot be reached"),
+        ):
+            cp.urllib.request.urlopen = registry(head)
+            check(REAL_IMAGE_GONE(IMAGE) is want, f"image_gone: {what}")
+    finally:
+        cp.urllib.request.urlopen = real
+
+    root = os.path.join(HERE, "..", "..")
+    old = os.getcwd()
+    os.chdir(root)
+    plan_path = "campaigns/anthocnet-aodv-smoke.toml"
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            fake = FakeGitHub(cp.load_plan(plan_path))
+            cp.gh = fake
+            work = os.path.join(d, "w")
+            run(["build", plan_path, "--work", work])
+            cp.image_gone = lambda image: True
+            code, _o, _e = run(["dispatch", plan_path, "--work", work, "--no-reuse"])
+            cells = [b for wf, b in fake.dispatched if wf == cp.CELL_WORKFLOW]
+            check(
+                code and "is gone from the registry" in code and "new --work" in code and not cells,
+                f"dispatch: a gone image stops it before any cell, with the way out ({code})",
+            )
+    finally:
+        cp.image_gone = lambda image: False
+        os.chdir(old)
+
+
 if __name__ == "__main__":
     test_validate()
     test_plan_and_inputs()
@@ -847,4 +958,5 @@ if __name__ == "__main__":
     test_campaign()
     test_cell_key()
     test_reuse()
+    test_image_gone()
     print("test_campaign: all ok")
