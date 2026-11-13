@@ -769,6 +769,86 @@ def _():
         )
 
 
+# ---- --vs: protocol versus protocol in one cell (an anchor's read) ----------
+
+
+def _vs_blocks(ara_shift):
+    """Two seed blocks of one cell, ARA's PDR shifted from AODV's per seed."""
+    rows = {"aodv": [(60.0 + i, 40.0 + i, 3.0) for i in range(10)]}
+    rows["ara"] = [
+        (p + ara_shift + (0.2 if i % 2 else -0.2), d, n - 0.5)
+        for i, (p, d, n) in enumerate(rows["aodv"])
+    ]
+    return _ctl_cell(rows, first=1), _ctl_cell(rows, first=11)
+
+
+@case("--vs: ARA - AODV paired over both seed blocks (n=20), CI above zero")
+def _():
+    line = bp.versus(list(_vs_blocks(5.0)), "ara", "aodv")
+    assert line.startswith("ara - aodv, by seed: paired 95% CI (n=20): dPDR +5.00 ["), line
+    assert "d_NRL -0.50" in line and line.endswith("-> PAIRED-IMPROVED"), line
+
+
+@case("--vs: no difference -> PAIRED-NOISE; a missing protocol is an error")
+def _():
+    line = bp.versus(list(_vs_blocks(0.0)), "ara", "aodv")
+    assert "dPDR +0.00" in line and "PAIRED-" in line, line
+    try:
+        bp.versus(list(_vs_blocks(0.0)), "ara", "olsr")
+        raise AssertionError("a missing protocol must raise")
+    except ValueError as e:
+        assert "olsr" in str(e), e
+
+
+def _vs_cli(texts, stdin_index=None):
+    """Run `bench_parse --proto ara --vs aodv` on `texts` as files (or one of
+    them as '-', fed through stdin); returns (exit code, stdout)."""
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    paths, stdin = [], None
+    for i, text in enumerate(texts):
+        if i == stdin_index:
+            paths.append("-")
+            stdin = io.StringIO(text)
+            continue
+        paths.append(os.path.join(d, f"block{i}.txt"))
+        with open(paths[-1], "w") as fh:
+            fh.write(text)
+    argv, sys.argv = sys.argv, ["bench_parse.py", "--proto", "ara", "--vs", "aodv", *paths]
+    old_stdin = sys.stdin
+    out = io.StringIO()
+    try:
+        if stdin is not None:
+            sys.stdin = stdin
+        with contextlib.redirect_stdout(out):
+            code = 0
+            try:
+                bp.main()
+            except SystemExit as e:
+                code = e.code
+    finally:
+        sys.argv, sys.stdin = argv, old_stdin
+    return code, out.getvalue()
+
+
+@case("--vs: the CLI prints the read and exits 0, a block on stdin too")
+def _():
+    code, out = _vs_cli(_vs_blocks(5.0))
+    assert code == 0 and "PAIRED-IMPROVED" in out, (code, out)
+    code, out = _vs_cli(_vs_blocks(5.0), stdin_index=1)
+    assert code == 0 and "(n=20)" in out, (code, out)
+
+
+@case("--vs: a poisoned '# stddev' line fails the mapping check, exit 1, no read")
+def _():
+    a, b = _vs_blocks(5.0)
+    b += "# stddev ara pdr=99.00\n"
+    code, out = _vs_cli([a, b])
+    assert code == 1 and "column-mapping check FAILED" in out, (code, out)
+    assert "by seed" not in out, out
+
+
 def main():
     failed = 0
     for desc, fn in CASES:
