@@ -113,7 +113,10 @@ def test_equivalence_on_committed_cells():
     for path in cells:
         with open(path) as fh:
             text = fh.read()
-        protos = set(bp.parse_runs(text)) | set(bp.parse_cell(text))
+        # lenient (#58): some corpus cells carry interleaved monitor output; this
+        # only lists the protocols, and the query reads tokens as printed.
+        rd = bp.Reader(strict=False, where=path)
+        protos = set(bp.parse_runs(text, rd)) | set(bp.parse_cell(text, rd))
         for p in sorted(protos):
             want = awk(AWK_RUN_PDR, text, p=p)
             got = bp.query(text, p, "pdr", "run")
@@ -151,7 +154,7 @@ def test_stock_arms_verdict():
     for path in cells:
         with open(path) as fh:
             text = fh.read()
-        for p in sorted(bp.parse_runs(text)):
+        for p in sorted(bp.parse_runs(text, bp.Reader(strict=False, where=path))):
             one = one_run(text, p)
             want = old_stock_verdict(one, p)
             pdr = bp.query(one, p, "pdr", "run")

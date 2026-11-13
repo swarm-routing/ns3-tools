@@ -43,6 +43,14 @@ additionally prints a paired-difference line per point — per-seed 95% CIs
 (t for pdr/nrl, bootstrap for the delay99 tail) and a Wilcoxon signed-rank p
 over the seeds common to both arms — and that PAIRED-* verdict replaces the
 materiality one. Inputs without the sibling keep the old behaviour.
+
+Strict by default (#58): a required numeric column (``runs``, ``pdr_pct``,
+``delay_ms``, ``delay99_ms``, ``nrl``; ``x`` too, which is blank on a
+discrete point) whose value does not parse fails, naming the file, line and
+column, and so does a sibling ``-runs.csv`` value the paired verdict reads
+(``pdr_pct``, ``delay99_ms``, ``nrl``). ``--lenient`` keeps the old
+behaviour (an unreadable value becomes the caller's default, or is left out
+of the paired rows) and prints how many values and rows it dropped.
 """
 
 import argparse
@@ -61,6 +69,35 @@ except ImportError:
     import stats_util
 
 REQUIRED = ["kind", "group", "x", "protocol", "runs", "pdr_pct", "delay_ms", "delay99_ms", "nrl"]
+# The required columns that hold numbers; "x" may be blank (a discrete point).
+NUMERIC = ["x", "runs", "pdr_pct", "delay_ms", "delay99_ms", "nrl"]
+BLANK_OK = {"x"}
+# Strict unless main() is given --lenient (#58); every reader made is kept for its report.
+LENIENT = False
+READERS = []
+
+
+def reader(path):
+    rd = bench_parse.Reader(strict=not LENIENT, where=path)
+    READERS.append(rd)
+    return rd
+
+
+def check(rd, lineno, row, cols):
+    """The names of ``cols`` whose value is not a number (strict: fail on the first)."""
+    bad = []
+    for c in cols:
+        if c not in row:  # not a column of this file
+            continue
+        v = row[c]
+        if v == "" and c in BLANK_OK:
+            continue
+        try:
+            float(v)
+        except (TypeError, ValueError):  # None: the row ends before this column
+            rd.bad(lineno, "column", c, v)
+            bad.append(c)
+    return bad
 
 
 def pdr_hw(row):
@@ -79,12 +116,19 @@ def pdr_hw(row):
 
 def load(path):
     with open(path, newline="") as fh:
-        rows = list(csv.DictReader(fh))
+        rdr = csv.DictReader(fh)
+        rows, lines = [], []
+        for row in rdr:
+            rows.append(row)
+            lines.append(rdr.line_num)
     if not rows:
         sys.exit(f"FAIL {path}: empty CSV")
     missing = [c for c in REQUIRED if c not in rows[0]]
     if missing:
         sys.exit(f"FAIL {path}: missing columns {missing} — not a run-scenarios.py classified CSV")
+    rd = reader(path)
+    for lineno, row in zip(lines, rows):
+        check(rd, lineno, row, NUMERIC)
     return rows
 
 
@@ -157,10 +201,14 @@ def collect_runs(paths, metric="delay99_ms"):
         sib = path.removesuffix(".csv") + "-runs.csv"
         if not os.path.exists(sib):
             continue
+        rd = reader(sib)
         with open(sib, newline="") as fh:
-            for row in csv.DictReader(fh):
+            rdr = csv.DictReader(fh)
+            for row in rdr:
+                bad = check(rd, rdr.line_num, row, [metric])
                 v = f(row, metric)
                 if v is None or v < 0:
+                    rd.rows += bool(bad)
                     continue
                 vals.setdefault(
                     (row["kind"], row["group"], f(row, "x", 0.0), row["protocol"]), []
@@ -187,14 +235,18 @@ def collect_paired_runs(paths):
         sib = path.removesuffix(".csv") + "-runs.csv"
         if not os.path.exists(sib):
             continue
+        rd = reader(sib)
         with open(sib, newline="") as fh:
-            for row in csv.DictReader(fh):
+            rdr = csv.DictReader(fh)
+            for row in rdr:
+                bad = check(rd, rdr.line_num, row, PAIRED_COLS)
                 vals = {}
                 for col, metric in PAIRED_COLS.items():
                     v = f(row, col)
                     if v is not None and v >= 0:
                         vals[metric] = v
                 if not vals:
+                    rd.rows += bool(bad)
                     continue
                 k = (row["kind"], row["group"], f(row, "x", 0.0), row["protocol"])
                 out.setdefault(k, {})[row["run"]] = vals
@@ -304,9 +356,31 @@ def main():
         metavar="OUT",
         help="write the papers-repo sweeps.csv schema (sweep rows, anthocnet+baseline only)",
     )
+    ap.add_argument(
+        "--lenient",
+        action="store_true",
+        help="treat an unreadable numeric value as missing instead of failing, "
+        "and report how many were dropped (#58)",
+    )
     args = ap.parse_args()
+    global LENIENT
+    LENIENT = args.lenient
+    try:
+        _run(args)
+    except bench_parse.Malformed as e:
+        print(f"FAIL {e}", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        for rd in READERS:
+            if rd.report():
+                print(rd.report(), file=sys.stderr)
 
+
+def _run(args):
     cells = collect(args.files, args.group)  # (kind, group, x) -> {proto: row}
+    # Read (and, strict, check) every per-run sibling before printing anything,
+    # so a malformed one cannot leave a partial summary on stdout (#58).
+    run_vals = collect_runs(args.files) if args.export_sweeps else {}
     if not cells:
         sys.exit("FAIL: no rows matched")
 
@@ -361,8 +435,7 @@ def main():
         # values (methodology: a t-CI on a p99 is not defensible), collapsed
         # to the conservative symmetric envelope max(mean-lo, hi-mean) since
         # the schema carries one half-width. t-CI remains the fallback for
-        # aggregate-only inputs.
-        run_vals = collect_runs(args.files)
+        # aggregate-only inputs. run_vals was read before anything printed.
 
         def hw99(row, k, proto):
             vals = run_vals.get((k[0], k[1], k[2], proto), ())
