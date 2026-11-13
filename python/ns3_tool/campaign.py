@@ -245,6 +245,11 @@ def validate(plan):
         for tok in args.split():
             if tok.split("=", 1)[0] in RESERVED:
                 errs.append(f"cell '{name}': {tok} is set by the driver (arms, seeds, blocks)")
+        # A repeated flag: its last value wins in the harness, but the cell key
+        # sorts the flags, so two orders would share a key (#94).
+        flags = [tok.split("=", 1)[0] for tok in args.split()]
+        for flag in sorted({f for f in flags if flags.count(f) > 1}):
+            errs.append(f"cell '{name}': {flag} is given more than once")
         blocks = cell.get("blocks", 1)
         if not isinstance(blocks, int) or blocks < 1 or (isinstance(seeds, int) and seeds % blocks):
             errs.append(f"cell '{name}': blocks {blocks} must divide the {seeds} seeds")
@@ -582,21 +587,39 @@ def benchmarks_cell(root, key):
             if not rel.startswith("cells/") or not os.path.isfile(path):
                 continue
             with open(path, "rb") as f:
-                data = f.read()
-            if f"key={key}".encode() not in data:
-                continue
-            if hashlib.sha256(data).hexdigest() != sha:
-                raise RuntimeError(f"{path}: its sha256 is not its manifest entry's")
-            # The cell file is collect's: a '# <name> <cell>: ...' header, then
-            # each job's results.txt, each ending with its ##PROV## line.
-            lines, block = data.decode().splitlines()[1:], []
-            for line in lines:
-                block.append(line)
-                if line.startswith("##PROV##"):
-                    if f"key={key}" in line.split():
-                        return f"benchmarks:{os.path.abspath(path)}", "\n".join(block) + "\n"
-                    block = []
+                if f"key={key}".encode() not in f.read():
+                    continue
+            return f"benchmarks:{os.path.abspath(path)}", benchmarks_block(path, key, sha)
     return None
+
+
+def benchmarks_block(path, key, sha=None):
+    """The block of a benchmarks cell file whose ##PROV## names `key`.
+
+    The file must match its manifest's sha256 (`sha`, else read from the
+    run's manifest.json, two directories up). collect wrote it: a
+    '# <name> <cell>: ...' header, then each job's results.txt, each ending
+    with its ##PROV## line. Raises RuntimeError on any mismatch."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if sha is None:
+            run = os.path.dirname(os.path.dirname(path))
+            with open(os.path.join(run, "manifest.json")) as f:
+                rel = os.path.relpath(path, run).replace(os.sep, "/")
+                sha = {x["path"]: x.get("sha256") for x in json.load(f).get("files", [])}.get(rel)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"{path}: {e}") from None
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise RuntimeError(f"{path}: its sha256 is not its manifest entry's")
+    block = []
+    for line in data.decode().splitlines()[1:]:
+        block.append(line)
+        if line.startswith("##PROV##"):
+            if f"key={key}" in line.split():
+                return "\n".join(block) + "\n"
+            block = []
+    raise RuntimeError(f"{path}: no ##PROV## line names key {key}")
 
 
 def artifact_runs(key):
@@ -623,13 +646,8 @@ def source_text(work, key, source):
             fetch(ref, dest, f"{CELL_ARTIFACT}-{key}")
         with open(path) as f:
             return f.read()
-    if kind == "benchmarks":
-        root = ref
-        for _ in range(4):  # <root>/runs/<run>/cells/<cell>.txt
-            root = os.path.dirname(root)
-        hit = benchmarks_cell(root, key)
-        if hit:
-            return hit[1]
+    if kind == "benchmarks":  # the recorded file, never another run with the key
+        return benchmarks_block(ref, key)
     raise RuntimeError(f"reused cell {key[:12]}: its source {source} is gone, and not cached")
 
 
@@ -796,8 +814,8 @@ def cmd_dispatch(plan, a):
     cap = a.cap or plan["cap"]
     done, reused = read_log(work), read_reused(work)
     for label, _cell, args in jobs(plan):
-        if label in done or label in reused:
-            continue
+        if label in done or (a.reuse and label in reused):
+            continue  # with --no-reuse a reused label runs, and its run then wins
         if a.reuse:
             key = job_key(plan, state, args)
             try:
@@ -824,11 +842,8 @@ def cmd_dispatch(plan, a):
         with open(os.path.join(work, "runs.tsv"), "a") as f:
             f.write(f"{label}\t{rid}\n")
         print(f"{label}\t{rid}")
-    n = len(jobs(plan))
-    print(
-        f"all {n} job(s) dispatched" + (f" ({len(reused)} reused)" if reused else ""),
-        file=sys.stderr,
-    )
+    n, r = len(jobs(plan)), len(set(reused) - set(read_log(work)))
+    print(f"all {n} job(s) dispatched" + (f" ({r} reused)" if r else ""), file=sys.stderr)
 
 
 def cmd_status(plan, a):
@@ -836,7 +851,7 @@ def cmd_status(plan, a):
     counts = {}
     for label, *_ in jobs(plan):
         rid = log.get(label)
-        if label in reused:
+        if label in reused and not rid:  # a run recorded for the label wins (--no-reuse)
             rid, state = reused[label], "reused"
         else:
             state = run_state(rid) if rid else "not-dispatched"
@@ -869,8 +884,10 @@ def cell_text(plan, work, label, rid, args):
         fetch(rid, src, f"{CELL_ARTIFACT}-{key}", CELL_ARTIFACT)
     with open(path) as f:
         text = f.read()
-    prov = check_cell(plan, state, label, rid, args, text)
-    if prov.get("key") == key:  # a cell from before keys is never reused (#94)
+    # A keyed cell gets the key checks too; a cell from before keys is never reused (#94).
+    keyed = "key" in (prov_of(text) or {})
+    prov = check_cell(plan, state, label, rid, args, text, key if keyed else None)
+    if keyed:
         cache_put(key, text, f"run:{rid}")
     return text, prov
 
@@ -924,7 +941,7 @@ def cmd_collect(plan, a):
     reused = read_reused(work)
     for label, cell, args in jobs(plan):
         rid = log.get(label)
-        if label in reused:  # #94: from its source, checked as at dispatch
+        if label in reused and not rid:  # #94: from its source, checked as at dispatch
             rid, key = reused[label], job_key(plan, state, args)
             try:
                 text = source_text(work, key, rid)

@@ -126,6 +126,11 @@ def test_validate():
         "set by the driver",
         lambda p: p["cells"]["grid-rwp"].update(args="--runs=5"),
     )
+    fails(
+        "repeated flag",
+        "--nNodes is given more than once",
+        lambda p: p["cells"]["grid-rwp"].update(args="--nNodes=50 --nNodes=100"),
+    )
     fails("blocks not dividing", "must divide", lambda p: p["cells"]["grid-rwp"].update(blocks=3))
     fails("cap above 20", "cap 40", lambda p: p.update(cap=40))
     fails("bad cell name", "is not [a-z0-9._-]", lambda p: p["cells"].update({"Grid": {}}))
@@ -780,6 +785,40 @@ def test_reuse():
             code, _o, err = run(["plan", plan_path, "--work", work_h, "--no-reuse"])
             check(
                 "3 cells, 0 reusable, 3 to run" in err, "plan --no-reuse: counts nothing reusable"
+            )
+            # --no-reuse in a work directory whose cells were reused: they run,
+            # and status and collect then read the runs.
+            n = len(sent(fake))
+            code, _o, _e = run(["dispatch", plan_path, "--work", work_b, "--no-reuse"])
+            check(
+                code is None and len(sent(fake)) == n + 3, "dispatch --no-reuse: reused labels run"
+            )
+            code, _o, err = run(["status", plan_path, "--work", work_b])
+            check("3 success" in err and "0 reused" in err, f"status: the new runs win ({err})")
+            # A dispatched cell's artifact whose ##ARGS## no longer match its key.
+            rid = max(fake.artifacts)
+            bad = results(fake, rid).replace("--diag", "--diag --pause=1", 1)
+            fake.artifacts[rid] = (fake.artifacts[rid][0], fake.zip_of({"results.txt": bad}))
+            shutil.rmtree(os.path.join(work_b, "artifacts"), ignore_errors=True)
+            code, _o, _e = run(["collect", plan_path, "--work", work_b, "--out", d + "/runs-bb"])
+            check(
+                code and "recompute to key" in code,
+                f"collect: a keyed cell gets the key checks too ({code})",
+            )
+            # collect reads a reused benchmarks cell from the file recorded at
+            # dispatch (edited above, so its sha256 fails), not from another
+            # run in the checkout that names the same key.
+            shutil.copytree(
+                os.path.join(d, "runs-a", os.path.basename(run_a)),
+                os.path.join(bench_root, "runs", "0000-copy"),
+            )
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            code, _o, _e = run(["collect", plan_path, "--work", work_e, "--out", d + "/runs-ee"])
+            check(
+                code
+                and "sha256 is not its manifest entry" in code
+                and os.path.basename(run_a) in code,
+                f"collect: reads the recorded benchmarks file, no key search ({code})",
             )
 
             # The cache keeps to its bound, the least recently used out first.
