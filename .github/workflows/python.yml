@@ -42,6 +42,8 @@ jobs:
           ns3-scenario-check results "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/sat-base-app517.txt \
             --anchors "$GITHUB_WORKSPACE"/python/tests/fixtures/anchors.yml | grep -q '^verdict: '
           ns3-campaign validate "$GITHUB_WORKSPACE"/campaigns/anthocnet-aodv-smoke.toml
+          ns3-tool --help | grep -q '  scaffold '
+          ns3-tool compare "$GITHUB_WORKSPACE"/python/tests/fixtures/cells/fanet-main-6arm.txt | grep -q '95% CI'
 
   corpus:
     name: query equivalence on AntHocNet's committed cells
