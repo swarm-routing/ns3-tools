@@ -642,8 +642,24 @@ def main():
     if args.vs:
         texts = []
         for path in args.files:
-            with open(path) as fh:
+            with sys.stdin if path == "-" else open(path) as fh:
                 texts.append(fh.read())
+        # #293's column-mapping check, per file (each carries its own '# stddev'):
+        # numbers from a cell whose mapping is wrong are not compared.
+        mapping_failed = False
+        for path, text in zip(args.files, texts):
+            runs, sds = parse_runs(text), parse_stddev(text)
+            if runs and sds:
+                checks, fails = mapping_check(runs, sds)
+                if fails:
+                    mapping_failed = True
+                    print(f"{path}: ##RUN## column-mapping check FAILED ({len(fails)}/{checks}):")
+                    for proto, metric, sd, rep in fails:
+                        print(
+                            f"  ! {proto} {metric}: recomputed sd {sd:.4g} != '# stddev' {rep:.4g}"
+                        )
+        if mapping_failed:
+            sys.exit(1)
         try:
             print(versus(texts, args.proto, args.vs))
         except ValueError as e:

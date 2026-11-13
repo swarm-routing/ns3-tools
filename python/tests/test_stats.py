@@ -800,19 +800,27 @@ def _():
         assert "olsr" in str(e), e
 
 
-@case("--vs: the CLI prints the read and exits 0")
-def _():
+def _vs_cli(texts, stdin_index=None):
+    """Run `bench_parse --proto ara --vs aodv` on `texts` as files (or one of
+    them as '-', fed through stdin); returns (exit code, stdout)."""
     import tempfile
 
     d = tempfile.mkdtemp()
-    paths = []
-    for i, text in enumerate(_vs_blocks(5.0)):
+    paths, stdin = [], None
+    for i, text in enumerate(texts):
+        if i == stdin_index:
+            paths.append("-")
+            stdin = io.StringIO(text)
+            continue
         paths.append(os.path.join(d, f"block{i}.txt"))
         with open(paths[-1], "w") as fh:
             fh.write(text)
     argv, sys.argv = sys.argv, ["bench_parse.py", "--proto", "ara", "--vs", "aodv", *paths]
+    old_stdin = sys.stdin
     out = io.StringIO()
     try:
+        if stdin is not None:
+            sys.stdin = stdin
         with contextlib.redirect_stdout(out):
             code = 0
             try:
@@ -820,8 +828,25 @@ def _():
             except SystemExit as e:
                 code = e.code
     finally:
-        sys.argv = argv
-    assert code == 0 and "PAIRED-IMPROVED" in out.getvalue(), (code, out.getvalue())
+        sys.argv, sys.stdin = argv, old_stdin
+    return code, out.getvalue()
+
+
+@case("--vs: the CLI prints the read and exits 0, a block on stdin too")
+def _():
+    code, out = _vs_cli(_vs_blocks(5.0))
+    assert code == 0 and "PAIRED-IMPROVED" in out, (code, out)
+    code, out = _vs_cli(_vs_blocks(5.0), stdin_index=1)
+    assert code == 0 and "(n=20)" in out, (code, out)
+
+
+@case("--vs: a poisoned '# stddev' line fails the mapping check, exit 1, no read")
+def _():
+    a, b = _vs_blocks(5.0)
+    b += "# stddev ara pdr=99.00\n"
+    code, out = _vs_cli([a, b])
+    assert code == 1 and "column-mapping check FAILED" in out, (code, out)
+    assert "by seed" not in out, out
 
 
 def main():
