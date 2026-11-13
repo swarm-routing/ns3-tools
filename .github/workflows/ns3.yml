@@ -134,3 +134,29 @@ jobs:
         if: matrix.version == 'latest'
         timeout-minutes: 15
         run: bash tools/checks/check-perf-markers.sh /opt/ns-3 "olsr dsdv"
+
+  scaffold:
+    # ns3-tool scaffold (#39): the skeleton it writes builds as a contrib module
+    # beside routing-bench with strict warnings, routing-compare offers its arm,
+    # and the arm (stock OLSR until replaced) delivers.
+    name: ns3-tool scaffold builds and registers an arm
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/swarm-routing/ns3-dev:latest-debug
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # No Harden-Runner here (swarm-routing/.github#164): a job that runs entirely
+    # in a container cannot take it on a GitHub-hosted runner.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scaffold an arm module
+        run: python3 python/ns3_tool/cli.py scaffold scaffold-demo --out /tmp/scaffold --holder "ns3-tools CI"
+      - name: Build it beside routing-bench (strict warnings)
+        run: ns3-build-contrib --strict-warnings "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench" scaffold-demo=/tmp/scaffold/scaffold-demo
+      - name: routing-compare offers the arm, and it delivers
+        timeout-minutes: 15
+        run: bash tools/checks/check-scaffold-arm.sh /opt/ns-3 scaffold-demo

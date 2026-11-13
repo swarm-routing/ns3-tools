@@ -77,7 +77,7 @@ ls -l "$out"
 python3 -m venv "$tmp/check-venv"
 "$tmp/check-venv/bin/python" -m pip install --quiet --no-index "$out/ns3_tool-$ver-py3-none-any.whl"
 for s in ns3-bench-parse ns3-native-view ns3-comparator-view ns3-pool-runs \
-         ns3-sweep-summary ns3-scenario-check ns3-campaign; do
+         ns3-sweep-summary ns3-scenario-check ns3-campaign ns3-tool; do
     "$tmp/check-venv/bin/$s" --help > /dev/null
 done
 lic=$(python3 -m zipfile -l "$out/ns3_tool-$ver-py3-none-any.whl" | grep -c '\.dist-info/licenses/LICENSE' || true)

@@ -22,8 +22,10 @@
 
 Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 `routing-bench` comparison harness (`ns3/routing-bench/`), the result readers
-and statistics (`python/`), and, planned, non-intrusive probes, universal
-arenas and the `ns3-tool` CLI. **Status:** being populated (Phase 4).
+and statistics (`python/`) behind one CLI, `ns3-tool` (`compare`, `sweep`,
+`diagnose`, `scaffold`; `pip install ./python`, then `ns3-tool --help`), and,
+planned, non-intrusive probes and universal arenas. **Status:** being
+populated (Phase 4).
 
 What each release must show, and what blocks what: [docs/roadmap.md](docs/roadmap.md).
 

@@ -4,6 +4,15 @@ Readers and paired statistics for the comparison harness's marker lines
 (`##RUN##`, `##BENCH##`, `# paths`, ...), ported from AntHocNet's
 `tools/bench/` (#3). Standard library only, `MIT OR GPL-2.0-only`.
 
+`ns3-tool` is the one entry point (#39): `ns3-tool compare` (bench_parse,
+byte for byte), `ns3-tool sweep` (a port of AntHocNet's `run-scenarios.py`:
+the scenario matrix and the paper's sweeps through the harness;
+`--program`, default `routing-compare`; `--dry-run` prints the command lines),
+`ns3-tool diagnose CELL [--check ...]` (the drop book per arm, then
+scenario_check's `results`) and `ns3-tool scaffold NAME` (an arm module that
+registers with routing-bench; CI builds it, `ns3.yml` job `scaffold`). The
+console scripts below stay, as aliases of the same modules.
+
 | Module / command | What it does |
 |---|---|
 | `bench_parse` / `ns3-bench-parse` | parse a cell, per-seed 95% CIs, A/B deltas with the paired verdict (CI + Wilcoxon); `--get FIELD --from perf` reads a `##PERF##` cost field (#91, `docs/markers.md`) |

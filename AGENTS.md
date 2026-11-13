@@ -7,7 +7,7 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: being populated (Phase 4).** Moved from AntHocNet so far: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3). Probes, arenas and the `ns3-tool` subcommands below are still the plan; update this file in the PR that adds each part.
+**Status: being populated (Phase 4).** Moved from AntHocNet so far: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39). Probes and arenas are still the plan; update this file in the PR that adds each part.
 
 Protocol-agnostic diagnostics and comparison tooling: non-intrusive C++20
 probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
@@ -21,10 +21,10 @@ probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
 ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
-tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91) — MIT OR GPL-2.0-only
+tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91; check-scaffold-arm.sh, the arm `ns3-tool scaffold` writes, #39) — MIT OR GPL-2.0-only
 tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
 .cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
-python/ns3_tool/    the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
+python/ns3_tool/    `ns3-tool` (cli: compare = bench_parse, sweep = a port of AntHocNet's run-scenarios.py, diagnose = the drop book + scenario_check results, scaffold = an arm module skeleton; #39), the readers and statistics (bench_parse, stats_util, native/comparator views, pool_runs, sweep_summary), the plausibility checker (scenario_check: ns3-scenario-check, anchors from an --anchors file) and the campaign driver (campaign: ns3-campaign; change_plan: the change-test plans it routes, #81), stdlib only (PyYAML only to read a .yaml plan) — MIT OR GPL-2.0-only
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
@@ -65,7 +65,8 @@ NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells NS3_TOOL_SCENARIO_CHECK=/path/to/AntHocNet/tools/bench/scenario_check.py \
     python3 python/tests/test_scenario_check_corpus.py   # scenario_check's verdicts = AntHocNet's, as CI
 NS3_TOOL_ANTHOCNET=/path/to/AntHocNet python3 python/tests/test_change_plan.py   # change-plan verdicts = AntHocNet's campaign.py on every plan (PyYAML), as CI
-pip install ./python   # console scripts: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
+pip install ./python   # ns3-tool {compare,sweep,diagnose,scaffold}; the older scripts stay: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
+ns3-tool sweep /opt/ns-3 --only discrete --runs 10 --time 120 --dry-run   # the harness command lines, nothing run
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
 
