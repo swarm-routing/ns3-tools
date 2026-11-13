@@ -12,7 +12,7 @@ epic #156). `ns3-campaign` routes a plan here when it has a `generation` key
 (campaigns/*.toml) stay in campaign.py.
 
     ns3-campaign plan     PLAN                      # every job; dispatches nothing
-    ns3-campaign dispatch PLAN [--arm A] [--cap N] [--wait]
+    ns3-campaign dispatch PLAN [--arm A] [--cap N] [--wait] [--dry-run] [--no-reuse]
     ns3-campaign status   PLAN [--arm A] [--brief]
     ns3-campaign collect  PLAN --out DIR [--from DIR] [--arm A] [--redispatch]
     ns3-campaign verdicts PLAN --dir DIR [--arm A]
@@ -59,6 +59,24 @@ not its arm's pin; it lists the rejected labels for re-dispatch, and
 `--redispatch` drops them from runs.tsv so the next `dispatch` sends them
 again. `plan` and `verdicts` also read the committed historical plans, which
 predate the pins.
+
+Reuse (#94, #155): when the repository's caller forwards a `key` input to the
+reusable cell (its text names `inputs.key`; `dispatch` reads the caller at the
+plan's `ref`), every job has a key, campaign.cell_key over what pins it: the
+image digest, the commits (`<repo>@<source_sha>`, each module the caller's
+`modules:` builds at source_sha, and each `name=owner/repo@<commit>` of its
+`dependencies:`), the harness and its flags (sorted; protocols, seeds), and the
+marker contract. `dispatch` passes it; the cell writes it into ##PROV## and
+names its artifact `benchmark-cell-<key>`. Before dispatching a job,
+`dispatch` looks in the repository for an unexpired artifact of a successful
+run with that key, checks the cell (results rows, ##PROV## commit, image and
+key, modules in build mode, ##ARGS##) and logs that run for the label
+(`<label>\t<run id>\treused` in runs.tsv) instead of dispatching:
+`status`, `collect` and `verdicts` then read it as any other. A mismatch stops
+`dispatch`, never a silent re-run. `--no-reuse` dispatches every job;
+`--dry-run` prints, per job not yet logged, its key and whether it would be
+reused or run, and dispatches nothing. A caller without `key` gets neither the
+key nor reuse (artifacts live 7 days, so reuse spans a week of change tests).
 
 A cell naming the retired paper-benchmark.yml or satellite-benchmark.yml is
 translated into the command line those workflows built, flag for flag
@@ -118,6 +136,7 @@ Plans are YAML (PyYAML, imported only for a .yaml/.yml plan), TOML or JSON.
 """
 
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -137,12 +156,16 @@ except ImportError:
 
 CELL_KIND = "benchmark-cell.yml"  # a cell giving harness/args itself
 WORKFLOW = "benchmark-cell.yml"  # the default caller in the protocol repository
-ARTIFACT = "benchmark-cell"  # what reusable-benchmark-cell.yml uploads
+ARTIFACT = "benchmark-cell"  # what reusable-benchmark-cell.yml uploads; -<key> appended with a key
+ARTIFACT_RE = re.compile(rf"{ARTIFACT}(-[0-9a-f]{{64}})?")
 RESULTS = ("results.txt", "paper-results.txt", "satellite-results.txt")
 IMAGE_RE = re.compile(r"ghcr\.io/[a-z0-9._-]+/[a-z0-9._/-]+@sha256:[0-9a-f]{64}")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPO_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 CELL_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+# A caller's `dependencies:` entry, name=owner/repo@<commit>[:subdir] (#155).
+DEP_RE = re.compile(r"([A-Za-z0-9_.-]+)=[A-Za-z0-9-]+/[A-Za-z0-9._-]+@([0-9a-f]{40})\b")
+MODULES_RE = re.compile(r"^\s*modules:\s*(\S.*?)\s*$", re.M)
 POLL = float(os.environ.get("NS3_TOOL_POLL", "15"))  # seconds between GitHub polls
 # What `isolates:` may name (#89), and what else may differ with it.
 ISOLATES = {"image": {"image"}, "ns3": {"ns3", "image"}, "source_sha": {"source_sha", "image"},
@@ -676,9 +699,9 @@ def run_state(repo, rid):
 
 
 def fetch(repo, rid, dest):
-    """Extract run `rid`'s benchmark-cell artifact into dest."""
+    """Extract run `rid`'s benchmark-cell artifact (benchmark-cell-<key> when keyed) into dest."""
     arts = json.loads(gh(f"repos/{repo}/actions/runs/{rid}/artifacts"))["artifacts"]
-    art = next((x for x in arts if x["name"] == ARTIFACT), None)
+    art = next((x for x in arts if ARTIFACT_RE.fullmatch(x["name"])), None)
     if art is None:
         raise RuntimeError(f"run {rid} has no artifact '{ARTIFACT}' (expired after 7 days?)")
     data = gh(f"repos/{repo}/actions/artifacts/{art['id']}/zip", binary=True)
@@ -687,6 +710,73 @@ def fetch(repo, rid, dest):
         z.flush()
         with zipfile.ZipFile(z.name) as zf:
             zf.extractall(dest)
+
+
+# --- the cell key and reuse (#94, #155) -----------------------------------------
+
+
+def campaign_module():
+    """campaign.py, for cell_key (imported late: campaign.py imports this file)."""
+    try:
+        from . import campaign
+    except ImportError:
+        import campaign
+    return campaign
+
+
+def read_caller(repo, wf, ref):
+    """(own modules, dependencies) the caller workflow builds, or None when it
+    forwards no `key` input to the reusable cell. own: the module names of its
+    `modules:` (built at source_sha); dependencies: name@commit of each
+    `name=owner/repo@<commit>` it pins."""
+    out = gh(f"repos/{repo}/contents/.github/workflows/{wf}?ref={ref}", "--jq", ".content")
+    text = base64.b64decode(out).decode()
+    if "inputs.key" not in text:
+        return None
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    m = MODULES_RE.search(code)
+    own = [t.split("=", 1)[0] for t in m.group(1).split()] if m else []
+    return own, [f"{name}@{commit}" for name, commit in DEP_RE.findall(code)]
+
+
+def cell_modules(repo, sha, caller):
+    """The commits a cell's key covers: the repository, its own modules, the dependencies."""
+    own, deps = caller
+    return [f"{repo}@{sha}"] + [f"{name}@{sha}" for name in own] + deps
+
+
+def keyed_run(repo, key):
+    """The newest successful run with an unexpired benchmark-cell-<key> artifact, or None."""
+    data = json.loads(gh(f"repos/{repo}/actions/artifacts?name={ARTIFACT}-{key}&per_page=100"))
+    rids = sorted(
+        {
+            (a.get("workflow_run") or {}).get("id")
+            for a in data.get("artifacts", [])
+            if not a.get("expired") and (a.get("workflow_run") or {}).get("id")
+        },
+        reverse=True,
+    )
+    return next((rid for rid in rids if run_state(repo, rid) == "success"), None)
+
+
+def check_reused(repo, work, rid, sha, image, key, mods, command):
+    """Why run `rid` is not the cell keyed `key` ("" when it is); downloads it."""
+    src = os.path.join(work, "artifacts", str(rid))
+    if results_text(src) is None:
+        fetch(repo, rid, src)
+    text = results_text(src) or ""
+    prov = prov_of(text)
+    bad = [prov_problem(prov, sha, image)] if prov_problem(prov, sha, image) else []
+    if "##RUN##" not in text and "##BENCH##" not in text:
+        bad.append("no result rows")
+    if prov and prov.get("key") != key:
+        bad.append(f"key {prov.get('key') or '-'}")
+    own = {m for m in mods if "/" not in m.split("@")[0]}  # the modules= the cell builds
+    if prov and own and set((prov.get("modules") or "").split(",")) != own:
+        bad.append(f"modules {prov.get('modules') or '-'}, not {','.join(sorted(own))}")
+    if f"##ARGS## {command}" not in text.splitlines():
+        bad.append("its ##ARGS## is not the job's command line")
+    return "; ".join(bad)
 
 
 # --- state --------------------------------------------------------------------
@@ -778,15 +868,43 @@ def cmd_dispatch(plan, a):
         logged[arm] = [sha, image]
     state.update(pins=logged, repo=repo, workflow=wf)
     state.setdefault("date", datetime.datetime.now(datetime.timezone.utc).date().isoformat())
-    save_state(work, state)
+    if not a.dry_run:
+        save_state(work, state)
+    caller = read_caller(repo, wf, plan["ref"])
+    if caller is None:
+        print(f"{repo} {wf} at {plan['ref']} forwards no `key`: no cell key, no reuse",
+              file=sys.stderr)  # fmt: skip
     cap = a.cap or plan["cap"]
     done = read_log(work)
+    counts = {"reuse": 0, "run": 0}
     for label, cell, arm, jwf, inp in mine:
         if label in done:
             continue
         if not CELL_RE.fullmatch(cell):
             sys.exit(f"cell '{cell}' is not [a-z0-9][a-z0-9._-]*")
         harness, args, _version = legacy_command(jwf, inp, plan["program"])
+        sha, image = pins[arm]
+        key = reused = None
+        if caller is not None:
+            mods = cell_modules(repo, sha, caller)
+            key = campaign_module().cell_key(image, mods, harness, args)
+            reused = keyed_run(repo, key) if a.reuse else None
+        if a.dry_run:
+            counts["reuse" if reused else "run"] += 1
+            print(f"{label}\t{key or '-'}\t" + (f"reuse run {reused}" if reused else "run"))
+            continue
+        if reused:
+            why = check_reused(repo, work, reused, sha, image, key, mods, f"{harness} {args}")
+            if why:
+                sys.exit(
+                    f"reuse: {label}: run {reused} has key {key[:12]}, but {why}\n"
+                    "(a mismatch is an error; --no-reuse runs every job anew)"
+                )
+            with open(os.path.join(work, "runs.tsv"), "a") as f:
+                f.write(f"{label}\t{reused}\treused\n")
+            print(f"{label}\t{reused}\treused")
+            counts["reuse"] += 1
+            continue
         while active_runs(repo, wf) >= cap:
             if not a.wait:
                 print(
@@ -796,15 +914,25 @@ def cmd_dispatch(plan, a):
                 )
                 return
             time.sleep(POLL * 8)
-        sha, image = pins[arm]
         title = f"{plan['generation']}/{label}"
         inputs = {"image": image, "source_sha": sha, "harness": harness, "args": args,
                   "cell": cell, "label": title}  # fmt: skip
+        if key:
+            inputs["key"] = key
         rid = dispatch_run(repo, wf, plan["ref"], inputs, title)
         with open(os.path.join(work, "runs.tsv"), "a") as f:
             f.write(f"{label}\t{rid}\n")
         print(f"{label}\t{rid}")
-    print(f"all {len(mine)} job(s) dispatched", file=sys.stderr)
+        counts["run"] += 1
+    if a.dry_run:
+        print(
+            f"{len(mine)} job(s): {len(mine) - counts['reuse'] - counts['run']} logged, "
+            f"{counts['reuse']} reusable, {counts['run']} to run (dry run: nothing dispatched)",
+            file=sys.stderr,
+        )
+        return
+    note = f" ({counts['reuse']} reused)" if counts["reuse"] else ""
+    print(f"all {len(mine)} job(s) dispatched{note}", file=sys.stderr)
 
 
 def cmd_status(plan, a):
@@ -1021,6 +1149,17 @@ def main(argv=None):
             )
         if name == "dispatch":
             s.add_argument("--cap", type=int)
+            s.add_argument(
+                "--dry-run",
+                action="store_true",
+                help="print each job's key and whether it would be reused or run; dispatch nothing",
+            )
+            s.add_argument(
+                "--no-reuse",
+                dest="reuse",
+                action="store_false",
+                help="dispatch every job, even one an earlier run with its key covers",
+            )
             s.add_argument(
                 "--wait", action="store_true", help="sleep at the cap instead of exiting"
             )
