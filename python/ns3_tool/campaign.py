@@ -902,7 +902,9 @@ def check_cell(plan, state, label, rid, args, text, key=None):
     p = parameters(args)
     block = set(range(p["firstRun"], p["firstRun"] + p["runs"]))
     try:  # strict (#58): a malformed ##RUN## field rejects the cell
-        runs = bench_parse.parse_runs(text, bench_parse.Reader(where=f"{label}: run {rid} {path}"))
+        runs = bench_parse.parse_runs(
+            text, bench_parse.Reader(where=f"{label}: run {rid} results.txt")
+        )
     except bench_parse.Malformed as e:
         raise RuntimeError(str(e)) from None
     for arm in plan["arms"]:
