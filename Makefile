@@ -27,13 +27,11 @@ build: ## build what this repo ships
 test: ## the fast tests CI runs on every PR
 	for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done
 
-lint: ## static checks, no changes
-	@$(MAKE) --no-print-directory org-tools
+lint: org-tools ## static checks, no changes
 	ruff check --config "$(ORG_DIR)/ruff.toml" python
 	ruff format --check --config "$(ORG_DIR)/ruff.toml" python
 
-format: ## apply the formatters
-	@$(MAKE) --no-print-directory org-tools
+format: org-tools ## apply the formatters
 	ruff format --config "$(ORG_DIR)/ruff.toml" python
 
 clean: ## remove build outputs

@@ -65,6 +65,9 @@ test = 'for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done'
 # What CI gates on (#162): the required check `python-quality / python` (ruff with the org
 # ruff.toml, fetched by org-tools). No clang-format: the harness keeps AntHocNet's style
 # (ns3.yml `format: false`); the restyle PR that adopts the org .clang-format adds it back.
+# A recipe here cannot declare a prerequisite, so these fetch org-tools in a sub-make. The
+# Makefile (the repository's own) has `lint: org-tools` and `format: org-tools` instead, so
+# `make -j check` fetches the org tooling once, not twice at the same time.
 lint = """
 @$(MAKE) --no-print-directory org-tools
 ruff check --config "$(ORG_DIR)/ruff.toml" python
