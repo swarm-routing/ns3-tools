@@ -36,15 +36,15 @@
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
     },
     "base_image": {
-      "description": "The ns3-dev image the campaign image is built FROM: the immutable versioned tag and its digest (golden rules 11 and 13: the optimized profile).",
+      "description": "The ns-3 base image the campaign image is built FROM (ns3, or ns3-dev before swarm-routing/.github#370): the immutable versioned tag and its digest (golden rules 11 and 13: the optimized profile).",
       "type": "object",
       "additionalProperties": false,
       "required": ["ref", "digest", "ns3_version", "profile"],
       "properties": {
         "ref": {
-          "description": "ghcr.io/swarm-routing/ns3-dev:<ver>[-<base>]-optimized-<sha7>, never a rolling tag.",
+          "description": "ghcr.io/swarm-routing/ns3:<ver>[-<base>]-optimized-<sha7> (ns3-dev: before swarm-routing/.github#370), never a rolling tag.",
           "type": "string",
-          "pattern": "^ghcr\\.io/swarm-routing/ns3-dev:[0-9]+\\.[0-9]+(\\.[0-9]+)?(-(debian|slim|alpine))?-optimized-[0-9a-f]{7}$"
+          "pattern": "^ghcr\\.io/swarm-routing/ns3(-dev)?:[0-9]+\\.[0-9]+(\\.[0-9]+)?(-(debian|slim|alpine))?-optimized-[0-9a-f]{7}$"
         },
         "digest": {"$ref": "#/$defs/digest"},
         "ns3_version": {
@@ -59,14 +59,14 @@
       }
     },
     "campaign_image": {
-      "description": "The image every cell pulled by digest: a campaign image <repo>-ns3-campaign:<commit7>-<basesha7> or <commit7>-<basesha7>-optimized (the tag reusable-ns3-image.yml pushes), or a release image <repo>-ns3:<version>-optimized (swarm-routing/.github#107).",
+      "description": "The image every cell pulled by digest: a campaign image <repo>-dev:<commit7>-<basesha7> or <commit7>-<basesha7>-optimized (the tag reusable-ns3-image.yml pushes; <repo>-ns3-campaign before swarm-routing/.github#370), or a release image <repo>:<version>-optimized (<repo>-ns3 before #370; swarm-routing/.github#107). Never the base package, never a rolling tag.",
       "type": "object",
       "additionalProperties": false,
       "required": ["ref", "digest"],
       "properties": {
         "ref": {
           "type": "string",
-          "pattern": "^ghcr\\.io/swarm-routing/[a-z0-9._-]+-ns3(-campaign)?:[A-Za-z0-9._-]+$"
+          "pattern": "^ghcr\\.io/swarm-routing/[a-z0-9._-]+:[A-Za-z0-9._-]+$"
         },
         "digest": {"$ref": "#/$defs/digest"}
       }

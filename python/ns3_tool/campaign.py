@@ -59,7 +59,7 @@ runs in that clone with NS3DIR pointing at a scratch tree; it must leave the
 module at $NS3DIR/contrib/<name>. Every other module is passed to
 reusable-ns3-image.yml as a dependency, which clones it at its commit.
 
-The image is ghcr.io/swarm-routing/ns3-tools-ns3-campaign:<commit7>-<base7>-optimized:
+The image is ghcr.io/swarm-routing/ns3-tools-dev:<commit7>-<base7>-optimized:
 commit7 is the plan's first module's commit (the protocol under test: list it
 first), base7 the resolved ns3-dev digest's first 7 hex digits
 (reusable-ns3-image.yml resolves the tag once, builds FROM that digest and
@@ -67,7 +67,12 @@ appends -optimized; skip-existing reuses an image already built). The
 manifest names that pushed tag (swarm-routing/benchmarks#17 accepts the
 suffix) and its digest, which is what pins it. Because a reused image may hold
 other commits of the other modules, campaign-image.yml checks the image's
-modules against the plan (`expect`) before any cell runs.
+modules against the plan (`expect`) before any cell runs. ns3-tools-dev is a
+development package (#169): a job of the main pipeline deletes its versions
+older than 2 days that no committed file pins, so a campaign's cells run
+within 2 days of its `build`, and its manifest, which pins the digest, lands
+in swarm-routing/benchmarks (an open pull request there counts) before the
+image ages out.
 
 Every cell's ##PROV## line is written by campaign-cell.yml from the image
 itself (its labels and the base's): the base tag and digest, the campaign
@@ -124,7 +129,7 @@ REPO = os.environ.get("NS3_TOOL_REPO", "swarm-routing/ns3-tools")
 GIT = os.environ.get("NS3_TOOL_GIT", "https://github.com")  # where `stage` clones from
 IMAGE_WORKFLOW = "campaign-image.yml"
 CELL_WORKFLOW = "campaign-cell.yml"
-IMAGE = "ghcr.io/swarm-routing/ns3-tools-ns3-campaign"
+IMAGE = "ghcr.io/swarm-routing/ns3-tools-dev"  # before #169: ns3-tools-ns3-campaign, frozen
 MARKERS_VERSION = 1  # swarm-routing/benchmarks schemas/markers/v1.json
 CELL_ARTIFACT = "campaign-cell"  # campaign-cell.yml's artifact; -<key> appended when it has one
 CACHE = os.environ.get("NS3_CAMPAIGN_CACHE") or os.path.join(

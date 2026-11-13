@@ -162,8 +162,7 @@ def test_plan_and_inputs():
     )
     check("--runs=10 --firstRun=11" in out, "plan: the second block starts at seed 11")
     check(
-        f"ns3-tools-ns3-campaign:{cp.modules(example())[0]['commit'][:7]}-{{base7}}-optimized"
-        in out,
+        f"ns3-tools-dev:{cp.modules(example())[0]['commit'][:7]}-{{base7}}-optimized" in out,
         "plan: names the image it needs",
     )
     code, out, _e = run(["image-inputs", EXAMPLE])
