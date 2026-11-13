@@ -10,8 +10,8 @@ title: "ns3-tools"
 abstract: >-
   Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench
   harness every protocol arm registers with, the readers and paired statistics
-  for its marker lines, and (planned) probes, universal arenas and the
-  ns3-tool CLI.
+  for its marker lines behind the ns3-tool CLI, the ns3-campaign driver, and
+  (planned) probes and universal arenas.
 type: software
 authors:
   - family-names: Joppi

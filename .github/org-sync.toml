@@ -75,7 +75,7 @@ ruff format --config "$(ORG_DIR)/ruff.toml" python"""
 
 [settings]
 # GitHub settings as code: swarm-routing/.github tools/repo-settings (swarm-routing/.github#117).
-description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench harness every protocol arm registers with, the readers and paired statistics for its marker lines, and (planned) probes, universal arenas and the ns3-tool CLI."
+description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench harness every protocol arm registers with, the readers and paired statistics for its marker lines behind the ns3-tool CLI, the ns3-campaign driver, and (planned) probes and universal arenas."
 homepage = "https://swarm-routing.github.io/arena/ns3-tools/"
 topics = ["ns-3", "benchmarking", "routing-protocol", "manet", "network-simulation", "statistics", "reproducibility", "aodv", "olsr"]
 ruleset = "tooling"

@@ -23,9 +23,9 @@
 Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 `routing-bench` comparison harness (`ns3/routing-bench/`), the result readers
 and statistics (`python/`) behind one CLI, `ns3-tool` (`compare`, `sweep`,
-`diagnose`, `scaffold`; `pip install ./python`, then `ns3-tool --help`), and,
-planned, non-intrusive probes and universal arenas. **Status:** being
-populated (Phase 4).
+`diagnose`, `scaffold`; `pip install ./python`, then `ns3-tool --help`), the
+campaign driver `ns3-campaign`, and, planned, non-intrusive probes as their
+own module (#40). **Status:** being populated (Phase 4); v0.1.0 is released.
 
 What each release must show, and what blocks what: [docs/roadmap.md](docs/roadmap.md).
 
@@ -64,7 +64,7 @@ What is planned and in progress here: the issues labelled [`epic`](https://githu
 
 | Epic | Status | Sub-issues closed |
 |------|--------|-------------------|
-| [#2](https://github.com/swarm-routing/ns3-tools/issues/2) A protocol-agnostic comparison harness, packaged on its own | In progress | 2 / 8 |
+| [#2](https://github.com/swarm-routing/ns3-tools/issues/2) A protocol-agnostic comparison harness, packaged on its own | In progress | 3 / 8 |
 | [#7](https://github.com/swarm-routing/ns3-tools/issues/7) metrics 2026 — age of information, delay percentile/CDF export, energy-per-bit, route lifetime/convergence as CSV metrics | Planned | 0 / 1 |
 | [#15](https://github.com/swarm-routing/ns3-tools/issues/15) Comparators: swarm, learned and secure protocols under identical conditions | Planned | 0 / 10 |
 | [#34](https://github.com/swarm-routing/ns3-tools/issues/34) promote AntHocNet's vendored comparator modules into ns3/arms/: aomdv, gpsr, qrouting, oracle | Planned | 0 / 2 |
