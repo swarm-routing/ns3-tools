@@ -7,7 +7,7 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: v0.2.0 released; v1.0.0 next: today's `ns3-tool` CLI and marker contract v1 (`docs/markers.md`) frozen (maintainer decision 2026-11-13, `docs/roadmap.md`); contract v2 is v2.0.0.** On `main`, moved from AntHocNet: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39), plus the campaign driver `ns3-campaign` (#66, #81). Probes as their own module are planned (#40); update this file in the PR that adds each part.
+**Status: v1.0.0 released (2026-11-13): today's `ns3-tool` CLI and marker contract v1 (`docs/markers.md`) are frozen (maintainer decision 2026-11-13, `docs/roadmap.md`); v1.1.0 next (additive); contract v2 is v2.0.0.** On `main`, moved from AntHocNet: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39), plus the campaign driver `ns3-campaign` (#66, #81). Probes as their own module are planned (#40); update this file in the PR that adds each part.
 
 Protocol-agnostic diagnostics and comparison tooling: the comparison harness
 (`routing-compare`), which today holds the measurement itself (the topology
