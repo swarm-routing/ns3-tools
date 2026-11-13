@@ -16,9 +16,9 @@ result cache (#94) and the change-test plans of any protocol repository
 (`change_plan.py`, #81, #89, #152). v0.1.0 is released (#26), and AntHocNet
 consumes the harness and the readers from here (#29).
 
-v0.2.0 is released too. Next, the ladder in `docs/roadmap.md` as re-scoped by
-the maintainer on 2026-11-13: v1.0.0 freezes today's `ns3-tool` CLI and marker
-contract v1 (#137); v1.1.0 is additive (the family catalogue #55, the probes as
+v0.2.0 and v1.0.0 are released too. The ladder in `docs/roadmap.md`, as
+re-scoped by the maintainer on 2026-11-13: v1.0.0 froze today's `ns3-tool` CLI
+and marker contract v1 (#137); next, v1.1.0 is additive (the family catalogue #55, the probes as
 their own module #40, the satellite harnesses #5, the user guide #4, the rest
 of #91); v2.0.0 is the marker contract v2 (#79).
 The comparator arms (epic #15) come after 1.0.
