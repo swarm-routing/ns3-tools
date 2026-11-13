@@ -87,12 +87,14 @@ def check(rd, lineno, row, cols):
     """The names of ``cols`` whose value is not a number (strict: fail on the first)."""
     bad = []
     for c in cols:
-        v = row.get(c)
-        if v is None or (v == "" and c in BLANK_OK):
+        if c not in row:  # not a column of this file
+            continue
+        v = row[c]
+        if v == "" and c in BLANK_OK:
             continue
         try:
             float(v)
-        except ValueError:
+        except (TypeError, ValueError):  # None: the row ends before this column
             rd.bad(lineno, "column", c, v)
             bad.append(c)
     return bad
@@ -203,9 +205,10 @@ def collect_runs(paths, metric="delay99_ms"):
         with open(sib, newline="") as fh:
             rdr = csv.DictReader(fh)
             for row in rdr:
-                check(rd, rdr.line_num, row, [metric])
+                bad = check(rd, rdr.line_num, row, [metric])
                 v = f(row, metric)
                 if v is None or v < 0:
+                    rd.rows += bool(bad)
                     continue
                 vals.setdefault(
                     (row["kind"], row["group"], f(row, "x", 0.0), row["protocol"]), []
@@ -375,6 +378,9 @@ def main():
 
 def _run(args):
     cells = collect(args.files, args.group)  # (kind, group, x) -> {proto: row}
+    # Read (and, strict, check) every per-run sibling before printing anything,
+    # so a malformed one cannot leave a partial summary on stdout (#58).
+    run_vals = collect_runs(args.files) if args.export_sweeps else {}
     if not cells:
         sys.exit("FAIL: no rows matched")
 
@@ -429,8 +435,7 @@ def _run(args):
         # values (methodology: a t-CI on a p99 is not defensible), collapsed
         # to the conservative symmetric envelope max(mean-lo, hi-mean) since
         # the schema carries one half-width. t-CI remains the fallback for
-        # aggregate-only inputs.
-        run_vals = collect_runs(args.files)
+        # aggregate-only inputs. run_vals was read before anything printed.
 
         def hw99(row, k, proto):
             vals = run_vals.get((k[0], k[1], k[2], proto), ())

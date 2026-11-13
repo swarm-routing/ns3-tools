@@ -73,7 +73,9 @@ line and the field (``Malformed``; the CLI exits 2), instead of dropping that
 field or row and computing a verdict from fewer seeds. ``inf`` and ``nan``
 still parse where they do today (the offered-load percentiles print ``inf``;
 non-finite ``##RUN##`` values are left out of that seed's metrics). A missing
-trailing field is not malformed: older harnesses print fewer columns.
+trailing field is not malformed: older harnesses print fewer columns. A line
+that starts ``##RUN##`` but is not ``<run> <arm> <fields>`` (a row cut by
+interleaved output) is malformed too: it would lose a seed.
 ``--lenient`` restores the old behaviour for exploring partial logs and
 prints to stderr how many fields and rows it dropped. ``--get`` is not a
 reader of values (it prints tokens as written) and is unchanged.
@@ -271,6 +273,9 @@ def parse_runs(text, reader=None):
     for lineno, line in enumerate(text.splitlines(), 1):
         m = RUN.search(line)
         if not m:
+            if line.lstrip().startswith("##RUN##"):  # not <run> <arm> <fields>: a lost row
+                rd.bad(lineno, "##RUN##", "row", line.strip()[:60])
+                rd.rows += 1
             continue
         vals, bad = {}, set()
         for name, tok in zip(RUN_METRICS, m.group(3).split()):
@@ -312,7 +317,7 @@ def parse_stddev(text, blocks=False, reader=None):
         m = STDDEV.match(line.strip())
         if not m:
             continue
-        vals = {}
+        vals, bad = {}, False
         for tok in m.group(2).split():
             if "=" not in tok:
                 continue
@@ -321,6 +326,9 @@ def parse_stddev(text, blocks=False, reader=None):
                 vals[k] = float(v)
             except ValueError:
                 rd.bad(lineno, "# stddev", f"{m.group(1)} {k}", v)
+                bad = True
+        if not vals and bad:
+            rd.rows += 1
         if vals:
             sds[m.group(1)] = vals
             out.append((m.group(1), vals, pending.pop(m.group(1), set())))

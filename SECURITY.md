@@ -14,13 +14,21 @@ The `ns3-tool` readers of `##CONFIG##`/`##RUN##`/`##BENCH##`/`##DIAG##`
 lines and campaign CSVs (`python/ns3_tool/`). Their input is log output that
 may come from someone else's run (a pull request's artifact, a downloaded
 dataset). They never execute what they read (no `eval`, no pickle, no
-shell; stdlib only). Malformed lines are rejected: a `##RUN##`, `##BENCH##`
-or `# stddev` field, or a required campaign-CSV value, that is present but
-not a number fails the read, naming the file, the line and the field (#58),
-so malformed input cannot change a verdict by quietly dropping a seed.
-`--lenient` (`bench_parse`, `sweep_summary`) skips such fields instead, for
-exploring partial logs, and reports how many it dropped; no verdict path
-uses it by default.
+shell; stdlib only). Malformed lines are rejected by default (#58): the
+read fails, naming the file, the line and the field, when a `##RUN##`,
+`##BENCH##` or `# stddev` field is present but not a number, when a line
+starts `##RUN##` but is not `<run> <arm> <fields>` (a row cut by interleaved
+output), or when a required campaign-CSV value is unreadable or missing.
+What strict reading does not cover: a seed that is simply absent from a cell
+(the paired statistics use the seeds both cells have, and say how many), a
+trailing `##RUN##` field an older harness does not print, and
+`bench_parse --get`, which prints a field's token as written for the CI
+gates and judges nothing. `--lenient` (`bench_parse`, `sweep_summary`) is
+for exploring partial logs and reports what it dropped; it can change a
+result: `bench_parse` then leaves a malformed field out of that seed (a row
+whose PDR is malformed is dropped), and `sweep_summary` keeps a row and
+substitutes its caller's default (0 for most metrics) for an unreadable
+aggregate value. No verdict path uses it unless asked.
 
 ## Known, by-design limitations (out of scope)
 

@@ -110,6 +110,21 @@ def test_cells(tmp):
     expect_strict([BENCH_PARSE, "--all", path], path, lineno, "pdr")
     expect_lenient([BENCH_PARSE, "--all", path], 1, 1)
     print(f"ok   bench: strict fails at bench.txt:{lineno} (pdr); lenient drops 1 field, 1 row")
+    # A ##RUN## row cut by interleaved output: the seed would be lost.
+    lines = text.splitlines()
+    i = next(n for n, ln in enumerate(lines) if ln.startswith("##RUN##"))
+    lines[i] = "##RUN## 6 ao##RSS## t=660s top=ns3 pid=457 rss_kb=107788"
+    path = write(tmp, "cut-row.txt", "\n".join(lines) + "\n")
+    expect_strict([BENCH_PARSE, "--all", path], path, i + 1, "row")
+    expect_lenient([BENCH_PARSE, "--all", path], 1, 1)
+    print(f"ok   cut-row: strict fails at cut-row.txt:{i + 1}; lenient drops 1 row")
+    # A '# stddev' line left with no value counts as a dropped row.
+    bad, lineno = corrupt(text, "# stddev", 3, "pdr=x")
+    lines = bad.splitlines()
+    lines[lineno - 1] = " ".join(lines[lineno - 1].split()[:4])
+    path = write(tmp, "stddev-row.txt", "\n".join(lines) + "\n")
+    expect_lenient([BENCH_PARSE, "--all", path], 1, 1)
+    print("ok   stddev-row: a '# stddev' line with no usable value counts as a dropped row")
     # --control reads ##RUN## rows: a malformed baseline row fails too.
     bad, lineno = corrupt(text, "##RUN##", 5, "x")
     path = write(tmp, "control.txt", bad)
@@ -153,6 +168,12 @@ def test_csv(tmp):
     out = expect_lenient([SWEEP, bad], 1, 0)
     check("area" in out, f"lenient CSV output: {out}")
     print("ok   csv: a corrupted required cell fails at bad.csv:3 (delay99_ms); lenient counts it")
+    # A row that ends before a required column (csv gives None).
+    rows = list(CSV_ROWS)
+    rows[1] = rows[1].rsplit(",", 3)[0] + "\n"
+    short = write(tmp, "short.csv", CSV_HEAD + "".join(rows))
+    expect_strict([SWEEP, short], short, 3, "delay99_ms")
+    print("ok   csv: a row that ends before a required column fails")
     # A sibling -runs.csv value the paired verdict reads.
     before = write(tmp, "before.csv", CSV_HEAD + "".join(CSV_ROWS))
     after = write(tmp, "after.csv", CSV_HEAD + "".join(CSV_ROWS))
