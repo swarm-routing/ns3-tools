@@ -1,5 +1,12 @@
 ## v1.0.0 (2026-11-13)
 
+The stability release: no new features or fixes, a promise. The `ns3-tool` CLI
+and marker contract v1 ([`docs/markers.md`](docs/markers.md)) are frozen: from
+here commands, options and fields are only appended, and a breaking change to
+either is a major release. Marker contract v2 ships as 2.0.0. See
+[`docs/roadmap.md`](docs/roadmap.md) and
+[#181](https://github.com/swarm-routing/ns3-tools/pull/181).
+
 ## v0.2.0 (2026-11-13)
 
 ### Feat
