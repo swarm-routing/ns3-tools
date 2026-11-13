@@ -66,6 +66,17 @@ harness's independent ``# stddev`` lines gets each metric's sample sd
 recomputed from the columns this parser believes are that metric and compared
 against the harness's own number; a disagreement prints MAPPING FAIL and the
 script exits non-zero. Do not trust any number from a cell that failed.
+
+Strict by default (#58): a ``##RUN##``, ``##BENCH##`` or ``# stddev`` line
+with a field that is present but is not a number fails, naming the file, the
+line and the field (``Malformed``; the CLI exits 2), instead of dropping that
+field or row and computing a verdict from fewer seeds. ``inf`` and ``nan``
+still parse where they do today (the offered-load percentiles print ``inf``;
+non-finite ``##RUN##`` values are left out of that seed's metrics). A missing
+trailing field is not malformed: older harnesses print fewer columns.
+``--lenient`` restores the old behaviour for exploring partial logs and
+prints to stderr how many fields and rows it dropped. ``--get`` is not a
+reader of values (it prints tokens as written) and is unchanged.
 """
 
 import argparse
@@ -121,7 +132,45 @@ ULP_RUN = {"pdr": 0.05, "delay": 0.05, "delay99": 0.05, "nrl": 0.005, "nrl_bytes
 ULP_SD = {"pdr": 0.005, "delay": 0.05, "delay99": 0.05, "nrl": 0.0005, "nrl_bytes": 0.0005}
 
 
-def parse_cell(text):
+class Malformed(ValueError):
+    """A marker line with a field that is present but not a number (#58)."""
+
+
+class Reader:
+    """Strict or lenient handling of malformed fields, for one input (#58).
+
+    ``where`` names the input in messages (a path, or ``<text>``). Strict
+    raises ``Malformed``; lenient counts what it drops in ``fields`` and
+    ``rows``.
+    """
+
+    def __init__(self, strict=True, where="<text>"):
+        self.strict, self.where = strict, where
+        self.fields = self.rows = 0
+
+    def bad(self, lineno, marker, field, tok):
+        """A malformed field: raise when strict, else count it."""
+        if self.strict:
+            raise Malformed(
+                f"{self.where}:{lineno}: {marker} field {field}={tok!r} is not a number"
+                " (pass --lenient to skip it)"
+            )
+        self.fields += 1
+
+    def report(self):
+        """The lenient summary line, or '' when nothing was dropped."""
+        if not (self.fields or self.rows):
+            return ""
+        return (
+            f"lenient: {self.where}: dropped {self.fields} malformed field(s), {self.rows} row(s)"
+        )
+
+
+def _reader(reader):
+    return reader if reader is not None else Reader()
+
+
+def parse_cell(text, reader=None):
     """Return {proto: {metric: float}} from one run's output text.
 
     isl-grid's human table and ##RUN## rows (#259) already parse via ROW/RUN
@@ -129,9 +178,10 @@ def parse_cell(text):
     its --csv rows are mapped by header name below, so a satellite cell A/Bs
     exactly like a MANET one (#244 directed arm, #250 discriminator).
     """
+    rd = _reader(reader)
     rows = {}
     isl_cols = None
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         s = line.strip()
         if s.startswith("protocol,runs,rows,cols,"):  # isl-grid --csv header
             isl_cols = s.split(",")
@@ -159,6 +209,13 @@ def parse_cell(text):
         try:
             vals = [float(x) for x in parts[1:6]]
         except (ValueError, IndexError):
+            if m.re is BENCH:  # a marker line (#58); a human table row stays tolerant
+                for name, tok in zip(METRICS, parts[1:6]):
+                    try:
+                        float(tok)
+                    except ValueError:
+                        rd.bad(lineno, "##BENCH##", f"{proto} {name}", tok)
+                rd.rows += 1
             continue
         if len(vals) == 5:
             rows[proto] = dict(zip(METRICS, vals))
@@ -200,32 +257,39 @@ def parse_perf(text):
     return rows
 
 
-def parse_runs(text):
+def parse_runs(text, reader=None):
     """Return {proto: {run: {metric: float}}} from ##RUN## per-seed rows.
 
     All positional fields are kept (RUN_METRICS order); "inf" fields are
     dropped from that run's dict. #128 pairing and the #293 CI/paired stats
-    both read from this.
+    both read from this. A field that is not a number raises ``Malformed``
+    (strict, the default) or is dropped and counted (a lenient ``reader``,
+    #58); so is the row, when its PDR is the field.
     """
+    rd = _reader(reader)
     runs = {}
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         m = RUN.search(line)
         if not m:
             continue
-        vals = {}
+        vals, bad = {}, set()
         for name, tok in zip(RUN_METRICS, m.group(3).split()):
             try:
                 v = float(tok)
             except ValueError:
+                rd.bad(lineno, "##RUN##", f"{m.group(2)} run {m.group(1)} {name}", tok)
+                bad.add(name)
                 continue
             if math.isfinite(v):  # "inf" offered-load percentiles: drop
                 vals[name] = v
         if "pdr" in vals:
             runs.setdefault(m.group(2), {})[int(m.group(1))] = vals
+        elif "pdr" in bad:
+            rd.rows += 1
     return runs
 
 
-def parse_stddev(text, blocks=False):
+def parse_stddev(text, blocks=False, reader=None):
     """Return {proto: {metric: float}} from the harness's '# stddev' lines.
 
     With blocks=True, return a list of (proto, {metric: float}, runs) instead,
@@ -238,8 +302,9 @@ def parse_stddev(text, blocks=False):
     recompute (runs None): compose_cell.py appends a replacement seed's
     ##RUN## row after that line, and it belongs to the same population.
     """
+    rd = _reader(reader)
     sds, out, pending = {}, [], {}
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         r = RUN.search(line)
         if r:
             pending.setdefault(r.group(2), set()).add(int(r.group(1)))
@@ -255,7 +320,7 @@ def parse_stddev(text, blocks=False):
             try:
                 vals[k] = float(v)
             except ValueError:
-                pass
+                rd.bad(lineno, "# stddev", f"{m.group(1)} {k}", v)
         if vals:
             sds[m.group(1)] = vals
             out.append((m.group(1), vals, pending.pop(m.group(1), set())))
@@ -459,9 +524,9 @@ def ci_line(proto, per_run):
 MULTI_IFACE = re.compile(r"\bharness=(isl-grid|leo-walker)\b")
 
 
-def control(before_text, after_text, proto):
+def control(before_text, after_text, proto, readers=(None, None)):
     """Baseline control over two cells (#675). Returns (lines, failed)."""
-    before, after = parse_runs(before_text), parse_runs(after_text)
+    before, after = parse_runs(before_text, readers[0]), parse_runs(after_text, readers[1])
     multi = bool(MULTI_IFACE.search(before_text + after_text))
     lines, failed = [], False
     for p in sorted((set(before) | set(after)) - {proto}):
@@ -609,7 +674,32 @@ def main():
         choices=["run", "table", "csv", "paths", "perf"],
         help="where --get reads from (default: run)",
     )
+    ap.add_argument(
+        "--lenient",
+        action="store_true",
+        help="skip malformed ##RUN##/##BENCH##/'# stddev' fields instead of failing, "
+        "and report how many were dropped (#58)",
+    )
     args = ap.parse_args()
+    try:
+        _main(args)
+    except Malformed as e:
+        print(f"bench_parse: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _main(args):
+    readers = []
+
+    def reader(path):
+        rd = Reader(strict=not args.lenient, where="<stdin>" if path == "-" else path)
+        readers.append(rd)
+        return rd
+
+    def report():
+        for rd in readers:
+            if rd.report():
+                print(rd.report(), file=sys.stderr)
 
     if args.get:
         if len(args.files) != 1:
@@ -627,7 +717,10 @@ def main():
         for path in args.files:
             with open(path) as fh:
                 texts.append(fh.read())
-        lines, failed = control(texts[0], texts[1], args.proto)
+        lines, failed = control(
+            texts[0], texts[1], args.proto, (reader(args.files[0]), reader(args.files[1]))
+        )
+        report()
         print(
             f"control (baselines vs {args.proto}): "
             f"{label_of(args.files[0], texts[0])} -> "
@@ -646,15 +739,17 @@ def main():
         with sys.stdin if path == "-" else open(path) as fh:
             text = fh.read()
         perf = [m.group(0) for m in map(PERF.search, text.splitlines()) if m]
+        rd = reader(path)
         cells.append(
             (
                 label_of(path, text),
-                parse_cell(text),
-                parse_runs(text),
+                parse_cell(text, rd),
+                parse_runs(text, rd),
                 perf,
-                parse_stddev(text, blocks=True),
+                parse_stddev(text, blocks=True, reader=rd),
             )
         )
+    report()
 
     protos = [args.proto] if not args.all else sorted({p for _, r, _, _, _ in cells for p in r})
 

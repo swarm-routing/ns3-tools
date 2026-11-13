@@ -39,6 +39,19 @@ contract bump the reader rejects stops the gates too.
 replaced on every cell, and runs `arm-delivers.sh` on the fixtures and on
 broken inputs.
 
+The readers are strict by default (#58): a `##RUN##`, `##BENCH##` or
+`# stddev` field, or a required campaign-CSV value (`sweep_summary`), that is
+present but not a number fails with the file, the line and the field (exit 2),
+instead of being skipped, so no verdict runs on fewer seeds than it says.
+`inf` stays allowed where the harness prints it (the offered-load
+percentiles). `--lenient` (`bench_parse`, `sweep_summary`) restores the old
+skipping for exploring partial logs and reports on stderr how many fields and
+rows it dropped; its standard output is the old output byte for byte. Seven
+older cells in AntHocNet's `results/cells/` (the `grid-*` cells without a
+generation suffix and `static-mesh-jitter-cap1s.txt`) carry a monitor's
+`##RSS##` line written into a `##RUN##` row, so they read only with
+`--lenient`. `tests/test_strict.py` covers each case.
+
 `scenario_check` is AntHocNet's script with the protocol taken out (#28). The
 anchor floors come from a file in the schema of AntHocNet's
 `ns3/tools/anchors.yml` (`key: number` lines); `--anchor` names one of its

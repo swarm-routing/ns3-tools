@@ -46,7 +46,7 @@ def load(path):
     if not os.path.exists(path):
         return {}
     with open(path) as f:
-        return bp.parse_runs(f.read())
+        return bp.parse_runs(f.read(), bp.Reader(where=path))
 
 
 TERMITE_TREND = ("anchor-termite-s1", "anchor-termite-s20")
