@@ -57,7 +57,24 @@ digest. An arm's `pins` entry overrides either for that arm. `collect` reads
 each cell's ##PROV## line and rejects a cell whose commit= or image digest is
 not its arm's pin; it lists the rejected labels for re-dispatch, and
 `--redispatch` drops them from runs.tsv so the next `dispatch` sends them
-again. `plan` and `verdicts` also read the committed historical plans, which
+again.
+
+One dependency set per campaign (#148): a build-mode caller names its
+dependencies (swarm-core, routing-bench) by commit in its own
+`dependencies:`, read at dispatch time, so a pin bump merged while a campaign
+is in flight would build later cells on other dependency code. Every cell's
+##PROV## `modules=` names each built module as name@commit; the ones not at
+the cell's own source_sha are its dependencies. `collect` requires one
+commit per dependency name across every cell of every arm (a paired verdict
+must differ only in the code under test), and rejects a cell whose set
+differs, naming the label and both commits; `--redispatch` drops it like a
+wrong commit or image. The set is recorded in state.json (`dependencies`):
+by `dispatch`, from the caller it reads, and otherwise by the first
+`collect`, from the earliest run (lowest run id) that names one; a resumed
+campaign is compared against it, and `dispatch` refuses a caller whose
+dependencies no longer match it. A prebuilt cell (every module at
+source_sha, as AntHocNet's campaign image) has no dependencies to check: its
+image digest pins them. `plan` and `verdicts` also read the committed historical plans, which
 predate the pins.
 
 Reuse (#94, #155): when the repository's caller forwards a `key` input to the
@@ -501,13 +518,13 @@ def image_ns3(image, offline=False):
     if offline or not image or not IMAGE_RE.fullmatch(image):
         return "?"
     if image not in _NS3:
-        try:
+        try:  # any malformed registry answer is a release not read, never a crash
             config = registry_config(image)
-        except (OSError, ValueError, KeyError, StopIteration) as e:
+            tag = str((config.get("Labels") or {}).get(NS3_LABEL, ""))
+            env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+        except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as e:
             print(f"warning: cannot read {image}'s labels: {e}", file=sys.stderr)
-            config = {}
-        tag = (config.get("Labels") or {}).get(NS3_LABEL, "")
-        env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+            tag, env = "", {}
         _NS3[image] = release(tag.rsplit(":", 1)[-1]) or release(env.get("NS3_VERSION")) or "?"
     return _NS3[image]
 
@@ -882,6 +899,18 @@ def cmd_dispatch(plan, a):
     if caller is None:
         print(f"{repo} {wf} at {plan['ref']} forwards no `key`: no cell key, no reuse",
               file=sys.stderr)  # fmt: skip
+    else:  # one dependency set per campaign (#148)
+        deps = {d[1]: d[2] for d in caller[1]}
+        why = deps_problem(deps, state["dependencies"]) if "dependencies" in state else ""
+        if why:
+            sys.exit(
+                f"{repo} {wf} at {plan['ref']} now builds on {why} ({work}/state.json); "
+                "one campaign, one dependency set: finish it before the bump, or start "
+                "a new campaign (--work)"
+            )
+        if deps and "dependencies" not in state and not a.dry_run:
+            state["dependencies"] = deps
+            save_state(work, state)
     cap = a.cap or plan["cap"]
     done = read_log(work)
     counts = {"reuse": 0, "run": 0}
@@ -988,6 +1017,27 @@ def prov_problem(prov, sha, image):
     return "; ".join(bad)
 
 
+def prov_deps(prov, sha):
+    """name -> commit of each module a cell's ##PROV## names at another commit
+    than its source_sha: the dependencies it was built on ({} when prebuilt)."""
+    deps = {}
+    for tok in ((prov or {}).get("modules") or "").split(","):
+        name, _, commit = tok.partition("@")
+        if name and commit and commit != sha:
+            deps[name] = commit
+    return deps
+
+
+def deps_problem(got, want):
+    """Why a cell's dependency set is not the campaign's ("" when it is)."""
+    names = sorted(set(got) | set(want))
+    return "; ".join(
+        f"dependency {n}@{got.get(n, '-')}, not {n}@{want.get(n, '-')}"
+        for n in names
+        if got.get(n) != want.get(n)
+    )
+
+
 def cmd_collect(plan, a):
     work = work_dir(plan, a)
     log = read_log(work)
@@ -998,9 +1048,10 @@ def cmd_collect(plan, a):
     os.makedirs(a.out, exist_ok=True)
     written = skipped = 0
     rejected = []  # (label, run id, why)
+    ready = {}  # (cell, arm) -> [(label, rid, text, deps)]: short of its labels while a run is missing
     for (cell, arm), labels in groups.items():
         sha, image = pin(plan, arm)
-        bodies = []
+        bodies = ready[(cell, arm)] = []
         for label in labels:
             rid = log.get(label)
             if a.src:
@@ -1023,11 +1074,31 @@ def cmd_collect(plan, a):
                 # only the ##PROV## line; it is a missing run, not a result.
                 rejected.append((label, rid, "no result rows (a timed-out run's stub?)"))
                 continue  # every label of the cell is checked
-            why = prov_problem(prov_of(text), sha, image)
+            prov = prov_of(text)
+            why = prov_problem(prov, sha, image)
             if why:
                 rejected.append((label, rid, why))
                 continue
-            bodies.append((label, rid, text))
+            bodies.append((label, rid, text, prov_deps(prov, sha)))
+    # One dependency set per campaign (#148): state.json's, else the earliest run's.
+    state = load_state(work)
+    want = state.get("dependencies")
+    if want is None:
+        named = [b for bs in ready.values() for b in bs if b[3]]
+        if named:  # the earliest run: the dependencies the campaign started on
+            want = min(named, key=lambda b: int(b[1]) if str(b[1]).isdigit() else 0)[3]
+            state["dependencies"] = want
+            save_state(work, state)
+    for (cell, arm), bodies in ready.items():
+        labels, sha = groups[(cell, arm)], pin(plan, arm)[0]
+        kept = []
+        for label, rid, text, deps in bodies:
+            why = deps_problem(deps, want) if deps and want else ""
+            if why:
+                rejected.append((label, rid, why))
+            else:
+                kept.append((label, rid, text))
+        bodies = kept
         name = out_name(plan, cell, arm)
         if len(bodies) < len(labels):
             print(f"SKIP {name}: {len(bodies)} of {len(labels)} run(s) ready", file=sys.stderr)
@@ -1044,7 +1115,11 @@ def cmd_collect(plan, a):
         written += 1
     print(f"wrote {written} file(s), skipped {skipped}", file=sys.stderr)
     if rejected:
-        print("re-dispatch (each cell must run its arm's source_sha and image):", file=sys.stderr)
+        print(
+            "re-dispatch (each cell must run its arm's source_sha and image, "
+            "on the campaign's dependencies):",
+            file=sys.stderr,
+        )
         for label, rid, why in rejected:
             print(f"  {label}\trun {rid}\t{why}", file=sys.stderr)
         if a.redispatch:

@@ -585,6 +585,126 @@ def _collect_fetch():
                and os.listdir(out) == ["sat-vtest-quiet.txt"], "fetch", (code, err))  # fmt: skip
 
 
+def bprov(sha=SHA, core=DEP1, bench=DEP2, rid=1):
+    """A build-mode cell's ##PROV##: ara at source_sha on two dependencies (#148)."""
+    mods = f"ara@{sha}" + (f",swarm-core@{core}" if core else "") + f",routing-bench@{bench}"
+    return f"##PROV## commit={sha} ref=main run_id={rid} attempt=1 image={IMAGE} modules={mods}\n"
+
+
+def state_of(work):
+    with open(os.path.join(work, "state.json")) as f:
+        return json.load(f)
+
+
+@case("collect: one dependency set per arm; a cell built on another is rejected (#148)")
+def _collect_deps():
+    bumped = "0" * 40
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "quiet/vanet-s1\t11\nquiet/vanet-s5\t12\nquiet/sat\t13\n")
+        write_run(src, "quiet/vanet-s1", "##RUN## 1 anthocnet 40\n" + bprov())
+        write_run(src, "quiet/vanet-s5", "##RUN## 5 anthocnet 41\n" + bprov())
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + bprov())
+        code, err = collect(plan, work, src, out, arm="quiet")
+        want = {"swarm-core": DEP1, "routing-bench": DEP2}
+        expect(code == 0 and "wrote 2 file(s), skipped 0" in err, "deps-pass", (code, err))
+        expect(state_of(work).get("dependencies") == want, "deps-recorded", state_of(work))
+        # a swarm-core pin bump merged mid-campaign: the later cell is rejected
+        write_run(src, "quiet/vanet-s5", "##RUN## 5 anthocnet 41\n" + bprov(core=bumped))
+        # and a cell missing a dependency the campaign has
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + bprov(core=None))
+        out2 = os.path.join(d, "out2")
+        code, err = collect(plan, work, src, out2, arm="quiet")
+        expect(code == 1 and os.listdir(out2) == [], "deps-rejected", (code, os.listdir(out2), err))
+        expect(f"quiet/vanet-s5\trun 12\tdependency swarm-core@{bumped}, not swarm-core@{DEP1}" in err
+               and f"quiet/sat\trun 13\tdependency swarm-core@-, not swarm-core@{DEP1}" in err
+               and "SKIP vanet-vtest-quiet.txt: 1 of 2" in err, "deps-listed", err)  # fmt: skip
+        code, err = collect(plan, work, src, out2, arm="quiet", redispatch=True)
+        expect(code == 1 and cp.read_log(work) == {"quiet/vanet-s1": "11"}, "deps-redispatch",
+               (cp.read_log(work), err))  # fmt: skip
+        expect(state_of(work)["dependencies"] == want, "deps-kept", state_of(work))
+
+
+@case("collect: base and head arms on different dependency sets are rejected (#148)")
+def _collect_deps_arms():
+    bumped = "0" * 40
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d, pins={"quiet": {"source_sha": SHA2}},
+                       cells={"sat": PLAN["cells"]["sat"]},
+                       jobs=[{"arms": ["control", "quiet"], "cells": "*"}])  # fmt: skip
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        # no state.json yet: the earliest run (id 7, the base) sets the campaign's set
+        log_file(work, "control/sat\t7\nquiet/sat\t9\n")
+        write_run(src, "control/sat", "##RUN## 1 anthocnet 40\n" + bprov())
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 41\n" + bprov(sha=SHA2, bench=bumped))
+        code, err = collect(plan, work, src, out)
+        expect(code == 1 and os.listdir(out) == ["sat-vtest.txt"]
+               and f"quiet/sat\trun 9\tdependency routing-bench@{bumped}, not routing-bench@{DEP2}" in err,
+               "deps-arms", (code, os.listdir(out), err))  # fmt: skip
+        expect(state_of(work)["dependencies"] == {"swarm-core": DEP1, "routing-bench": DEP2},
+               "deps-arms-state", state_of(work))  # fmt: skip
+        # the same dependencies under both arms' own commits: both collect
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 41\n" + bprov(sha=SHA2))
+        code, err = collect(plan, work, src, out)
+        expect(code == 0 and sorted(os.listdir(out)) == ["sat-vtest-quiet.txt", "sat-vtest.txt"],
+               "deps-arms-pass", (code, err))  # fmt: skip
+
+
+@case("collect: a prebuilt cell (every module at source_sha) has no dependencies to check (#148)")
+def _collect_prebuilt():
+    # AntHocNet's ##PROV## shape: the campaign image pins every module at the commit.
+    mods = ",".join(f"{m}@{SHA}" for m in ("routing-bench", "oracle", "aomdv", "gpsr", "adaptive",
+                                           "anthocnet"))  # fmt: skip
+    line = f"##PROV## commit={SHA} ref=main run_id=1 attempt=1 image={IMAGE} modules={mods}\n"
+    expect(cp.prov_deps(cp.prov_of(line), SHA) == {} and cp.prov_deps(None, SHA) == {},
+           "prebuilt-deps", line)  # fmt: skip
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "quiet/sat\t13\n")
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + line)
+        code, err = collect(plan, work, src, out, arm="quiet")
+        expect(code == 0 and "dependencies" not in cp.load_state(work), "prebuilt", (code, err))
+
+
+@case("dispatch: records the caller's dependency set, refuses a caller bumped mid-campaign (#148)")
+def _dispatch_deps():
+    with tempfile.TemporaryDirectory() as d:
+        plan, work = (
+            plan_of(d, jobs=[{"arms": ["control"], "cells": ["grid"]}]),
+            os.path.join(d, "w"),
+        )
+        fake = keyed()
+        dispatch(plan, work, fake, cap=10)
+        expect(state_of(work).get("dependencies") == {"swarm-core": DEP1, "routing-bench": DEP2},
+               "dispatch-deps", state_of(work))  # fmt: skip
+        n, bumped = len(fake.dispatched), "0" * 40
+        fake.caller = KEY_CALLER.replace(f"ns3-swarm-core@{DEP1}", f"ns3-swarm-core@{bumped}")
+        moved = plan_of(d)  # more jobs to send, on the bumped caller
+        err = dispatch(moved, work, fake, cap=10)
+        expect(f"dependency swarm-core@{bumped}, not swarm-core@{DEP1}" in err
+               and len(fake.dispatched) == n, "dispatch-deps-refused", err)  # fmt: skip
+
+
+@case("NS3_TOOL_ANTHOCNET: every committed cell's ##PROV## names no dependency to check (#148)")
+def _corpus_prov():
+    root = os.environ.get("NS3_TOOL_ANTHOCNET")
+    if not root:
+        print("     (skipped: set NS3_TOOL_ANTHOCNET=<AntHocNet checkout>)")
+        return
+    n = 0
+    for path in sorted(glob.glob(os.path.join(root, "results", "cells", "*.txt"))):
+        with open(path) as f:
+            for line in f:
+                if line.startswith("##PROV##"):
+                    prov = cp.prov_of(line)
+                    expect(cp.prov_deps(prov, prov.get("commit", "")) == {}, "corpus-prov",
+                           f"{path}: {line}")  # fmt: skip
+                    n += 1
+    print(f"     {n} ##PROV## lines, none with a dependency to check")
+
+
 @case("status --brief: only the labels not yet successful, counts on stderr")
 def _status_brief():
     def fake(*args, **_k):
@@ -917,6 +1037,43 @@ def _plan_arms():
         "plan-offline",
         err,
     )
+
+
+@case("plan: a malformed registry answer is a warning and ?, never a crash (#89)")
+def _plan_registry_malformed():
+    answers = [
+        ["not", "a", "config"],  # a list where the config belongs
+        {"Labels": ["x"]},  # labels that are not a mapping
+        {"Env": [1, 2]},  # env entries that are not strings
+    ]
+    real = cp.registry_config
+    try:
+        for answer in answers:
+            cp.registry_config = lambda _image, answer=answer: answer
+            cp._NS3.clear()
+            with tempfile.TemporaryDirectory() as d:
+                code, out, err = plan_out(control_of(d))
+            expect(code == 0 and "dev/grid\tns-3 ?\t" in out and "cannot read" in err,
+                   "registry-malformed", (answer, out, err))  # fmt: skip
+
+        # a label that is not a string is read as its text, not a crash
+        cp.registry_config = lambda _image: {"Labels": {cp.NS3_LABEL: 3.48}}
+        cp._NS3.clear()
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = plan_out(control_of(d))
+        expect(code == 0 and "dev/grid\tns-3 3.48\t" in out, "registry-number", (out, err))
+
+        def token_null(_image):  # the token endpoint answers JSON null: None["token"]
+            raise TypeError("'NoneType' object is not subscriptable")
+
+        cp.registry_config = token_null
+        cp._NS3.clear()
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = plan_out(control_of(d))
+        expect(code == 0 and "dev/grid\tns-3 ?\t" in out, "registry-token-null", err)
+    finally:
+        cp.registry_config = real
+        cp._NS3.clear()
 
 
 @case("plan/dispatch: a declared isolation is refused when the arms differ in more (#89)")
