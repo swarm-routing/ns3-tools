@@ -101,9 +101,23 @@ def test_sweep():
             '--areaX=1900 --runs=5 --protocols=aodv,olsr,dsdv"',
             f"sweep defaults: routing-compare and the stock arms ({p.stderr})",
         )
+        # Refused before any output file is opened, so an earlier result survives.
+        out = os.path.join(d, "kept.csv")
+        with open(out, "w") as f:
+            f.write("earlier result\n")
+        for bad, needle in (
+            (["--only", "aera"], "--only 'aera' is not one of"),
+            (["--only", "area", "--point", "1"], "--point '1' not in sweep 'area'"),
+            (["--extra-args=--protocols=olsr"], "not in --extra-args"),
+        ):
+            p = run(CLI, "sweep", "/opt/ns-3", "--out", out, *bad, cwd=d)
+            check(p.returncode != 0 and needle in p.stderr, f"sweep {bad}: {p.stderr}")
+        with open(out) as f:
+            check(f.read() == "earlier result\n", "sweep: a refused selection writes nothing")
     print(
         "ok   sweep --dry-run prints AntHocNet's committed command lines; defaults name no protocol of ours"
     )
+    print("ok   sweep refuses a bad --only, --point or an arm list in --extra-args before writing")
     root = os.environ.get("NS3_TOOL_ANTHOCNET")
     if not root:
         print("     (skipped the live comparison: set NS3_TOOL_ANTHOCNET=<AntHocNet checkout>)")

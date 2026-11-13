@@ -442,6 +442,21 @@ def main(argv=None):
 
     want_discrete = args.only in ("all", "discrete") or args.only in DISCRETE
     want_sweeps = args.only in ("all", "sweeps") or args.only in SWEEPS
+    # Checked before the output files are opened, so a typo cannot truncate
+    # an earlier result (ns3-tools#39; the script it ports opened them first).
+    if not (want_discrete or want_sweeps):
+        names = ", ".join(["all", "discrete", "sweeps", *DISCRETE, *SWEEPS])
+        raise SystemExit(f"--only {args.only!r} is not one of: {names}")
+    if args.point is not None:
+        valid = [str(x) for x, _ in sweeps[args.only][2]]
+        if args.point not in valid:
+            raise SystemExit(
+                f"--point {args.point!r} not in sweep {args.only!r} (valid: {', '.join(valid)})"
+            )
+    # The arm list is --protocols: the CSV keeps that list's rows, so an
+    # override hidden in --extra-args would drop the other arms' rows.
+    if any(t.split("=", 1)[0] == "--protocols" for t in args.extra_args.split()):
+        raise SystemExit("set the arm list with --protocols, not in --extra-args")
 
     # #319: per-run rows land in a sibling file, flushed per point like the
     # aggregate CSV (#119), so a killed job still leaves both consistent.
