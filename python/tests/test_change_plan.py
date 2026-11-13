@@ -700,6 +700,17 @@ def _plan_isolates():
         fake = FakeGh()
         err = dispatch(control_of(d, isolates="image"), os.path.join(d, "w"), fake, arm="dev")
         expect("CONFOUND grid" in err and not fake.dispatched, "isolates-dispatch", err)
+        err = dispatch(control_of(d), os.path.join(d, "w2"), fake, arm="old")
+        expect("legacy_arms old" in err and not fake.dispatched, "legacy-arm-dispatch", err)
+        # The workload: a job entry that gives one arm other inputs is a confound too.
+        uneven = [{"arms": ["old"], "cells": "*", "inputs": {"speed": 1}},
+                  {"arms": ["dev"], "cells": "*", "inputs": {"speed": 20}}]  # fmt: skip
+        same = {"grid": {"workflow": "paper-benchmark.yml", "inputs": {"version": "3.48"}}}
+        code, _out, err = plan_out(control_of(d, isolates="image", jobs=uneven, cells=same))
+        expect(code == 1 and "differ in workload (the command lines of old, dev differ" in err,
+               "isolates-workload", err)  # fmt: skip
+        code, _out, err = plan_out(control_of(d, isolates="image", cells=same))
+        expect(code == 0 and "CONFOUND" not in err, "isolates-clean", err)
         try:
             control_of(d, isolates="weather")
         except SystemExit as e:

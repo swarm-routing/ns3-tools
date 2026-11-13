@@ -451,27 +451,67 @@ def job_runs(plan, arm, version, offline=False):
     return image_ns3(image, offline), image or "(no image pinned)", sha
 
 
+def workloads(plan):
+    """label -> the job's command line with every arm's own attributes left out.
+
+    Two arms of a cell must run the same workload; what tells them apart is
+    their attributes (`arms`, `armArgs`), compared on their own as `args`.
+    """
+    bare = dict(
+        plan,
+        arms={arm: "" for arm in plan["arms"]},
+        cells={c: {k: v for k, v in s.items() if k != "armArgs"} for c, s in plan["cells"].items()},
+    )
+    return {
+        label: " ".join(legacy_command(wf, inp, plan["program"])[:2])
+        for label, _c, _a, wf, inp in jobs(bare)
+    }
+
+
+def arm_rows(plan, offline=False):
+    """[(label, cell, arm, ns3, image, sha, workload, command)] for every job."""
+    work, rows = workloads(plan), []
+    for label, cell, arm, wf, inp in jobs(plan):
+        harness, args, version = legacy_command(wf, inp, plan["program"])
+        rows.append(
+            (
+                label,
+                cell,
+                arm,
+                *job_runs(plan, arm, version, offline),
+                work[label],
+                f"{harness} {args}",
+            )
+        )
+    return rows
+
+
+FIELDS = ("ns3", "image", "source_sha", "args", "workload")
+
+
 def confounds(plan, rows):
     """{cell: [(field, {arm: value})]}: what the arms of each cell differ in.
 
-    rows: [(cell, arm, ns3, image, sha)]. `args` is the arm's own attributes,
-    which differ by design unless the plan isolates something else.
+    rows: arm_rows(). `args` is the arm's own attributes, which differ by
+    design unless the plan isolates something else; `workload` is the rest of
+    the command line (scenario, seeds, protocols), which may never differ.
     """
     by_cell = {}
-    for cell, arm, ns3, image, sha in rows:
+    for _label, cell, arm, ns3, image, sha, workload, _cmd in rows:
         spec = plan["cells"][cell]
         args = " ".join(
             x for x in (plan["arms"][arm] or "", spec.get("armArgs", {}).get(arm, "")) if x
         )
         by_cell.setdefault(cell, {}).setdefault(arm, set()).add(
-            (("ns3", ns3), ("image", image), ("source_sha", sha), ("args", args))
-        )
+            (("ns3", ns3), ("image", image), ("source_sha", sha), ("args", args),
+             ("workload", workload))
+        )  # fmt: skip
     out = {}
     for cell, arms in by_cell.items():
         if len(arms) < 2:
             continue
         diffs = []
-        for i, field in enumerate(("ns3", "image", "source_sha", "args")):
+        for i, field in enumerate(FIELDS):
             values = {arm: ", ".join(sorted({v[i][1] for v in vs})) for arm, vs in arms.items()}
             if len(set(values.values())) > 1:
                 diffs.append((field, values))
@@ -495,6 +535,10 @@ def check_confounds(plan, rows):
             if field in allowed:
                 continue
             shown = ", ".join(f"{arm} {v}" for arm, v in values.items())
+            if field == "workload":  # whole command lines: name the arms, not the lines
+                shown = (
+                    "the command lines of " + ", ".join(values) + " differ beyond their attributes"
+                )
             what = "ns-3 release" if field == "ns3" else field
             if isolates is None:
                 unread = " (? = not read)" if "?" in values.values() else ""
@@ -638,12 +682,9 @@ def write_log(work, log):
 
 
 def cmd_plan(plan, a):
-    rows = []
-    for label, cell, arm, wf, inp in jobs(plan):
-        harness, args, version = legacy_command(wf, inp, plan["program"])
-        ns3, image, sha = job_runs(plan, arm, version, a.offline)
-        rows.append((cell, arm, ns3, image, sha))
-        print(f"{label}\tns-3 {ns3}\t{image}\t{sha}\t{harness} {args}")
+    rows = arm_rows(plan, a.offline)
+    for label, _cell, _arm, ns3, image, sha, _work, command in rows:
+        print(f"{label}\tns-3 {ns3}\t{image}\t{sha}\t{command}")
     shas = sorted(
         {
             plan["pins"].get(a, {}).get("source_sha", plan.get("source_sha")) or "-"
@@ -666,14 +707,17 @@ def cmd_dispatch(plan, a):
             "legacy_images: the reusable cell runs one image by digest and has no "
             "in-job legacy build; dispatch this plan with the repository's own legacy path"
         )
-    if plan.get("isolates"):  # a declared control: refuse its confounds before any run (#89)
-        rows = [
-            (cell, arm, *job_runs(plan, arm, legacy_command(jwf, inp, plan["program"])[2]))
-            for _l, cell, arm, jwf, inp in jobs(plan)
-        ]
-        if check_confounds(plan, rows):
-            sys.exit("dispatch: the plan's arms differ in more than it isolates (see above)")
     mine = selected(plan, a)
+    legacy = sorted({j[2] for j in mine} & set(plan["legacy_arms"]))
+    if legacy:  # what plan reports for them is an in-job build this path cannot run
+        sys.exit(
+            f"legacy_arms {', '.join(legacy)}: the reusable cell runs one image by digest and "
+            "has no in-job legacy build; dispatch the other arms here (--arm) and these with "
+            "the repository's own legacy path"
+        )
+    if plan.get("isolates") and check_confounds(plan, arm_rows(plan)):
+        # a declared control: refuse its confounds before any run (#89)
+        sys.exit("dispatch: the plan's arms differ in more than it isolates (see above)")
     pins = {arm: pin(plan, arm) for arm in sorted({j[2] for j in mine})}
     work = work_dir(plan, a)
     state = load_state(work)
