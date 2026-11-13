@@ -18,6 +18,7 @@ Run: python3 test_change_plan.py   (no pytest dependency; exits non-zero on the
 """
 
 import argparse
+import base64
 import contextlib
 import glob
 import importlib.util
@@ -47,6 +48,7 @@ def _load(name):
 
 
 cp = _load("change_plan")
+sys.path.insert(0, PKG)  # change_plan imports campaign.py (cell_key) when it needs it
 cp.POLL = 0
 cp.time.sleep = lambda _s: None
 # The registry, for `plan`'s ns-3 column (#89): image -> ns-3 release, offline.
@@ -111,17 +113,42 @@ def plan_of(d, **over):
     return cp.load_plan(path)
 
 
-class FakeGh:
-    """Stands in for change_plan.gh: the endpoints the tool calls."""
+CALLER = "jobs:\n  cell:\n    with:\n      image: ${{ inputs.image }}\n"
 
-    def __init__(self, active=0):
+
+class FakeGh:
+    """Stands in for change_plan.gh: the endpoints the tool calls.
+
+    A dispatched run with a `key` succeeds at once and uploads
+    benchmark-cell-<key>: a results.txt as the reusable cell writes it."""
+
+    def __init__(self, active=0, caller=CALLER, modules=""):
         self.active = active
+        self.caller, self.modules = caller, modules
         self.dispatched = []  # (url, body)
         self.runs = []  # {"id", "display_title"}
         self.next_id = 100
+        self.cells = {}  # run id -> (artifact name, results.txt)
 
     def __call__(self, *args, stdin=None, binary=False):
         url = args[0] if args[0] != "-X" else args[2]
+        if "/contents/.github/workflows/" in url:
+            return base64.encodebytes(self.caller.encode()).decode()
+        if "/actions/artifacts?name=" in url:
+            name = url.split("name=")[1].split("&")[0]
+            arts = [{"name": n, "expired": False, "workflow_run": {"id": rid}}
+                    for rid, (n, _t) in self.cells.items() if n == name]  # fmt: skip
+            return json.dumps({"artifacts": arts})
+        if url.endswith("/artifacts") and "/runs/" in url:
+            rid = int(url.split("/runs/")[1].split("/")[0])
+            return json.dumps({"artifacts": [{"id": rid, "name": self.cells[rid][0]}]})
+        if url.endswith("/zip"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                z.writestr("results.txt", self.cells[int(url.split("/")[-2])][1])
+            return buf.getvalue()
+        if "/actions/runs/" in url:
+            return json.dumps({"status": "completed", "conclusion": "success"})
         if "status=" in url:
             hit = "status=queued" in url
             return f"{self.active if hit else 0}\n"
@@ -131,6 +158,14 @@ class FakeGh:
             self.active += 1
             self.next_id += 1
             self.runs.append({"id": self.next_id, "display_title": body["inputs"]["label"]})
+            i = body["inputs"]
+            if "key" in i:
+                self.cells[self.next_id] = (
+                    f"benchmark-cell-{i['key']}",
+                    f"##RUN## 1 anthocnet 90\n##ARGS## {i['harness']} {i['args']}\n"
+                    f"##PROV## commit={i['source_sha']} ref=main run_id={self.next_id} attempt=1 "
+                    f"image={i['image']} modules={self.modules} key={i['key']}\n",
+                )
             return ""
         if "event=workflow_dispatch" in url:
             return json.dumps({"workflow_runs": list(reversed(self.runs))})
@@ -139,7 +174,7 @@ class FakeGh:
 
 def ns(**kw):
     base = dict(arm=None, work=None, repo=None, workflow=None, cap=None, wait=False,
-                brief=False, src=None, redispatch=False)  # fmt: skip
+                brief=False, src=None, redispatch=False, dry_run=False, reuse=True)  # fmt: skip
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -295,6 +330,121 @@ def _dispatch_arm_pins():
         moved = plan_of(d, pins={"quiet": {"source_sha": SHA, "image": IMAGE2}})
         err = dispatch(moved, work, fake, cap=10)
         expect("refusing" in err, "arm-pins-moved", err)
+
+
+# A caller that forwards `key` and builds its module on two pinned dependencies
+# (ARA's shape, #155); a commented-out pin is not one of them.
+DEP1, DEP2 = "c" * 40, "d" * 40
+KEY_CALLER = f"""
+# swarm-core=swarm-routing/ns3-swarm-core@{"9" * 40} in a comment is not a dependency
+jobs:
+  cell:
+    uses: swarm-routing/.github/.github/workflows/reusable-benchmark-cell.yml@main
+    with:
+      image: ${{{{ inputs.image }}}}
+      key: ${{{{ inputs.key }}}}
+      modules: "ara=ns3"  # quoted, with a comment
+      dependencies: |
+        swarm-core=swarm-routing/ns3-swarm-core@{DEP1}
+        routing-bench=swarm-routing/ns3-tools@{DEP2}:ns3/routing-bench
+"""
+KEY_MODULES = f"ara@{SHA},swarm-core@{DEP1},routing-bench@{DEP2}"
+
+
+def keyed():
+    return FakeGh(caller=KEY_CALLER, modules=KEY_MODULES)
+
+
+@case("dispatch: a caller that forwards `key` gets each job's cell key (#155)")
+def _dispatch_key():
+    fake = keyed()
+    cp.gh = fake
+    caller = cp.read_caller("swarm-routing/ARA", "benchmark-cell.yml", "main")
+    want_deps = [
+        (f"swarm-core=swarm-routing/ns3-swarm-core@{DEP1}", "swarm-core", DEP1),
+        (f"routing-bench=swarm-routing/ns3-tools@{DEP2}:ns3/routing-bench", "routing-bench", DEP2),
+    ]
+    expect(caller == (["ara=ns3"], want_deps), "caller", caller)
+    expect(cp.prov_modules(SHA, caller) == set(KEY_MODULES.split(",")), "prov-modules", caller)
+    # the key covers the locators: another subdir at the same commit is another cell
+    other = (caller[0], [(want_deps[0][0] + ":other", *want_deps[0][1:]), want_deps[1]])
+    expect(
+        cp.cell_modules("o/r", SHA, other) != cp.cell_modules("o/r", SHA, caller), "subdir", other
+    )
+    cp.gh = FakeGh()
+    expect(cp.read_caller("o/r", "w.yml", "main") is None, "caller-no-key", "")
+    camp = cp.campaign_module()
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        dispatch(plan, os.path.join(d, "w"), fake, cap=10)
+        i = fake.dispatched[0][1]["inputs"]
+        mods = [f"swarm-routing/AntHocNet@{SHA}", f"ara=ns3@{SHA}", want_deps[0][0],
+                want_deps[1][0]]  # fmt: skip
+        want = camp.cell_key(IMAGE, mods, i["harness"], i["args"])
+        expect(i.get("key") == want and len({b["inputs"]["key"] for _u, b in fake.dispatched}) == 7,
+               "key-input", i)  # fmt: skip
+        # a caller without `key`: no key input (the dispatch body of _dispatch_cap)
+        plain = FakeGh()
+        dispatch(plan, os.path.join(d, "w2"), plain, cap=10)
+        expect(
+            all("key" not in b["inputs"] for _u, b in plain.dispatched), "no-key", plain.dispatched
+        )
+
+
+@case("dispatch: an unchanged plan re-dispatched reuses every cell; --dry-run shows it (#155)")
+def _dispatch_reuse():
+    fake = keyed()
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        dispatch(plan, os.path.join(d, "first"), fake, cap=10)
+        expect(len(fake.dispatched) == 7, "first-run", fake.dispatched)
+        # the same plan again, in a fresh state directory: dry run, then for real
+        cp.gh = fake
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as out,
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            cp.cmd_dispatch(plan, ns(work=os.path.join(d, "again"), dry_run=True))
+        lines = out.getvalue().splitlines()
+        expect(len(lines) == 7 and all("\treuse run 10" in ln for ln in lines)
+               and "7 job(s): 0 logged, 7 reusable, 0 to run" in err.getvalue()
+               and not os.path.exists(os.path.join(d, "again")), "dry-reuse", out.getvalue() + err.getvalue())  # fmt: skip
+        err = dispatch(plan, os.path.join(d, "again"), fake, cap=10)
+        log = cp.read_log(os.path.join(d, "again"))
+        expect(len(fake.dispatched) == 7 and list(log.values()) == [str(r) for r in range(101, 108)]
+               and "(7 reused)" in err, "reuse", (log, err))  # fmt: skip
+        with open(os.path.join(d, "again", "runs.tsv")) as f:
+            expect(f.read().count("\treused\n") == 7, "reuse-log", "")
+        # collect reads a reused cell's benchmark-cell-<key> artifact like any other
+        code, cerr = collect(plan, os.path.join(d, "again"), None, os.path.join(d, "out"))
+        expect(code == 0 and "wrote 5 file(s), skipped 0" in cerr, "reuse-collect", cerr)
+        # one job's flags changed: a new key, so only that job runs
+        moved = plan_of(d, arms={"control": "", "quiet": "--Quiet=false"})
+        with (
+            contextlib.redirect_stdout(io.StringIO()) as out,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            cp.cmd_dispatch(moved, ns(work=os.path.join(d, "moved"), dry_run=True))
+        runs = [ln.split("\t")[0] for ln in out.getvalue().splitlines() if ln.endswith("\trun")]
+        expect(runs == ["quiet/sat", "quiet/vanet-s1", "quiet/vanet-s5"], "moved", out.getvalue())
+        # --no-reuse dispatches everything
+        n, fake.active = len(fake.dispatched), 0
+        dispatch(plan, os.path.join(d, "fresh"), fake, cap=10, reuse=False)
+        expect(len(fake.dispatched) == n + 7, "no-reuse", len(fake.dispatched))
+
+
+@case("dispatch: a keyed run whose cell disagrees with its key is an error, not a re-run")
+def _dispatch_reuse_mismatch():
+    fake = keyed()
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d, jobs=[{"arms": ["control"], "cells": ["grid"]}])
+        dispatch(plan, os.path.join(d, "first"), fake)
+        rid = fake.next_id
+        name, text = fake.cells[rid]
+        fake.cells[rid] = (name, text.replace(f"swarm-core@{DEP1}", f"swarm-core@{'0' * 40}"))
+        err = dispatch(plan, os.path.join(d, "again"), fake)
+        expect("reuse: control/grid: run 101" in err and "modules" in err
+               and len(fake.dispatched) == 1, "mismatch", err)  # fmt: skip
 
 
 @case("dispatch: a plan with legacy_images is refused (no in-job legacy build)")
