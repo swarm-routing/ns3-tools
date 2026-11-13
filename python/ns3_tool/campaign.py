@@ -74,6 +74,29 @@ itself (its labels and the base's): the base tag and digest, the campaign
 image and digest, and every module commit. `collect` checks each cell ran the
 campaign image and the plan's commits, then writes the run directory and
 manifest of swarm-routing/benchmarks#3.
+
+Reuse (#94): every cell has a key, the sha256 of a canonical JSON of what pins
+it: the campaign image digest, every module commit, the harness program, the
+harness flags sorted (without the driver's), the arms, the seeds and the
+marker contract version (`cell_key`; the flags' order does not change it).
+`plan` prints it once the image is built; `dispatch` passes it to
+campaign-cell.yml, which writes it into ##PROV## (`key=<64 hex>`, a value
+benchmarks' validator reads as neither a digest nor a commit) and into the
+artifact name, `campaign-cell-<key>` (a cell from before keys has neither, so
+it is never reused). Before dispatching a cell, `dispatch` looks for the same
+key, in order, in the local cache, in a swarm-routing/benchmarks checkout
+given with `--benchmarks DIR` (a `runs/*/cells/*.txt` file whose ##PROV##
+names it; the file's sha256 must equal its manifest entry) and in this
+repository's unexpired workflow artifacts of a successful run. A cell found is
+recorded as reused in `reused.tsv` with its source and not dispatched;
+`status`, `collect` and `verdicts` read it like any other. A reused cell must
+pass every check a dispatched one does, and its ##ARGS## and ##PROV## must
+recompute to the key: any mismatch stops `dispatch` with an error, never a
+silent re-run. `--no-reuse` dispatches every cell. Collected cells are kept in
+the cache, ~/.cache/ns3-campaign/<key>/ (NS3_CAMPAIGN_CACHE overrides it;
+bounded to NS3_CAMPAIGN_CACHE_MB, default 1024, least recently used out
+first), so a repeated `collect` works offline. `plan` and `status` print
+"N cells, M reusable, K to run" (runner-minute estimates are #95).
 """
 
 import argparse
@@ -103,6 +126,11 @@ IMAGE_WORKFLOW = "campaign-image.yml"
 CELL_WORKFLOW = "campaign-cell.yml"
 IMAGE = "ghcr.io/swarm-routing/ns3-tools-ns3-campaign"
 MARKERS_VERSION = 1  # swarm-routing/benchmarks schemas/markers/v1.json
+CELL_ARTIFACT = "campaign-cell"  # campaign-cell.yml's artifact; -<key> appended when it has one
+CACHE = os.environ.get("NS3_CAMPAIGN_CACHE") or os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "ns3-campaign"
+)
+CACHE_BYTES = int(os.environ.get("NS3_CAMPAIGN_CACHE_MB", "1024")) * 1024 * 1024
 POLL = float(os.environ.get("NS3_TOOL_POLL", "15"))  # seconds between GitHub polls
 
 NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
@@ -217,6 +245,11 @@ def validate(plan):
         for tok in args.split():
             if tok.split("=", 1)[0] in RESERVED:
                 errs.append(f"cell '{name}': {tok} is set by the driver (arms, seeds, blocks)")
+        # A repeated flag: its last value wins in the harness, but the cell key
+        # sorts the flags, so two orders would share a key (#94).
+        flags = [tok.split("=", 1)[0] for tok in args.split()]
+        for flag in sorted({f for f in flags if flags.count(f) > 1}):
+            errs.append(f"cell '{name}': {flag} is given more than once")
         blocks = cell.get("blocks", 1)
         if not isinstance(blocks, int) or blocks < 1 or (isinstance(seeds, int) and seeds % blocks):
             errs.append(f"cell '{name}': blocks {blocks} must divide the {seeds} seeds")
@@ -299,6 +332,61 @@ def parameters(args):
     return out
 
 
+# --- the cell key (#94) -------------------------------------------------------
+
+
+def cell_key(image, mods, program, args):
+    """sha256 of every input that pins a cell, as canonical JSON (#94).
+
+    image: the campaign image (only its digest counts); mods: name@commit of
+    every module; args: the harness flags, the driver's --protocols, --runs
+    and --firstRun included. The other flags are sorted, so their order does
+    not change the key; the arms keep their order (it is the output's).
+    """
+    arms, first, runs, rest = [], None, None, []
+    for tok in shlex.split(args):
+        flag, _, val = tok.partition("=")
+        if flag == "--protocols":
+            arms = val.split(",")
+        elif flag == "--runs":
+            runs = int(val)
+        elif flag == "--firstRun":
+            first = int(val)
+        else:
+            rest.append(tok)
+    doc = {
+        "image": image.rpartition("@")[2],
+        "modules": sorted(mods),
+        "program": program,
+        "args": sorted(rest),
+        "arms": arms,
+        "seeds": list(range(first, first + runs)) if first and runs else [],
+        "markers": MARKERS_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def job_key(plan, state, args):
+    """The key of one of the plan's jobs in the built image (None before `build`)."""
+    if not state.get("image"):
+        return None
+    mods = [f"{m['name']}@{m['commit']}" for m in modules(plan)]
+    return cell_key(state["image"], mods, plan["program"], args)
+
+
+def key_of_text(text):
+    """The key a cell's own ##ARGS## and ##PROV## lines recompute to, or None."""
+    prov = prov_of(text)
+    args = [ln for ln in text.splitlines() if ln.startswith("##ARGS## ")]
+    if prov is None or not args or "@" not in prov.get("image", ""):
+        return None
+    program, _, flags = args[-1].removeprefix("##ARGS## ").partition(" ")
+    mods = [m for m in prov.get("modules", "").split(",") if m]
+    return cell_key(prov["image"], mods, program, flags)
+
+
 # --- GitHub -------------------------------------------------------------------
 
 
@@ -337,6 +425,7 @@ def cell_inputs(plan, state, label, args):
         "program": plan["program"],
         "args": args,
         "label": title,
+        "key": job_key(plan, state, args),
     }
 
 
@@ -387,12 +476,14 @@ def active_runs():
     return n
 
 
-def fetch(rid, dest, name):
-    """Extract run `rid`'s artifact `name` into dest."""
+def fetch(rid, dest, *names):
+    """Extract run `rid`'s artifact (the first of `names` it has) into dest."""
     arts = json.loads(gh(f"repos/{REPO}/actions/runs/{rid}/artifacts"))["artifacts"]
-    art = next((a for a in arts if a["name"] == name), None)
+    art = next((a for n in names for a in arts if a["name"] == n), None)
     if art is None:
-        raise RuntimeError(f"run {rid} has no artifact '{name}' (expired after 7 days?)")
+        raise RuntimeError(
+            f"run {rid} has no artifact '{' or '.join(names)}' (expired after 7 days?)"
+        )
     data = gh(f"repos/{REPO}/actions/artifacts/{art['id']}/zip", binary=True)
     with tempfile.NamedTemporaryFile(suffix=".zip") as z:
         z.write(data)
@@ -432,6 +523,168 @@ def read_log(work):
         return dict(line.rstrip("\n").split("\t")[:2] for line in f if "\t" in line)
 
 
+def read_reused(work):
+    """label -> source of every cell `dispatch` reused instead of running (#94)."""
+    p = os.path.join(work, "reused.tsv")
+    if not os.path.exists(p):
+        return {}
+    with open(p) as f:
+        return dict(line.rstrip("\n").split("\t")[:2] for line in f if "\t" in line)
+
+
+# --- the local cache and the reuse lookup (#94) ---------------------------------
+
+
+def cache_get(key):
+    """(text, source) of a cached cell, or None; a hit counts as a use (LRU)."""
+    d = os.path.join(CACHE, key)
+    try:
+        with open(os.path.join(d, "results.txt")) as f:
+            text = f.read()
+        with open(os.path.join(d, "source")) as f:
+            source = f.read().strip()
+    except OSError:
+        return None
+    os.utime(d)
+    return text, source
+
+
+def cache_put(key, text, source):
+    """Keep a verified cell under its key, then trim the cache to CACHE_BYTES."""
+    d = os.path.join(CACHE, key)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "results.txt"), "w") as f:
+        f.write(text)
+    with open(os.path.join(d, "source"), "w") as f:
+        f.write(source + "\n")
+    os.utime(d)
+    entries = []
+    for k in os.listdir(CACHE):
+        p = os.path.join(CACHE, k)
+        if os.path.isdir(p):
+            size = sum(os.path.getsize(os.path.join(p, n)) for n in os.listdir(p))
+            entries.append((os.stat(p).st_mtime, k, size))
+    total = sum(e[2] for e in entries)
+    for _mtime, k, size in sorted(entries):  # oldest use first; never the one just written
+        if total <= CACHE_BYTES or k == key:
+            continue
+        shutil.rmtree(os.path.join(CACHE, k), ignore_errors=True)
+        total -= size
+
+
+def benchmarks_cell(root, key):
+    """(source, text) of the cell whose ##PROV## names `key` in a benchmarks
+    checkout's runs/, or None. The file must match its manifest's sha256."""
+    runs = os.path.join(root, "runs")
+    for run in sorted(os.listdir(runs)) if os.path.isdir(runs) else []:
+        mpath = os.path.join(runs, run, "manifest.json")
+        if not os.path.isfile(mpath):
+            continue
+        with open(mpath) as f:
+            files = {x["path"]: x.get("sha256") for x in json.load(f).get("files", [])}
+        for rel, sha in files.items():
+            path = os.path.join(runs, run, rel)
+            if not rel.startswith("cells/") or not os.path.isfile(path):
+                continue
+            with open(path, "rb") as f:
+                if f"key={key}".encode() not in f.read():
+                    continue
+            return f"benchmarks:{os.path.abspath(path)}", benchmarks_block(path, key, sha)
+    return None
+
+
+def benchmarks_block(path, key, sha=None):
+    """The block of a benchmarks cell file whose ##PROV## names `key`.
+
+    The file must match its manifest's sha256 (`sha`, else read from the
+    run's manifest.json, two directories up). collect wrote it: a
+    '# <name> <cell>: ...' header, then each job's results.txt, each ending
+    with its ##PROV## line. Raises RuntimeError on any mismatch."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if sha is None:
+            run = os.path.dirname(os.path.dirname(path))
+            with open(os.path.join(run, "manifest.json")) as f:
+                rel = os.path.relpath(path, run).replace(os.sep, "/")
+                sha = {x["path"]: x.get("sha256") for x in json.load(f).get("files", [])}.get(rel)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"{path}: {e}") from None
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise RuntimeError(f"{path}: its sha256 is not its manifest entry's")
+    block = []
+    for line in data.decode().splitlines()[1:]:
+        block.append(line)
+        if line.startswith("##PROV##"):
+            if f"key={key}" in line.split():
+                return "\n".join(block) + "\n"
+            block = []
+    raise RuntimeError(f"{path}: no ##PROV## line names key {key}")
+
+
+def artifact_runs(key):
+    """(live, expired): run ids of this repository's campaign-cell-<key> artifacts."""
+    data = json.loads(gh(f"repos/{REPO}/actions/artifacts?name={CELL_ARTIFACT}-{key}&per_page=100"))
+    live, expired = [], []
+    for art in data.get("artifacts", []):
+        rid = (art.get("workflow_run") or {}).get("id")
+        if rid:
+            (expired if art.get("expired") else live).append(rid)
+    return sorted(live, reverse=True), expired
+
+
+def source_text(work, key, source):
+    """A reused cell's text from its source (the cache first)."""
+    hit = cache_get(key)
+    if hit:
+        return hit[0]
+    kind, _, ref = source.partition(":")
+    if kind == "run":
+        dest = os.path.join(work, "artifacts", ref)
+        path = os.path.join(dest, "results.txt")
+        if not os.path.exists(path):
+            fetch(ref, dest, f"{CELL_ARTIFACT}-{key}")
+        with open(path) as f:
+            return f.read()
+    if kind == "benchmarks":  # the recorded file, never another run with the key
+        return benchmarks_block(ref, key)
+    raise RuntimeError(f"reused cell {key[:12]}: its source {source} is gone, and not cached")
+
+
+def find_reuse(plan, state, work, label, args, key, benchmarks=None, verify=True):
+    """(source, text) of an earlier run of exactly this cell, or None (#94).
+
+    Looks in the local cache, then a benchmarks checkout, then this
+    repository's workflow artifacts. With verify, the text passes every check
+    a collected cell does and recomputes to `key`; a mismatch raises
+    RuntimeError (never a silent re-run). Without verify (plan's count), an
+    artifact is only listed, not downloaded, and text is None.
+    """
+    hit = cache_get(key)
+    if hit is None and benchmarks:
+        found = benchmarks_cell(benchmarks, key)
+        hit = (found[1], found[0]) if found else None
+    if hit is None:
+        live, expired = artifact_runs(key)
+        for rid in live:
+            if run_state(rid) != "success":
+                continue
+            if not verify:
+                return f"run:{rid}", None
+            text = source_text(work, key, f"run:{rid}")
+            hit = (text, f"run:{rid}")
+            break
+        else:
+            if expired:
+                print(f"{label}: its earlier run's artifact expired; running it", file=sys.stderr)
+            return None
+    text, source = hit
+    if verify:
+        check_cell(plan, state, f"{label} (reused from {source})", source, args, text, key)
+        cache_put(key, text, source)
+    return source, text
+
+
 # --- commands -------------------------------------------------------------------
 
 
@@ -447,12 +700,25 @@ def cmd_plan(plan, a):
         how = "install" if m["name"] in plan["install"] else "dependency"
         sub = f":{m['subdir']}" if m["subdir"] else ""
         print(f"module\t{m['name']}\t{m['repo']}@{m['commit']}{sub}\t{how}")
+    reusable = 0
     for label, _cell, args in jobs(plan):
-        print(f"{plan['name']}/{label}\t{plan['program']} {args}")
+        key = job_key(plan, state, args)
+        if (
+            key
+            and a.reuse
+            and find_reuse(
+                plan, state, work_dir(plan, a), label, args, key, a.benchmarks, verify=False
+            )
+        ):
+            reusable += 1
+        print(f"{plan['name']}/{label}\t{key or '(key after build)'}\t{plan['program']} {args}")
+    n = len(jobs(plan))
     print(
-        f"{len(jobs(plan))} job(s) x {len(plan['arms'])} arms, {plan['seeds']} seeds, cap {plan['cap']}",
+        f"{n} job(s) x {len(plan['arms'])} arms, {plan['seeds']} seeds, cap {plan['cap']}",
         file=sys.stderr,
     )
+    if state.get("image"):
+        print(f"{n} cells, {reusable} reusable, {n - reusable} to run", file=sys.stderr)
 
 
 def cmd_image_inputs(plan, _a):
@@ -546,10 +812,22 @@ def cmd_dispatch(plan, a):
     state.setdefault("date", datetime.datetime.now(datetime.timezone.utc).date().isoformat())
     save_state(work, state)
     cap = a.cap or plan["cap"]
-    done = read_log(work)
+    done, reused = read_log(work), read_reused(work)
     for label, _cell, args in jobs(plan):
-        if label in done:
-            continue
+        if label in done or (a.reuse and label in reused):
+            continue  # with --no-reuse a reused label runs, and its run then wins
+        if a.reuse:
+            key = job_key(plan, state, args)
+            try:
+                hit = find_reuse(plan, state, work, label, args, key, a.benchmarks)
+            except RuntimeError as e:
+                sys.exit(f"reuse: {e}\n(a mismatch is an error; --no-reuse runs every cell anew)")
+            if hit:
+                with open(os.path.join(work, "reused.tsv"), "a") as f:
+                    f.write(f"{label}\t{hit[0]}\n")
+                reused[label] = hit[0]
+                print(f"{label}\treused {hit[0]}")
+                continue
         while active_runs() >= cap:
             if not a.wait:
                 print(
@@ -564,19 +842,25 @@ def cmd_dispatch(plan, a):
         with open(os.path.join(work, "runs.tsv"), "a") as f:
             f.write(f"{label}\t{rid}\n")
         print(f"{label}\t{rid}")
-    print(f"all {len(jobs(plan))} job(s) dispatched", file=sys.stderr)
+    n, r = len(jobs(plan)), len(set(reused) - set(read_log(work)))
+    print(f"all {n} job(s) dispatched" + (f" ({r} reused)" if r else ""), file=sys.stderr)
 
 
 def cmd_status(plan, a):
-    log = read_log(work_dir(plan, a))
+    log, reused = read_log(work_dir(plan, a)), read_reused(work_dir(plan, a))
     counts = {}
     for label, *_ in jobs(plan):
         rid = log.get(label)
-        state = run_state(rid) if rid else "not-dispatched"
+        if label in reused and not rid:  # a run recorded for the label wins (--no-reuse)
+            rid, state = reused[label], "reused"
+        else:
+            state = run_state(rid) if rid else "not-dispatched"
         counts[state] = counts.get(state, 0) + 1
-        if not (a.brief and state == "success"):
+        if not (a.brief and state in ("success", "reused")):
             print(f"{label}\t{rid or '-'}\t{state}")
     print(", ".join(f"{v} {k}" for k, v in sorted(counts.items())), file=sys.stderr)
+    n, r = len(jobs(plan)), counts.get("reused", 0)
+    print(f"{n} cells, {r} reused, {n - r} run here", file=sys.stderr)
 
 
 def prov_of(text):
@@ -595,16 +879,32 @@ def cell_text(plan, work, label, rid, args):
         raise RuntimeError(f"{label}: run {rid} is {s}, not success")
     src = os.path.join(work, "artifacts", str(rid))
     path = os.path.join(src, "results.txt")
+    key = job_key(plan, state, args)
     if not os.path.exists(path):
-        fetch(rid, src, "campaign-cell")
+        fetch(rid, src, f"{CELL_ARTIFACT}-{key}", CELL_ARTIFACT)
     with open(path) as f:
         text = f.read()
+    # A keyed cell gets the key checks too; a cell from before keys is never reused (#94).
+    keyed = "key" in (prov_of(text) or {})
+    prov = check_cell(plan, state, label, rid, args, text, key if keyed else None)
+    if keyed:
+        cache_put(key, text, f"run:{rid}")
+    return text, prov
+
+
+def check_cell(plan, state, label, rid, args, text, key=None):
+    """A cell's checks: every arm on the job's whole seed block, the campaign
+    image and the plan's commits in ##PROV##, and, for a reused cell (`key`),
+    the key in ##PROV## and recomputed from ##ARGS## and ##PROV##. Returns the
+    ##PROV## fields; raises RuntimeError naming the label."""
     # A crashed or timed-out harness still uploads a partial results.txt with
     # ##PROV## stamped on it: every arm must carry the whole seed block.
     p = parameters(args)
     block = set(range(p["firstRun"], p["firstRun"] + p["runs"]))
     try:  # strict (#58): a malformed ##RUN## field rejects the cell
-        runs = bench_parse.parse_runs(text, bench_parse.Reader(where=f"{label}: run {rid} {path}"))
+        runs = bench_parse.parse_runs(
+            text, bench_parse.Reader(where=f"{label}: run {rid} results.txt")
+        )
     except bench_parse.Malformed as e:
         raise RuntimeError(str(e)) from None
     for arm in plan["arms"]:
@@ -627,7 +927,14 @@ def cell_text(plan, work, label, rid, args):
     got = set(prov.get("modules", "").split(",")) - {""}
     if got != want:
         raise RuntimeError(f"{label}: run {rid} has modules {sorted(got)}, the plan {sorted(want)}")
-    return text, prov
+    if key is not None:
+        if prov.get("key") != key:
+            raise RuntimeError(f"{label}: ##PROV## key={prov.get('key')}, not the cell's {key}")
+        if key_of_text(text) != key:
+            raise RuntimeError(
+                f"{label}: its ##ARGS## and ##PROV## recompute to key {key_of_text(text)}, not {key}"
+            )
+    return prov
 
 
 def cmd_collect(plan, a):
@@ -636,8 +943,20 @@ def cmd_collect(plan, a):
     if not state.get("date"):
         sys.exit("nothing dispatched yet")
     by_cell, provs, errs = {}, [], []
+    reused = read_reused(work)
     for label, cell, args in jobs(plan):
         rid = log.get(label)
+        if label in reused and not rid:  # #94: from its source, checked as at dispatch
+            rid, key = reused[label], job_key(plan, state, args)
+            try:
+                text = source_text(work, key, rid)
+                prov = check_cell(plan, state, label, rid, args, text, key)
+            except RuntimeError as e:
+                errs.append(str(e))
+                continue
+            provs.append(prov)
+            by_cell.setdefault(cell, []).append((label, rid, args, text))
+            continue
         if not rid:
             errs.append(f"{label}: not dispatched")
             continue
@@ -763,6 +1082,18 @@ def main(argv=None):
             s.add_argument("--root", default=".stage")
         if name == "build":
             s.add_argument("--ref", default="main", help=f"the {REPO} ref holding the plan")
+        if name in ("plan", "dispatch"):
+            s.add_argument(
+                "--no-reuse",
+                dest="reuse",
+                action="store_false",
+                help="dispatch every cell, even one that already ran (#94)",
+            )
+            s.add_argument(
+                "--benchmarks",
+                metavar="DIR",
+                help="a swarm-routing/benchmarks checkout to reuse released cells from",
+            )
         if name == "dispatch":
             s.add_argument("--cap", type=int)
             s.add_argument(
