@@ -72,7 +72,10 @@ development package (#169): a job of the main pipeline deletes its versions
 older than 2 days that no committed file pins, so a campaign's cells run
 within 2 days of its `build`, and its manifest, which pins the digest, lands
 in swarm-routing/benchmarks (an open pull request there counts) before the
-image ages out.
+image ages out. Its age runs from its first build, also when `build` reuses
+it (skip-existing): before it sends a cell, `dispatch` checks the image is
+still in the registry, and when it is gone it stops and says how to rebuild
+it in a new work directory, where every cell runs on the new digest.
 
 Every cell's ##PROV## line is written by campaign-cell.yml from the image
 itself (its labels and the base's): the base tag and digest, the campaign
@@ -117,6 +120,8 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.error
+import urllib.request
 import zipfile
 
 try:  # as the ns3_tool package, or as a script beside its siblings
@@ -809,6 +814,37 @@ def cmd_build(plan, a):
     print(f"image\t{state['image']}\t{state['tag']}")
 
 
+MANIFESTS = (
+    "application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,"
+    "application/vnd.docker.distribution.manifest.list.v2+json,"
+    "application/vnd.docker.distribution.manifest.v2+json"
+)
+
+
+def image_gone(image):
+    """True when the registry answers that the image's digest does not exist
+    (HTTP 404); False when it exists or the registry cannot be read, so an
+    unreachable registry never stops a dispatch (the cells would say so)."""
+    ref, _, digest = image.partition("@")
+    host, _, repo = ref.partition("/")
+    try:
+        with urllib.request.urlopen(
+            f"https://{host}/token?scope=repository:{repo}:pull", timeout=20
+        ) as r:
+            token = json.load(r)["token"]
+        req = urllib.request.Request(
+            f"https://{host}/v2/{repo}/manifests/{digest}",
+            method="HEAD",
+            headers={"Authorization": f"Bearer {token}", "Accept": MANIFESTS},
+        )
+        urllib.request.urlopen(req, timeout=20).close()
+    except urllib.error.HTTPError as e:
+        return e.code == 404
+    except (OSError, ValueError, KeyError):
+        return False
+    return False
+
+
 def cmd_dispatch(plan, a):
     work = work_dir(plan, a)
     state = load_state(work)
@@ -818,6 +854,7 @@ def cmd_dispatch(plan, a):
     save_state(work, state)
     cap = a.cap or plan["cap"]
     done, reused = read_log(work), read_reused(work)
+    checked = False
     for label, _cell, args in jobs(plan):
         if label in done or (a.reuse and label in reused):
             continue  # with --no-reuse a reused label runs, and its run then wins
@@ -842,6 +879,16 @@ def cmd_dispatch(plan, a):
                 )
                 return
             time.sleep(POLL * 8)
+        if not checked:  # once, before the first cell this call sends
+            if image_gone(state["image"]):
+                sys.exit(
+                    f"campaign image {state['image']} is gone from the registry: an image "
+                    f"in {IMAGE.rpartition('/')[2]} is deleted 2 days after its first build "
+                    "unless a committed file pins it. Run `build` again with a new --work "
+                    "directory; every cell then runs on the new image (its digest, so its "
+                    "keys, differ)"
+                )
+            checked = True
         title, inputs = cell_inputs(plan, state, label, args)
         rid = dispatch_run(CELL_WORKFLOW, state.get("ref", "main"), inputs, title)
         with open(os.path.join(work, "runs.tsv"), "a") as f:
@@ -942,6 +989,16 @@ def check_cell(plan, state, label, rid, args, text, key=None):
     return prov
 
 
+def harness_line(plan, args, text):
+    """The harness command a cell ran: its own last ##ARGS## line, else the plan's.
+
+    A reused cell may come from a plan that wrote the same flags in another
+    order (the key sorts them, #94), so the manifest names what the cell ran.
+    """
+    ran = [ln.removeprefix("##ARGS## ") for ln in text.splitlines() if ln.startswith("##ARGS## ")]
+    return ran[-1] if ran else f"{plan['program']} {args}"
+
+
 def cmd_collect(plan, a):
     work = work_dir(plan, a)
     state, log = load_state(work), read_log(work)
@@ -990,12 +1047,12 @@ def cmd_collect(plan, a):
                 f.write(text if text.endswith("\n") else text + "\n")
         files.append({"path": rel, "kind": "cell", "scenario": cell})
         # In order, per job: the dispatch, the container command, the harness line.
-        for label, _r, args, _t in parts:
+        for label, _r, args, text in parts:
             _title, inputs = cell_inputs(plan, state, label, args)
             commands += [
                 dispatch_command(CELL_WORKFLOW, state.get("ref", "main"), inputs),
                 cell_command(plan, state, args),
-                f"{plan['program']} {args}",
+                harness_line(plan, args, text),
             ]
     files.append({"path": "plan.toml", "kind": "preregistration"})
     for entry in files:
