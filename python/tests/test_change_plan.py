@@ -462,10 +462,16 @@ def write_run(src, label, text, name="results.txt"):
         f.write(text)
 
 
-def prov(sha=SHA, image=IMAGE):
+def prov(sha=SHA, image=IMAGE, deps=""):
     return (
-        f"##PROV## commit={sha} ref=main run_id=1 attempt=1 image={image} modules=anthocnet@{sha}\n"
+        f"##PROV## commit={sha} ref=main run_id=1 attempt=1 image={image} "
+        f"modules={deps}anthocnet@{sha}\n"
     )
+
+
+CORE, CORE2, BENCH = "c" * 40, "d" * 40, "9" * 40
+DEPS = f"swarm-core@{CORE},routing-bench@{BENCH},"
+DEPS2 = f"swarm-core@{CORE2},routing-bench@{BENCH},"
 
 
 def collect(plan, work, src, out, **kw):
@@ -530,6 +536,79 @@ def _collect_prov():
         dispatch(plan, work, fake, cap=20, arm="quiet")
         sent = [b["inputs"]["label"] for _u, b in fake.dispatched]
         expect(sent == ["vtest/quiet/sat", "vtest/quiet/vanet-s1"], "prov-resent", sent)
+
+
+@case("collect: one dependency set passes and is recorded in state.json (#148)")
+def _collect_deps():
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d, pins={"quiet": {"source_sha": SHA2}})
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "control/sat\t10\nquiet/vanet-s1\t11\nquiet/vanet-s5\t12\nquiet/sat\t13\n")
+        write_run(src, "control/sat", "##RUN## 1 anthocnet 90\n" + prov(deps=DEPS))
+        for label in ("quiet/vanet-s1", "quiet/vanet-s5", "quiet/sat"):
+            write_run(src, label, "##RUN## 1 anthocnet 40\n" + prov(sha=SHA2, deps=DEPS))
+        code, err = collect(plan, work, src, out)
+        expect(code == 0 and len(os.listdir(out)) == 3, "deps-pass", (code, err))
+        expect(cp.load_state(work).get("deps") == {"swarm-core": CORE, "routing-bench": BENCH},
+               "deps-recorded", cp.load_state(work))  # fmt: skip
+
+
+@case("collect: a cell built on another swarm-core is rejected, both commits named (#148)")
+def _collect_deps_bumped():
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "quiet/vanet-s1\t11\nquiet/vanet-s5\t12\nquiet/sat\t13\n")
+        write_run(src, "quiet/vanet-s1", "##RUN## 1 anthocnet 40\n" + prov(deps=DEPS))
+        write_run(src, "quiet/vanet-s5", "##RUN## 5 anthocnet 41\n" + prov(deps=DEPS2))
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + prov(deps=DEPS))
+        code, err = collect(plan, work, src, out)
+        expect(code == 1 and os.listdir(out) == ["sat-vtest-quiet.txt"], "bumped-rejected",
+               (code, os.listdir(out), err))  # fmt: skip
+        expect(f"quiet/vanet-s5\trun 12\tdependencies swarm-core {CORE2}, not {CORE} "
+               "(state.json deps)" in err and "start a new generation" in err,
+               "bumped-listed", err)  # fmt: skip
+        code, err = collect(plan, work, src, out, redispatch=True)
+        expect(code == 1 and "quiet/vanet-s5" not in cp.read_log(work)
+               and "quiet/vanet-s1" in cp.read_log(work), "bumped-redispatch", cp.read_log(work))  # fmt: skip
+
+
+@case("collect: base and head arms on different dependency sets are rejected (#148)")
+def _collect_deps_arms():
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d, pins={"quiet": {"source_sha": SHA2}})
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "control/sat\t10\nquiet/sat\t13\n")
+        write_run(src, "control/sat", "##RUN## 1 anthocnet 90\n" + prov(deps=DEPS))
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + prov(sha=SHA2, deps=DEPS2))
+        code, err = collect(plan, work, src, out)
+        expect(code == 1 and os.listdir(out) == ["sat-vtest.txt"]
+               and f"quiet/sat\trun 13\tdependencies swarm-core {CORE2}, not {CORE}" in err,
+               "arms-rejected", (code, os.listdir(out), err))  # fmt: skip
+        # A module only one side built is a difference too.
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n"
+                  + prov(sha=SHA2, deps=f"swarm-core@{CORE},"))  # fmt: skip
+        code, err = collect(plan, work, src, out)
+        expect(code == 1 and f"dependencies routing-bench -, not {BENCH}" in err,
+               "arms-missing-module", err)  # fmt: skip
+
+
+@case("collect: a resumed campaign is compared against the recorded set (#148)")
+def _collect_deps_resumed():
+    with tempfile.TemporaryDirectory() as d:
+        plan = plan_of(d)
+        src, out, work = (os.path.join(d, x) for x in ("src", "out", "w"))
+        log_file(work, "quiet/sat\t13\n")
+        cp.save_state(work, {"deps": {"swarm-core": CORE, "routing-bench": BENCH}})
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + prov(deps=DEPS2))
+        code, err = collect(plan, work, src, out, arm="quiet")
+        expect(code == 1 and not os.listdir(out) and "quiet/sat\trun 13\tdependencies" in err,
+               "resumed", (code, err))  # fmt: skip
+        # No modules= field (AntHocNet's committed cells): nothing to check.
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n"
+                  f"##PROV## commit={SHA} ref=main run_id=1 attempt=1 image={IMAGE}\n")  # fmt: skip
+        code, err = collect(plan, work, src, out, arm="quiet")
+        expect(code == 0 and os.listdir(out) == ["sat-vtest-quiet.txt"], "no-modules", (code, err))
 
 
 @case("collect: a timed-out run's stub, or no ##PROV##, is not a result")
