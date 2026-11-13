@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ns3-tool"
 # Set by Commitizen at each release (../.cz.toml); 0.0.0 until the first, v0.1.0.
-version = "0.1.0"
+version = "0.2.0"
 description = "Readers, paired statistics and the campaign driver for ns-3 routing-harness marker lines (##RUN##, ##BENCH##, ...)"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib (campaign plans)

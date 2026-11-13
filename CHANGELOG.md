@@ -1,3 +1,24 @@
+## v0.2.0 (2026-11-13)
+
+### Feat
+
+- **campaign**: collect checks each cell's dependency commits against one set per campaign (#168)
+- **campaign**: change plans pass the cell key and reuse a cell already run (#166)
+- **campaign**: change-plan reference protocol, so an anchor pairs protocols within a cell (#158)
+- **bench-parse**: --vs pairs two protocols of one cell seed by seed (#154)
+- **cli**: ns3-tool with compare, sweep, diagnose and scaffold (#151)
+- **campaign**: reuse a cell that already ran, found by a key over every pinned input (#149)
+- **campaign**: plan shows each arm's ns-3 release, image and commit, and flags confounded controls (#147)
+- **routing-bench**: a ##PERF## cost line per arm and seed (#97)
+
+### Fix
+
+- **campaign**: a malformed registry answer is a warning and ?, never a crash (#172)
+- audit follow-ups (make lint and check, stale status texts, two references) (#167)
+- **bench-parse**: --vs checks each '# stddev' line against its own seed block (#160)
+- **readers**: reject malformed marker fields by default, --lenient to skip them (#146)
+- **scenario-check**: hold each seed block's oracle refusals against its own drop row (#123)
+
 ## v0.1.0 (2026-11-11)
 
 ### Feat
