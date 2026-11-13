@@ -494,6 +494,95 @@ def _verdicts():
     expect(out.stdout == VERDICTS, "verdicts-bytes", out.stdout + out.stderr)
 
 
+# An anchor (#152): two protocols of one cell, paired by seed, against a
+# reference. ARA's shape (one arm, ara,aodv) and BeeAdHoc's bee-anchor-1 shape
+# (beeadhoc against aodv and dsdv), on the recorded anchor cells.
+ARA_PLAN = """
+generation = "pc769"
+program = "routing-compare"
+control = "ara"
+reference = "aodv"
+jobs = [{arms = ["ara"], cells = "*"}]
+[arms]
+ara = ""
+[cells.anchor-ara-p0]
+workflow = "benchmark-cell.yml"
+inputs = {harness = "routing-compare", args = "--runs=2 --pause=0 --protocols=ara,aodv"}
+[cells.anchor-ara-p30]
+workflow = "benchmark-cell.yml"
+inputs = {harness = "routing-compare", args = "--runs=2 --pause=30 --protocols=ara,aodv"}
+"""
+ARA_VERDICTS = (
+    "ara\tanchor-ara-p0\tara - aodv\tpaired 95% CI (n=2): dPDR +10.20 [+5.12,+15.28]pp p=0.5  "
+    "d_d99 +596.50 [+593.00,+600.00]ms p=0.5  d_NRL -52.23 [-69.58,-34.89] p=0.5 -> PAIRED-MIXED\n"
+    "ara\tanchor-ara-p30\t-\t(missing anchor-ara-p30-pc769.txt)\n"
+)
+BEE_VERDICTS = (
+    "control\tanchor-bee-p1\tbeeadhoc - aodv\tpaired 95% CI (n=10): dPDR +21.93 [+19.52,+24.34]pp "
+    "p=0.00589  d_d99 +1424.40 [+1224.50,+1643.00]ms p=0.00195  d_NRL -18.58 [-20.45,-16.71] "
+    "p=0.00195 -> PAIRED-MIXED\n"
+    "control\tanchor-bee-p1\tbeeadhoc - dsdv\tpaired 95% CI (n=10): dPDR +14.06 [+12.86,+15.26]pp "
+    "p=0.00195  d_d99 +1260.10 [+1033.00,+1511.50]ms p=0.00195  d_NRL -2.65 [-3.39,-1.92] "
+    "p=0.00195 -> PAIRED-MIXED\n"
+    "ringoff\tanchor-bee-p1\tbeeadhoc - aodv\t(no paired ##RUN## rows)\n"
+    "ringoff\tanchor-bee-p1\tbeeadhoc - dsdv\t(no paired ##RUN## rows)\n"
+)
+
+
+def verdicts_of(text, name="plan.toml"):
+    campaign = os.path.join(PKG, "campaign.py")
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return subprocess.run([sys.executable, campaign, "verdicts", path, "--dir", CELLS],
+                              capture_output=True, text=True, check=False)  # fmt: skip
+
+
+@case("verdicts: reference pairs a one-arm cell's protocols by seed (ARA's anchor)")
+def _verdicts_reference():
+    out = verdicts_of(ARA_PLAN)
+    expect(
+        out.returncode == 0 and out.stdout == ARA_VERDICTS, "reference-ara", out.stdout + out.stderr
+    )
+    # the same numbers as bench_parse's own anchor read, --vs (#154)
+    bp = cp.bench_parse
+    with open(os.path.join(CELLS, "anchor-ara-p0-pc769.txt")) as f:
+        vs = bp.versus([f.read()], "ara", "aodv")
+    expect(vs.split(": ", 1)[1] == out.stdout.splitlines()[0].split("\t")[3], "reference-vs", vs)
+
+
+@case("verdicts: a list of references, every arm, after the unchanged arm lines (bee-anchor-1)")
+def _verdicts_references():
+    plan = VERDICT_PLAN.replace('program = "routing-compare"',
+                                'program = "routing-compare"\nreference = ["aodv", "dsdv"]')  # fmt: skip
+    # the ringoff arm's --protocols=beeadhoc would not run the references: give
+    # it the cell's three protocols, so the plan loads, and its file has none
+    plan = plan.replace('"--protocols=beeadhoc --X=10"', '"--X=10"')
+    plan = plan.replace('cells = "*"}]', 'cells = ["anchor-bee-p1"]}]')
+    out = verdicts_of(plan)
+    lines = out.stdout.splitlines()
+    # the arm lines first (one per protocol now), then the reference lines
+    expect(out.returncode == 0 and len(lines) == 7 and VERDICTS.splitlines()[0] == lines[2]
+           and "\n".join(lines[3:]) + "\n" == BEE_VERDICTS, "references-bee", out.stdout + out.stderr)  # fmt: skip
+
+
+@case("verdicts: a plan without reference is unchanged; an unknown reference is refused")
+def _verdicts_reference_refused():
+    out = verdicts_of(VERDICT_PLAN)
+    expect(out.stdout == VERDICTS and " - " not in out.stdout, "no-reference", out.stdout)
+    out = verdicts_of(ARA_PLAN.replace('reference = "aodv"', 'reference = "olsr"'))
+    expect(out.returncode == 1 and not out.stdout
+           and "reference olsr: cell anchor-ara-p0 (arm ara) runs ara, aodv" in out.stderr,
+           "reference-unknown", out.stdout + out.stderr)  # fmt: skip
+    out = verdicts_of(ARA_PLAN.replace('reference = "aodv"', 'reference = ["ara", "aodv"]'))
+    expect(out.returncode == 1 and "runs only the reference(s) ara, aodv" in out.stderr,
+           "reference-only", out.stderr)  # fmt: skip
+    out = verdicts_of(ARA_PLAN.replace('reference = "aodv"', "reference = 3"))
+    expect(out.returncode == 1 and "reference is a protocol, or a list" in out.stderr,
+           "reference-type", out.stderr)  # fmt: skip
+
+
 @case("verdicts: one bench_parse --ab per protocol the cell runs")
 def _verdicts_protos():
     calls = []
