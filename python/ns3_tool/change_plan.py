@@ -73,6 +73,28 @@ file of the same cell, for every protocol P the cell's command line names, and
 prints one line per (arm, cell, protocol): byte for byte AntHocNet's output on
 the same files.
 
+`plan` prints one line per job: the label, the arm's ns-3 release, its image,
+its source_sha and the command line (#89). The release of a legacy arm
+(`legacy_arms.<arm>`, or a plan-wide `legacy_images`) is the cell's `version`,
+the key its image is chosen by; an arm pinned to an image runs whatever ns-3
+that image was built on, whatever the cell's `version` says, so it is read
+from the image's labels (`io.github.swarm-routing.ns3-dev.tag`, else the
+`NS3_VERSION` its ns3-dev base sets) through the registry's anonymous pull
+API; `--offline` (or NS3_TOOL_OFFLINE=1) skips the lookup and prints `?`.
+Then, per cell, the arms are compared on ns-3 release, image and source_sha:
+
+- a plan that declares the variable it isolates (`isolates: image`, `ns3`,
+  `source_sha` or `args`; a new image comes with a new commit or release, so
+  isolating `source_sha` or `ns3` allows the image to differ too) is refused
+  (exit 1) by `plan` and `dispatch` when its arms differ in anything else,
+  unless it sets `allow_confounds: true`, which turns the refusal into a
+  warning;
+- any other plan gets a warning when the arms of a cell run different ns-3
+  releases, the confound AntHocNet#867's image control had (MANET and ISL
+  cells on 3.42 against 3.48), or where one arm's release was read and
+  another's could not be (`?`); arms that all print `?` (a historical plan
+  with no images pinned) are not compared.
+
 Plans are YAML (PyYAML, imported only for a .yaml/.yml plan), TOML or JSON.
 """
 
@@ -86,6 +108,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import urllib.request
 import zipfile
 
 CELL_KIND = "benchmark-cell.yml"  # a cell giving harness/args itself
@@ -97,6 +120,10 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPO_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 CELL_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 POLL = float(os.environ.get("NS3_TOOL_POLL", "15"))  # seconds between GitHub polls
+# What `isolates:` may name (#89), and what else may differ with it.
+ISOLATES = {"image": {"image"}, "ns3": {"ns3", "image"}, "source_sha": {"source_sha", "image"},
+            "args": {"args"}}  # fmt: skip
+NS3_LABEL = "io.github.swarm-routing.ns3-dev.tag"
 
 # The retired workflows' input defaults, for inputs a plan leaves out.
 PAPER_DEFAULTS = {
@@ -229,12 +256,25 @@ def load_plan(path):
     plan.setdefault("control", "control")
     plan.setdefault("workflow", WORKFLOW)
     plan["legacy_images"] = {str(k): v for k, v in (plan.get("legacy_images") or {}).items()}
-    for version, ref in plan["legacy_images"].items():
-        if not IMAGE_RE.fullmatch(str(ref)):
-            sys.exit(
-                f"{path}: legacy_images {version}: {ref!r} is not "
-                "ghcr.io/<owner>/<name>@sha256:<64 hex>"
-            )
+    plan["legacy_arms"] = {
+        arm: {str(k): v for k, v in (images or {}).items()}
+        for arm, images in (plan.get("legacy_arms") or {}).items()
+    }
+    maps = [("legacy_images", plan["legacy_images"])] + [
+        (f"legacy_arms {arm}", m) for arm, m in plan["legacy_arms"].items()
+    ]
+    for where, images in maps:
+        for version, ref in images.items():
+            if not IMAGE_RE.fullmatch(str(ref)):
+                sys.exit(
+                    f"{path}: {where} {version}: {ref!r} is not "
+                    "ghcr.io/<owner>/<name>@sha256:<64 hex>"
+                )
+    for arm in plan["legacy_arms"]:
+        if arm not in plan["arms"]:
+            sys.exit(f"{path}: legacy_arms names arm '{arm}', which the plan does not define")
+    if plan.get("isolates") is not None and plan["isolates"] not in ISOLATES:
+        sys.exit(f"{path}: isolates {plan['isolates']!r} is not one of {', '.join(ISOLATES)}")
     pins = plan.get("pins") or {}
     if not isinstance(pins, dict):
         sys.exit(f"{path}: pins is a mapping arm -> {{source_sha, image}}")
@@ -330,6 +370,154 @@ def cell_protocols(plan, cell, arm):
             if p not in out:
                 out.append(p)
     return out
+
+
+# --- what each arm runs (#89) --------------------------------------------------
+
+
+def legacy_images(plan, arm):
+    """The arm's version -> image map ({} = not a legacy arm), as AntHocNet's."""
+    return plan["legacy_arms"].get(arm) or plan["legacy_images"]
+
+
+def release(version):
+    """The ns-3 release of a version string ('3.42-opt', '3.48-optimized'), or None."""
+    m = re.match(r"(?:ns-)?(\d+\.\d+(?:\.\d+)?)", str(version or ""))
+    return m.group(1) if m else None
+
+
+def registry_config(image):
+    """An image's config (labels, env), read anonymously from its registry."""
+    ref, digest = image.split("@", 1)
+    host, repo = ref.split("/", 1)
+    with urllib.request.urlopen(
+        f"https://{host}/token?scope=repository:{repo}:pull", timeout=20
+    ) as r:
+        token = json.load(r)["token"]
+
+    def get(path, accept):
+        req = urllib.request.Request(
+            f"https://{host}/v2/{repo}/{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": accept},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+
+    manifest = get(
+        f"manifests/{digest}",
+        "application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,"
+        "application/vnd.docker.distribution.manifest.list.v2+json,"
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+    if "manifests" in manifest:  # an index: the linux/amd64 image
+        one = next(
+            m for m in manifest["manifests"] if m.get("platform", {}).get("architecture") == "amd64"
+        )
+        manifest = get(
+            f"manifests/{one['digest']}",
+            "application/vnd.oci.image.manifest.v1+json,"
+            "application/vnd.docker.distribution.manifest.v2+json",
+        )
+    return get(f"blobs/{manifest['config']['digest']}", "*/*").get("config") or {}
+
+
+_NS3 = {}
+
+
+def image_ns3(image, offline=False):
+    """The ns-3 release an image was built on ('?' when it cannot be read)."""
+    if offline or not image or not IMAGE_RE.fullmatch(image):
+        return "?"
+    if image not in _NS3:
+        try:
+            config = registry_config(image)
+        except (OSError, ValueError, KeyError, StopIteration) as e:
+            print(f"warning: cannot read {image}'s labels: {e}", file=sys.stderr)
+            config = {}
+        tag = (config.get("Labels") or {}).get(NS3_LABEL, "")
+        env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+        _NS3[image] = release(tag.rsplit(":", 1)[-1]) or release(env.get("NS3_VERSION")) or "?"
+    return _NS3[image]
+
+
+def job_runs(plan, arm, version, offline=False):
+    """(ns-3 release, image, source_sha) one of the arm's jobs runs."""
+    p = plan["pins"].get(arm, {})
+    sha = p.get("source_sha", plan.get("source_sha")) or "-"
+    images = legacy_images(plan, arm)
+    if images:  # the legacy in-job build: the cell's version picks the image
+        return release(version) or "?", images.get(version, f"(no legacy image for {version})"), sha
+    image = p.get("image", plan.get("image"))
+    return image_ns3(image, offline), image or "(no image pinned)", sha
+
+
+def confounds(plan, rows):
+    """{cell: [(field, {arm: value})]}: what the arms of each cell differ in.
+
+    rows: [(cell, arm, ns3, image, sha)]. `args` is the arm's own attributes,
+    which differ by design unless the plan isolates something else.
+    """
+    by_cell = {}
+    for cell, arm, ns3, image, sha in rows:
+        spec = plan["cells"][cell]
+        args = " ".join(
+            x for x in (plan["arms"][arm] or "", spec.get("armArgs", {}).get(arm, "")) if x
+        )
+        by_cell.setdefault(cell, {}).setdefault(arm, set()).add(
+            (("ns3", ns3), ("image", image), ("source_sha", sha), ("args", args))
+        )
+    out = {}
+    for cell, arms in by_cell.items():
+        if len(arms) < 2:
+            continue
+        diffs = []
+        for i, field in enumerate(("ns3", "image", "source_sha", "args")):
+            values = {arm: ", ".join(sorted({v[i][1] for v in vs})) for arm, vs in arms.items()}
+            if len(set(values.values())) > 1:
+                diffs.append((field, values))
+        if diffs:
+            out[cell] = diffs
+    return out
+
+
+def check_confounds(plan, rows):
+    """Warn about, or refuse, arms that differ in more than the plan isolates.
+
+    Returns True when the plan must be refused (a declared isolation broken
+    without allow_confounds)."""
+    isolates = plan.get("isolates")
+    allowed = ISOLATES.get(isolates, set())
+    refuse = False
+    for cell, diffs in confounds(plan, rows).items():
+        for field, values in diffs:
+            if isolates is None and field != "ns3":
+                continue  # an undeclared plan: only a release difference is flagged
+            if field in allowed:
+                continue
+            shown = ", ".join(f"{arm} {v}" for arm, v in values.items())
+            what = "ns-3 release" if field == "ns3" else field
+            if isolates is None:
+                unread = " (? = not read)" if "?" in values.values() else ""
+                print(
+                    f"warning: {cell}: the arms run different ns-3 releases ({shown}){unread}; "
+                    "a comparison of them also measures the release (declare `isolates:` "
+                    "to make this an error)",
+                    file=sys.stderr,
+                )
+            elif plan.get("allow_confounds"):
+                print(
+                    f"warning: {cell}: isolates {isolates}, but the arms also differ in "
+                    f"{what} ({shown}); allowed by allow_confounds",
+                    file=sys.stderr,
+                )
+            else:
+                refuse = True
+                print(
+                    f"CONFOUND {cell}: isolates {isolates}, but the arms also differ in "
+                    f"{what} ({shown}); fix the plan or set allow_confounds: true",
+                    file=sys.stderr,
+                )
+    return refuse
 
 
 # --- GitHub -------------------------------------------------------------------
@@ -449,12 +637,13 @@ def write_log(work, log):
 # --- commands -----------------------------------------------------------------
 
 
-def cmd_plan(plan, _a):
-    for label, _c, arm, wf, inp in jobs(plan):
-        harness, args, _version = legacy_command(wf, inp, plan["program"])
-        p = plan["pins"].get(arm, {})
-        image = p.get("image", plan.get("image")) or "(no image pinned)"
-        print(f"{label}\t{image}\t{harness} {args}")
+def cmd_plan(plan, a):
+    rows = []
+    for label, cell, arm, wf, inp in jobs(plan):
+        harness, args, version = legacy_command(wf, inp, plan["program"])
+        ns3, image, sha = job_runs(plan, arm, version, a.offline)
+        rows.append((cell, arm, ns3, image, sha))
+        print(f"{label}\tns-3 {ns3}\t{image}\t{sha}\t{harness} {args}")
     shas = sorted(
         {
             plan["pins"].get(a, {}).get("source_sha", plan.get("source_sha")) or "-"
@@ -466,6 +655,8 @@ def cmd_plan(plan, _a):
         f"source_sha {', '.join(shas)}",
         file=sys.stderr,
     )
+    if check_confounds(plan, rows):
+        sys.exit(1)
 
 
 def cmd_dispatch(plan, a):
@@ -475,6 +666,13 @@ def cmd_dispatch(plan, a):
             "legacy_images: the reusable cell runs one image by digest and has no "
             "in-job legacy build; dispatch this plan with the repository's own legacy path"
         )
+    if plan.get("isolates"):  # a declared control: refuse its confounds before any run (#89)
+        rows = [
+            (cell, arm, *job_runs(plan, arm, legacy_command(jwf, inp, plan["program"])[2]))
+            for _l, cell, arm, jwf, inp in jobs(plan)
+        ]
+        if check_confounds(plan, rows):
+            sys.exit("dispatch: the plan's arms differ in more than it isolates (see above)")
     mine = selected(plan, a)
     pins = {arm: pin(plan, arm) for arm in sorted({j[2] for j in mine})}
     work = work_dir(plan, a)
@@ -691,6 +889,13 @@ def main(argv=None):
             s.add_argument(
                 "--workflow",
                 help="that caller workflow (default: plan's workflow, else benchmark-cell.yml)",
+            )
+        if name == "plan":
+            s.add_argument(
+                "--offline",
+                action="store_true",
+                default=os.environ.get("NS3_TOOL_OFFLINE") == "1",
+                help="do not read an image's ns-3 release from its registry (prints ?)",
             )
         if name == "status":
             s.add_argument(
