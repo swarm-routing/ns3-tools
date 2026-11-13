@@ -64,8 +64,8 @@ Reuse (#94, #155): when the repository's caller forwards a `key` input to the
 reusable cell (its text names `inputs.key`; `dispatch` reads the caller at the
 plan's `ref`), every job has a key, campaign.cell_key over what pins it: the
 image digest, the commits (`<repo>@<source_sha>`, each module the caller's
-`modules:` builds at source_sha, and each `name=owner/repo@<commit>` of its
-`dependencies:`), the harness and its flags (sorted; protocols, seeds), and the
+`modules:` builds at source_sha, and each `name=owner/repo@<commit>[:subdir]`
+of its `dependencies:`, whole locators), the harness and its flags (sorted; protocols, seeds), and the
 marker contract. `dispatch` passes it; the cell writes it into ##PROV## and
 names its artifact `benchmark-cell-<key>`. Before dispatching a job,
 `dispatch` looks in the repository for an unexpired artifact of a successful
@@ -164,7 +164,9 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPO_RE = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 CELL_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 # A caller's `dependencies:` entry, name=owner/repo@<commit>[:subdir] (#155).
-DEP_RE = re.compile(r"([A-Za-z0-9_.-]+)=[A-Za-z0-9-]+/[A-Za-z0-9._-]+@([0-9a-f]{40})\b")
+DEP_RE = re.compile(
+    r"(([A-Za-z0-9_.-]+)=[A-Za-z0-9-]+/[A-Za-z0-9._-]+@([0-9a-f]{40})(?::[^\s#'\"]+)?)"
+)
 MODULES_RE = re.compile(r"^\s*modules:\s*(\S.*?)\s*$", re.M)
 POLL = float(os.environ.get("NS3_TOOL_POLL", "15"))  # seconds between GitHub polls
 # What `isolates:` may name (#89), and what else may differ with it.
@@ -726,23 +728,30 @@ def campaign_module():
 
 def read_caller(repo, wf, ref):
     """(own modules, dependencies) the caller workflow builds, or None when it
-    forwards no `key` input to the reusable cell. own: the module names of its
-    `modules:` (built at source_sha); dependencies: name@commit of each
-    `name=owner/repo@<commit>` it pins."""
+    forwards no `key` input to the reusable cell. own: each `name=path` of its
+    `modules:` (built at source_sha); dependencies: (spec, name, commit) of each
+    `name=owner/repo@<commit>[:subdir]` it pins. The key covers the whole
+    locators (path, subdir); ##PROV## names only name@commit."""
     out = gh(f"repos/{repo}/contents/.github/workflows/{wf}?ref={ref}", "--jq", ".content")
     text = base64.b64decode(out).decode()
     if "inputs.key" not in text:
         return None
     code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-    m = MODULES_RE.search(code)
-    own = [t.split("=", 1)[0] for t in m.group(1).split()] if m else []
-    return own, [f"{name}@{commit}" for name, commit in DEP_RE.findall(code)]
+    m = MODULES_RE.search(code)  # one line, `modules: a=ns3 b=x`, maybe quoted or commented
+    value = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("\"'") if m else ""
+    return value.split(), DEP_RE.findall(code)
 
 
 def cell_modules(repo, sha, caller):
-    """The commits a cell's key covers: the repository, its own modules, the dependencies."""
+    """What a cell's key covers: the repository, its own modules, the dependencies."""
     own, deps = caller
-    return [f"{repo}@{sha}"] + [f"{name}@{sha}" for name in own] + deps
+    return [f"{repo}@{sha}"] + [f"{tok}@{sha}" for tok in own] + [d[0] for d in deps]
+
+
+def prov_modules(sha, caller):
+    """The modules= set a build-mode cell's ##PROV## names (empty: prebuilt)."""
+    own, deps = caller
+    return {f"{tok.split('=', 1)[0]}@{sha}" for tok in own} | {f"{d[1]}@{d[2]}" for d in deps}
 
 
 def keyed_run(repo, key):
@@ -759,7 +768,7 @@ def keyed_run(repo, key):
     return next((rid for rid in rids if run_state(repo, rid) == "success"), None)
 
 
-def check_reused(repo, work, rid, sha, image, key, mods, command):
+def check_reused(repo, work, rid, sha, image, key, own, command):
     """Why run `rid` is not the cell keyed `key` ("" when it is); downloads it."""
     src = os.path.join(work, "artifacts", str(rid))
     if results_text(src) is None:
@@ -771,7 +780,6 @@ def check_reused(repo, work, rid, sha, image, key, mods, command):
         bad.append("no result rows")
     if prov and prov.get("key") != key:
         bad.append(f"key {prov.get('key') or '-'}")
-    own = {m for m in mods if "/" not in m.split("@")[0]}  # the modules= the cell builds
     if prov and own and set((prov.get("modules") or "").split(",")) != own:
         bad.append(f"modules {prov.get('modules') or '-'}, not {','.join(sorted(own))}")
     if f"##ARGS## {command}" not in text.splitlines():
@@ -886,15 +894,15 @@ def cmd_dispatch(plan, a):
         sha, image = pins[arm]
         key = reused = None
         if caller is not None:
-            mods = cell_modules(repo, sha, caller)
-            key = campaign_module().cell_key(image, mods, harness, args)
+            key = campaign_module().cell_key(image, cell_modules(repo, sha, caller), harness, args)
             reused = keyed_run(repo, key) if a.reuse else None
         if a.dry_run:
             counts["reuse" if reused else "run"] += 1
             print(f"{label}\t{key or '-'}\t" + (f"reuse run {reused}" if reused else "run"))
             continue
         if reused:
-            why = check_reused(repo, work, reused, sha, image, key, mods, f"{harness} {args}")
+            own = prov_modules(sha, caller)
+            why = check_reused(repo, work, reused, sha, image, key, own, f"{harness} {args}")
             if why:
                 sys.exit(
                     f"reuse: {label}: run {reused} has key {key[:12]}, but {why}\n"

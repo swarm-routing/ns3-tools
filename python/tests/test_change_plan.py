@@ -343,7 +343,7 @@ jobs:
     with:
       image: ${{{{ inputs.image }}}}
       key: ${{{{ inputs.key }}}}
-      modules: ara=ns3
+      modules: "ara=ns3"  # quoted, with a comment
       dependencies: |
         swarm-core=swarm-routing/ns3-swarm-core@{DEP1}
         routing-bench=swarm-routing/ns3-tools@{DEP2}:ns3/routing-bench
@@ -360,7 +360,17 @@ def _dispatch_key():
     fake = keyed()
     cp.gh = fake
     caller = cp.read_caller("swarm-routing/ARA", "benchmark-cell.yml", "main")
-    expect(caller == (["ara"], [f"swarm-core@{DEP1}", f"routing-bench@{DEP2}"]), "caller", caller)
+    want_deps = [
+        (f"swarm-core=swarm-routing/ns3-swarm-core@{DEP1}", "swarm-core", DEP1),
+        (f"routing-bench=swarm-routing/ns3-tools@{DEP2}:ns3/routing-bench", "routing-bench", DEP2),
+    ]
+    expect(caller == (["ara=ns3"], want_deps), "caller", caller)
+    expect(cp.prov_modules(SHA, caller) == set(KEY_MODULES.split(",")), "prov-modules", caller)
+    # the key covers the locators: another subdir at the same commit is another cell
+    other = (caller[0], [(want_deps[0][0] + ":other", *want_deps[0][1:]), want_deps[1]])
+    expect(
+        cp.cell_modules("o/r", SHA, other) != cp.cell_modules("o/r", SHA, caller), "subdir", other
+    )
     cp.gh = FakeGh()
     expect(cp.read_caller("o/r", "w.yml", "main") is None, "caller-no-key", "")
     camp = cp.campaign_module()
@@ -368,8 +378,8 @@ def _dispatch_key():
         plan = plan_of(d)
         dispatch(plan, os.path.join(d, "w"), fake, cap=10)
         i = fake.dispatched[0][1]["inputs"]
-        mods = [f"swarm-routing/AntHocNet@{SHA}", f"ara@{SHA}", f"swarm-core@{DEP1}",
-                f"routing-bench@{DEP2}"]  # fmt: skip
+        mods = [f"swarm-routing/AntHocNet@{SHA}", f"ara=ns3@{SHA}", want_deps[0][0],
+                want_deps[1][0]]  # fmt: skip
         want = camp.cell_key(IMAGE, mods, i["harness"], i["args"])
         expect(i.get("key") == want and len({b["inputs"]["key"] for _u, b in fake.dispatched}) == 7,
                "key-input", i)  # fmt: skip
