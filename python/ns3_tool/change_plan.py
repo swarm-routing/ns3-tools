@@ -64,10 +64,12 @@ each cell's `##PROV## modules=` (name@commit, the module under test being the
 one at the arm's source_sha), records the first collected cell's dependency
 set in state.json (`deps`) and rejects a cell, of any arm, whose set differs,
 naming both commits. A re-dispatch builds the caller's dependencies as they
-are at `ref` now: if they moved, start a new generation, or delete `deps`
-from state.json to adopt the newer set and re-dispatch the cells on the older
-one. A cell with no `modules=` (AntHocNet's committed cells) has nothing to
-check. `plan` and `verdicts` also read the committed historical plans, which
+are at `ref` now: if they moved, start a new generation, or set `deps` in
+state.json to the commits the caller names now (the report gives both) and
+collect with `--redispatch`, which drops the cells on the older set. A cell
+whose `modules=` names only the module under test has the empty set, which is
+compared like any other; a cell with no `modules=` at all (AntHocNet's
+committed cells) has nothing to check. `plan` and `verdicts` also read the committed historical plans, which
 predate the pins.
 
 Reuse (#94, #155): when the repository's caller forwards a `key` input to the
@@ -999,8 +1001,14 @@ def prov_problem(prov, sha, image):
 
 
 def deps_of(prov, sha):
-    """{module: commit} of ##PROV## modules=, without the module under test (at sha)."""
-    pairs = (m.partition("@") for m in prov.get("modules", "").split(",") if "@" in m)
+    """{module: commit} of ##PROV## modules=, without the module under test (at sha).
+
+    None when the line has no modules= field (nothing to check); {} when it
+    names only the module under test.
+    """
+    if "modules" not in prov:
+        return None
+    pairs = (m.partition("@") for m in prov["modules"].split(",") if "@" in m)
     return {name: commit for name, _at, commit in pairs if commit != sha}
 
 
@@ -1052,8 +1060,8 @@ def cmd_collect(plan, a):
                 continue  # every label of the cell is checked
             prov = prov_of(text)
             why = prov_problem(prov, sha, image)
-            deps = {} if why else deps_of(prov, sha)
-            if deps:  # one dependency set per campaign, the first collected cell's (#148)
+            deps = None if why else deps_of(prov, sha)
+            if deps is not None:  # one dependency set per campaign (#148)
                 if "deps" not in state:
                     state["deps"] = deps
                     save_state(work, state)
@@ -1090,8 +1098,8 @@ def cmd_collect(plan, a):
         if any(why.startswith("dependencies ") for _l, _r, why in rejected):
             print(
                 f"  (a re-dispatch builds the caller's dependencies as they are at {plan['ref']} "
-                f"now: if they moved, start a new generation, or delete deps from "
-                f"{work}/state.json to adopt the newer set)",
+                f"now: if they moved, start a new generation, or set deps in {work}/state.json "
+                "to the commits the caller names now and collect --redispatch)",
                 file=sys.stderr,
             )
         if a.redispatch:

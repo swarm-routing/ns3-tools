@@ -604,6 +604,17 @@ def _collect_deps_resumed():
         code, err = collect(plan, work, src, out, arm="quiet")
         expect(code == 1 and not os.listdir(out) and "quiet/sat\trun 13\tdependencies" in err,
                "resumed", (code, err))  # fmt: skip
+        # modules= naming only the module under test is the empty set: compared too.
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + prov())
+        code, err = collect(plan, work, src, out, arm="quiet")
+        expect(code == 1 and f"dependencies routing-bench -, not {BENCH}; swarm-core -, not {CORE}"
+               in err, "empty-set", (code, err))  # fmt: skip
+        # Setting deps to the commits kept, then --redispatch, drops the others.
+        cp.save_state(work, {"deps": {"swarm-core": CORE2, "routing-bench": BENCH}})
+        write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n" + prov(deps=DEPS2))
+        code, err = collect(plan, work, src, out, arm="quiet")
+        expect(code == 0 and os.listdir(out) == ["sat-vtest-quiet.txt"], "set-deps", (code, err))
+        os.remove(os.path.join(out, "sat-vtest-quiet.txt"))
         # No modules= field (AntHocNet's committed cells): nothing to check.
         write_run(src, "quiet/sat", "##RUN## 1 anthocnet 99\n"
                   f"##PROV## commit={SHA} ref=main run_id=1 attempt=1 image={IMAGE}\n")  # fmt: skip
