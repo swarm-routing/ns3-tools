@@ -57,7 +57,19 @@ digest. An arm's `pins` entry overrides either for that arm. `collect` reads
 each cell's ##PROV## line and rejects a cell whose commit= or image digest is
 not its arm's pin; it lists the rejected labels for re-dispatch, and
 `--redispatch` drops them from runs.tsv so the next `dispatch` sends them
-again. `plan` and `verdicts` also read the committed historical plans, which
+again. The dependencies (swarm-core, routing-bench) are not in the plan: the
+caller workflow names them, at the dispatch `ref`, so a dependency bump merged
+while a campaign is in flight changes the later cells (#148). `collect` reads
+each cell's `##PROV## modules=` (name@commit, the module under test being the
+one at the arm's source_sha), records the first collected cell's dependency
+set in state.json (`deps`) and rejects a cell, of any arm, whose set differs,
+naming both commits. A re-dispatch builds the caller's dependencies as they
+are at `ref` now: if they moved, start a new generation, or set `deps` in
+state.json to the commits the caller names now (the report gives both) and
+collect with `--redispatch`, which drops the cells on the older set. A cell
+whose `modules=` names only the module under test has the empty set, which is
+compared like any other; a cell with no `modules=` at all (AntHocNet's
+committed cells) has nothing to check. `plan` and `verdicts` also read the committed historical plans, which
 predate the pins.
 
 Reuse (#94, #155): when the repository's caller forwards a `key` input to the
@@ -988,9 +1000,32 @@ def prov_problem(prov, sha, image):
     return "; ".join(bad)
 
 
+def deps_of(prov, sha):
+    """{module: commit} of ##PROV## modules=, without the module under test (at sha).
+
+    None when the line has no modules= field (nothing to check); {} when it
+    names only the module under test.
+    """
+    if "modules" not in prov:
+        return None
+    pairs = (m.partition("@") for m in prov["modules"].split(",") if "@" in m)
+    return {name: commit for name, _at, commit in pairs if commit != sha}
+
+
+def deps_problem(got, want):
+    """Why a cell's dependency commits are not the campaign's ("" when they are)."""
+    bad = [
+        f"{name} {got.get(name) or '-'}, not {want.get(name) or '-'}"
+        for name in sorted(set(got) | set(want))
+        if got.get(name) != want.get(name)
+    ]
+    return "; ".join(bad)
+
+
 def cmd_collect(plan, a):
     work = work_dir(plan, a)
     log = read_log(work)
+    state = load_state(work)
     repo = None if a.src else target(plan, a)[0]
     groups = {}
     for label, cell, arm, _wf, _inp in selected(plan, a):
@@ -1023,7 +1058,16 @@ def cmd_collect(plan, a):
                 # only the ##PROV## line; it is a missing run, not a result.
                 rejected.append((label, rid, "no result rows (a timed-out run's stub?)"))
                 continue  # every label of the cell is checked
-            why = prov_problem(prov_of(text), sha, image)
+            prov = prov_of(text)
+            why = prov_problem(prov, sha, image)
+            deps = None if why else deps_of(prov, sha)
+            if deps is not None:  # one dependency set per campaign (#148)
+                if "deps" not in state:
+                    state["deps"] = deps
+                    save_state(work, state)
+                why = deps_problem(deps, state["deps"])
+                if why:
+                    why = f"dependencies {why} (state.json deps)"
             if why:
                 rejected.append((label, rid, why))
                 continue
@@ -1044,9 +1088,20 @@ def cmd_collect(plan, a):
         written += 1
     print(f"wrote {written} file(s), skipped {skipped}", file=sys.stderr)
     if rejected:
-        print("re-dispatch (each cell must run its arm's source_sha and image):", file=sys.stderr)
+        print(
+            "re-dispatch (each cell must run its arm's source_sha and image, and the "
+            "campaign's dependency commits):",
+            file=sys.stderr,
+        )
         for label, rid, why in rejected:
             print(f"  {label}\trun {rid}\t{why}", file=sys.stderr)
+        if any(why.startswith("dependencies ") for _l, _r, why in rejected):
+            print(
+                f"  (a re-dispatch builds the caller's dependencies as they are at {plan['ref']} "
+                f"now: if they moved, start a new generation, or set deps in {work}/state.json "
+                "to the commits the caller names now and collect --redispatch)",
+                file=sys.stderr,
+            )
         if a.redispatch:
             write_log(work, {k: v for k, v in log.items() if k not in {r[0] for r in rejected}})
             print(
