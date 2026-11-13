@@ -43,6 +43,13 @@ node any unrelated allocation change reorders its sends (#362). Such a row is
 ``ORDER-ONLY`` when every paired 95% CI (PDR, delay99, NRL) straddles zero,
 and FAIL otherwise. Exit 1 on any FAIL.
 
+Protocol versus protocol: ``--proto P --vs BASE FILE...`` pairs two protocols
+of the same cell seed by seed (FILES: that cell's runs, its seed blocks) and
+prints the paired-difference 95% CI and Wilcoxon p of P - BASE, with the
+paired verdict (PAIRED-IMPROVED / -WORSE / -MIXED / -NOISE, P's view). It is
+an anchor's read, where a comparator and a baseline run in one invocation on
+the same seeds; ``ns3-campaign verdicts`` pairs arms, not protocols.
+
 Field query (#791): ``--get FIELD --from SOURCE --proto P FILE|-`` prints one
 field of one protocol's result, so the CI gates in tools/checks/ read the
 harness's output through this parser instead of positional awk. SOURCE is
@@ -386,6 +393,20 @@ def fmt_paired(pstats):
     return f"paired 95% CI (n={n}): " + "  ".join(bits) + f" -> {v}"
 
 
+def versus(texts, proto, base):
+    """--vs (an anchor's read): `proto` minus `base`, paired seed by seed in the
+    same runs, over every ##RUN## row of `texts` (one cell's files, e.g. its
+    seed blocks). Returns the fmt_paired() line, or raises ValueError."""
+    runs = parse_runs("\n".join(texts))
+    missing = [p for p in (proto, base) if p not in runs]
+    if missing:
+        raise ValueError(f"no ##RUN## rows for {', '.join(missing)}")
+    pstats = paired_stats(runs[base], runs[proto])
+    if pstats is None:
+        raise ValueError(f"fewer than 2 seeds where both {proto} and {base} ran")
+    return f"{proto} - {base}, by seed: " + fmt_paired(pstats)
+
+
 def label_of(path, text):
     for line in text.splitlines():
         s = line.strip()
@@ -591,6 +612,13 @@ def main():
         "--ab", action="store_true", help="read files as (off,on) pairs; flag cross-pair sign flips"
     )
     ap.add_argument(
+        "--vs",
+        metavar="BASE",
+        help="pair --proto against protocol BASE in the same cell, seed by seed "
+        "(FILES: one cell's runs, e.g. its seed blocks): the paired 95%% CI and "
+        "Wilcoxon p of PROTO - BASE, an anchor's protocol-vs-protocol read",
+    )
+    ap.add_argument(
         "--control",
         action="store_true",
         help="BEFORE AFTER: every other protocol's ##RUN## rows must be identical (#675)",
@@ -610,6 +638,17 @@ def main():
         help="where --get reads from (default: run)",
     )
     args = ap.parse_args()
+
+    if args.vs:
+        texts = []
+        for path in args.files:
+            with open(path) as fh:
+                texts.append(fh.read())
+        try:
+            print(versus(texts, args.proto, args.vs))
+        except ValueError as e:
+            sys.exit(f"bench_parse --vs: {e}")
+        sys.exit(0)
 
     if args.get:
         if len(args.files) != 1:
