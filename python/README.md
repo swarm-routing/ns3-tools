@@ -14,7 +14,7 @@ Readers and paired statistics for the comparison harness's marker lines
 | `sweep_summary` / `ns3-sweep-summary` | summarize campaign sweep CSVs |
 | `scenario_check` / `ns3-scenario-check` | `preflight` a scenario's knobs before a dispatch; `results`: plausibility of a cell, its anchor floor from an `--anchors` file (#28) |
 | `campaign` / `ns3-campaign` | multi-protocol campaigns: a plan (`campaigns/*.toml`) built into one image, every cell run in it by digest, collected into a swarm-routing/benchmarks run with its manifest, paired verdicts (#66); a cell that already ran (same key: image digest, commits, program, sorted flags, arms, seeds, marker version) is reused instead of dispatched, from the local cache, a benchmarks checkout or a workflow artifact (#94) |
-| `change_plan` (through `ns3-campaign`) | change-test campaigns in a protocol repository, AntHocNet's plan format (cells x arms, a `generation` key; YAML needs PyYAML, TOML and JSON are stdlib): each cell dispatched to the repository's caller of swarm-routing/.github's `reusable-benchmark-cell.yml`, pinned to the plan's `source_sha` and image digest (per arm with `pins`); `collect` rejects a cell whose `##PROV##` disagrees and lists it for re-dispatch; `verdicts` byte for byte AntHocNet's `campaign.py` (#81) |
+| `change_plan` (through `ns3-campaign`) | change-test campaigns in a protocol repository, AntHocNet's plan format (cells x arms, a `generation` key; YAML needs PyYAML, TOML and JSON are stdlib): each cell dispatched to the repository's caller of swarm-routing/.github's `reusable-benchmark-cell.yml`, pinned to the plan's `source_sha` and image digest (per arm with `pins`); `collect` rejects a cell whose `##PROV##` disagrees and lists it for re-dispatch; `verdicts` byte for byte AntHocNet's `campaign.py` (#81); `plan` prints each job's ns-3 release (an image arm's from its labels; `--offline` skips that), image and `source_sha`, warns when a cell's arms run different releases, and refuses a plan declaring `isolates: image\|ns3\|source_sha\|args` whose arms differ in more (`allow_confounds: true` to override) (#89) |
 
 ```bash
 pip install ./python                        # console scripts above
@@ -38,6 +38,20 @@ contract bump the reader rejects stops the gates too.
 `tests/test_bench_parse_query.py` checks the reader against the awk it
 replaced on every cell, and runs `arm-delivers.sh` on the fixtures and on
 broken inputs.
+
+The readers are strict by default (#58): a `##RUN##`, `##BENCH##` or
+`# stddev` field, or a required campaign-CSV value (`sweep_summary`), that is
+present but not a number fails with the file, the line and the field (exit 2),
+instead of being skipped, so no verdict runs on fewer seeds than it says.
+`inf` stays allowed where the harness prints it (the offered-load
+percentiles). `--lenient` (`bench_parse`, `sweep_summary`) restores the old
+skipping for exploring partial logs and reports on stderr how many fields and
+rows it dropped; its standard output is the old output byte for byte. Nine
+older cells in AntHocNet's `results/cells/` (the `grid-*` cells without a
+generation suffix, `static-mesh-jitter-cap1s.txt`, `fanet-main.txt` and
+`fanet-main-oracle100ms.txt`) carry a monitor's `##RSS##` line written into a
+`##RUN##` row, so they read only with `--lenient`. A line that starts
+`##RUN##` but is not `<run> <arm> <fields>` (such a cut row) fails too. `tests/test_strict.py` covers each case.
 
 `scenario_check` is AntHocNet's script with the protocol taken out (#28). The
 anchor floors come from a file in the schema of AntHocNet's

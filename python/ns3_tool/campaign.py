@@ -901,7 +901,10 @@ def check_cell(plan, state, label, rid, args, text, key=None):
     # ##PROV## stamped on it: every arm must carry the whole seed block.
     p = parameters(args)
     block = set(range(p["firstRun"], p["firstRun"] + p["runs"]))
-    runs = bench_parse.parse_runs(text)
+    try:  # strict (#58): a malformed ##RUN## field rejects the cell
+        runs = bench_parse.parse_runs(text, bench_parse.Reader(where=f"{label}: run {rid} {path}"))
+    except bench_parse.Malformed as e:
+        raise RuntimeError(str(e)) from None
     for arm in plan["arms"]:
         got_seeds = set(runs.get(arm, {}))
         if got_seeds != block:
@@ -1035,7 +1038,10 @@ def cmd_verdicts(plan, a):
             print(f"{cell}\t-\t(missing {path})")
             continue
         with open(path) as f:
-            runs = bench_parse.parse_runs(f.read())
+            try:  # strict (#58): no verdict from a cell with a malformed ##RUN## field
+                runs = bench_parse.parse_runs(f.read(), bench_parse.Reader(where=path))
+            except bench_parse.Malformed as e:
+                sys.exit(f"verdicts: {e}")
         for arm in plan["arms"]:
             if arm == ref:
                 continue

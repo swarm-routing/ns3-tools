@@ -70,10 +70,11 @@ def load_cell(cell, gen, d):
             path = os.path.join(d, f"{cell}-{p}-{gen}.txt")
             if os.path.exists(path):
                 with open(path) as f:
-                    runs.update(bp.parse_runs(f.read()))
+                    runs.update(bp.parse_runs(f.read(), bp.Reader(where=path)))
         return runs
-    with open(os.path.join(d, f"{cell}-{gen}.txt")) as f:
-        return bp.parse_runs(f.read())
+    path = os.path.join(d, f"{cell}-{gen}.txt")
+    with open(path) as f:
+        return bp.parse_runs(f.read(), bp.Reader(where=path))
 
 
 def mean(runs, metric):
