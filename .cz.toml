@@ -9,7 +9,9 @@ name = "cz_conventional_commits"
 version = "0.2.0"
 version_scheme = "semver"
 tag_format = "v$version"
-major_version_zero = true
+# 1.0.0, maintainer decision 2026-11-13 (docs/roadmap.md): a breaking change
+# is a major from here.
+major_version_zero = false
 update_changelog_on_bump = true
 # Matched per line, so only the [project] version changes.
 version_files = ["CITATION.cff:^version:", "python/pyproject.toml:^version = "]
