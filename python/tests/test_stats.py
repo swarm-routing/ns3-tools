@@ -840,6 +840,24 @@ def _():
     assert code == 0 and "(n=20)" in out, (code, out)
 
 
+@case("--vs: a collected cell (two seed blocks, a '# stddev' per block) passes the mapping check")
+def _():
+    def block(first, shift):
+        rows = {
+            "aodv": [(60.0 + 3 * i + shift, 40.0 + 2 * i, 3.0 + 0.1 * i) for i in range(10)],
+            "ara": [(50.0 + 2 * i + shift, 30.0 + i, 2.0 + 0.2 * i) for i in range(10)],
+        }
+        text = _ctl_cell(rows, first=first)
+        for proto, vals in rows.items():
+            pdr, d99, nrl = (su.sample_sd([v[k] for v in vals]) for k in range(3))
+            text += f"# stddev {proto} pdr={pdr:.2f} delay99={d99:.1f} nrl={nrl:.3f}\n"
+        return text
+
+    # the second block sits far from the first: one sd over all 20 runs would not match
+    code, out = _vs_cli([block(1, 0.0) + block(11, 30.0)])
+    assert code == 0 and "(n=20)" in out and "FAILED" not in out, (code, out)
+
+
 @case("--vs: a poisoned '# stddev' line fails the mapping check, exit 1, no read")
 def _():
     a, b = _vs_blocks(5.0)
