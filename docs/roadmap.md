@@ -59,10 +59,10 @@ repository name their repository.
 ```mermaid
 flowchart TB
     V01["<b>v0.1.0</b> harness packaged<br/>shipped"]
-    T81["<b>issue 81</b> change-test plans<br/>(ns3-campaign)"]
+    T81["<b>issue 81</b> change-test plans<br/>(ns3-campaign)<br/>done"]
     T29["<b>issue 29</b> AntHocNet switch-over<br/>done"]
     T79["<b>issue 79 and 91</b> marker contract v2<br/>+ per-arm cost"]
-    TOOLS["<b>issue 39</b> ns3-tool CLI"]
+    TOOLS["<b>issue 39</b> ns3-tool CLI<br/>done"]
     FAM["<b>issue 55</b> family catalogue<br/>+ metrics"]
     DOC["<b>issue 4</b> bring your own protocol"]
 
@@ -85,6 +85,8 @@ flowchart TB
 
     style V01 fill:#e2f0ed,stroke:#0f7f70,stroke-width:2px
     style T29 fill:#e2f0ed,stroke:#0f7f70
+    style T81 fill:#e2f0ed,stroke:#0f7f70
+    style TOOLS fill:#e2f0ed,stroke:#0f7f70
     style V10 fill:#e8e6f8,stroke:#5b4fc4,stroke-width:2px
 ```
 
@@ -99,18 +101,21 @@ feeds the benchmarks release runs and the site leaderboard.
 | Release | Exit criteria |
 |---|---|
 | **v0.1.0** (shipped 2026-11-11) | **The harness packaged.** [#26](https://github.com/swarm-routing/ns3-tools/issues/26): the `routing-bench` tarball and the `ns3-tool` wheel and sdist are published by a release run, with checksums, SBOM and attestations. Gated by the tag-push fix [#105](https://github.com/swarm-routing/ns3-tools/issues/105). Unblocked [#29](https://github.com/swarm-routing/ns3-tools/issues/29) (done) and AntHocNet v2.7.0. |
-| **v0.2.0** | **Campaigns and CLI.** A protocol pipeline runs a paired campaign end to end. Scope: [#81](https://github.com/swarm-routing/ns3-tools/issues/81) (P1, change-test plans for any repository), [#39](https://github.com/swarm-routing/ns3-tools/issues/39) (the `ns3-tool` CLI), [#89](https://github.com/swarm-routing/ns3-tools/issues/89) (plan shows each arm's ns-3 version, image and commit), [#58](https://github.com/swarm-routing/ns3-tools/issues/58) (strict readers by default for verdicts), [#94](https://github.com/swarm-routing/ns3-tools/issues/94) (result cache keyed by every pinned input), [#152](https://github.com/swarm-routing/ns3-tools/issues/152) (a change-plan `reference:` protocol, so an anchor's verdict pairs two protocols within a cell; ARA's v0.2.0 anchor needs it), [#148](https://github.com/swarm-routing/ns3-tools/issues/148) (`collect` checks each cell's `##PROV## modules=` against one dependency set per campaign, replacing the protocol repositories' manual `grep`). |
+| **v0.2.0** | **Campaigns and CLI.** A protocol pipeline runs a paired campaign end to end. Scope, done: [#81](https://github.com/swarm-routing/ns3-tools/issues/81) (P1, change-test plans for any repository), [#39](https://github.com/swarm-routing/ns3-tools/issues/39) (the `ns3-tool` CLI), [#89](https://github.com/swarm-routing/ns3-tools/issues/89) (plan shows each arm's ns-3 version, image and commit), [#58](https://github.com/swarm-routing/ns3-tools/issues/58) (strict readers by default for verdicts), [#94](https://github.com/swarm-routing/ns3-tools/issues/94) (result cache keyed by every pinned input), [#152](https://github.com/swarm-routing/ns3-tools/issues/152) (a change-plan `reference:` protocol, so an anchor's verdict pairs two protocols within a cell; ARA's v0.2.0 anchor needs it). Open: [#148](https://github.com/swarm-routing/ns3-tools/issues/148) (`collect` checks each cell's `##PROV## modules=` against one dependency set per campaign, replacing the protocol repositories' manual `grep`). |
 | **v0.3.0** | **Marker contract v2.** Readers refuse unknown contracts; outputs are byte-identical apart from the new fields; `benchmarks`' schema moves in step ([benchmarks#33](https://github.com/swarm-routing/benchmarks/issues/33)). Scope: [#79](https://github.com/swarm-routing/ns3-tools/issues/79) (routing-bench prints `##BENCH##`/`##DIAG##` itself, versioned), [#91](https://github.com/swarm-routing/ns3-tools/issues/91) (per-arm cost; the rest: state footprint, verdicts), [#93](https://github.com/swarm-routing/ns3-tools/issues/93) (declarative `--stats`), [#96](https://github.com/swarm-routing/ns3-tools/issues/96) (perf, output byte-identical), [#95](https://github.com/swarm-routing/ns3-tools/issues/95) (runner-minute estimates and budget guard), [#83](https://github.com/swarm-routing/ns3-tools/issues/83) (one plan schema for release and change-test plans), [#23](https://github.com/swarm-routing/ns3-tools/issues/23) (validate the drop-cause identity under TCP, then un-suppress `##DROPID##`). |
 | **v0.4.0** | **Families and metrics.** The family catalogue and the survivorship-safe metrics every arm shares. Scope: [#55](https://github.com/swarm-routing/ns3-tools/issues/55) (family catalogue), [#22](https://github.com/swarm-routing/ns3-tools/issues/22) (jitter, delay CDF, delay at matched PDR), [#8](https://github.com/swarm-routing/ns3-tools/issues/8) (oracle exact only on wired topologies), [#25](https://github.com/swarm-routing/ns3-tools/issues/25) (satellite validation anchors), [#5](https://github.com/swarm-routing/ns3-tools/issues/5) (satellite harnesses on the arm registry), [#40](https://github.com/swarm-routing/ns3-tools/issues/40) (probes as their own module, with a non-intrusion test), [#3](https://github.com/swarm-routing/ns3-tools/issues/3) (readers as an installable package with a versioned contract), [#4](https://github.com/swarm-routing/ns3-tools/issues/4) (bring your own protocol), [#128](https://github.com/swarm-routing/ns3-tools/issues/128) and [#150](https://github.com/swarm-routing/ns3-tools/issues/150) (scripted node and link failures, identical for every arm; #150 drives swarm-core's lifecycle helper, so check one does not supersede the other). |
 | **v1.0.0** | **Stable contract.** Marker contract v2 and the CLI frozen; an outside user follows the guide ([#4](https://github.com/swarm-routing/ns3-tools/issues/4)) from zero to a gated comparison. A 1.0.0 release needs the reusable release workflow's `increment` input (MAJOR), a new ticket in `swarm-routing/.github`. |
 
-Issue state on 2026-11-11, after v0.1.0 shipped: [#29](https://github.com/swarm-routing/ns3-tools/issues/29)
-(AntHocNet's switch-over: AntHocNet consumes the harness and readers from here)
-is closed as completed, so it left the v0.2.0 scope. [#26](https://github.com/swarm-routing/ns3-tools/issues/26)
-and [#105](https://github.com/swarm-routing/ns3-tools/issues/105) are still open
-although the release they gated is published; closing them is a maintainer
-step, so the `release:v0.1.0` board still lists them until then. Every other
-cited issue (#81, #39, #89, #58, #94 and the later releases' scope) is open.
+Issue state on 2026-11-13 (read from the tracker): v0.1.0's [#26](https://github.com/swarm-routing/ns3-tools/issues/26)
+and [#105](https://github.com/swarm-routing/ns3-tools/issues/105) are closed as
+completed, and so is [#29](https://github.com/swarm-routing/ns3-tools/issues/29)
+(AntHocNet's switch-over: AntHocNet consumes the harness and readers from
+here). Of the v0.2.0 scope, #81, #39, #89, #58, #94 and #152 are closed as
+completed; [#148](https://github.com/swarm-routing/ns3-tools/issues/148) is the
+one issue still open on the `release:v0.2.0` board.
+[#155](https://github.com/swarm-routing/ns3-tools/issues/155) (finishing #94 and
+#89 across repositories) is open and carries no `release:` label: putting it
+on the ladder is the maintainer's call. The later releases' scope is open.
 
 ## Infrastructure track
 

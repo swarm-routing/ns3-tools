@@ -7,20 +7,25 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: being populated (Phase 4).** Moved from AntHocNet so far: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39). Probes and arenas are still the plan; update this file in the PR that adds each part.
+**Status: being populated (Phase 4); v0.1.0 released.** On `main`, moved from AntHocNet: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39), plus the campaign driver `ns3-campaign` (#66, #81). Probes as their own module are planned (#40); update this file in the PR that adds each part.
 
-Protocol-agnostic diagnostics and comparison tooling: non-intrusive C++20
-probes (`TopologyOracle` for BFS-reachable PDR and path stretch,
-`DropCauseClassifier` for PHY/MAC/ARP/TTL/loop root causes, the
-`##RUN##`/`##BENCH##`/`##DIAG##` emitters), universal arenas
-(`manet-arena.cc`, `leo-walker-arena.cc`), and the `ns3-tool` Python CLI
-(`sweep`, `compare`, `diagnose`, `scaffold`) ported from AntHocNet's
-`run-scenarios.py` / `bench_parse.py`.
+Protocol-agnostic diagnostics and comparison tooling: the comparison harness
+(`routing-compare`), which today holds the measurement itself (the topology
+oracle for BFS-reachable PDR and path stretch, the drop book for
+PHY/MAC/ARP/TTL/loop root causes, both in
+`ns3/routing-bench/model/routing-bench-run.cc`) and prints the
+`##RUN##`/`##PROV##`/`##PERF##` lines; non-intrusive C++20 probes as their own
+module (planned, #40: the oracle and the drop book extracted); and the
+`ns3-tool` Python CLI (`sweep`, `compare`, `diagnose`, `scaffold`) ported
+from AntHocNet's `run-scenarios.py` / `bench_parse.py`. "Universal arenas"
+were the original plan; no issue schedules them, and whether they stay (or
+the harness, the family catalogue #55 and the satellite harnesses #5 replace
+them) is the maintainer's open decision in #161.
 
 ```
 ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
-ns3/                (planned) probes, emitters, arenas — GPL-2.0-only
+ns3/                (planned) the probe module (#40), the satellite harnesses on the arm registry (#5) — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91; check-scaffold-arm.sh, the arm `ns3-tool scaffold` writes, #39) — MIT OR GPL-2.0-only
 tools/release/      dist.sh: the release assets (routing-bench tarball, ns3-tool wheel + sdist), each checked; `make dist` — MIT OR GPL-2.0-only
 .cz.toml            Commitizen config; releases run through .github/workflows/release.yml (the org reusable-release.yml, #26)
@@ -28,7 +33,7 @@ python/ns3_tool/    `ns3-tool` (cli: compare = bench_parse, sweep = a port of An
 python/tests/       their self-tests (MIT OR GPL-2.0-only); fixtures/cells/: 14 AntHocNet cells (data, GPL-2.0-only); benchmarks/: swarm-routing/benchmarks' run validator, vendored at a pinned commit
 campaigns/          campaign plans (TOML), the pre-registration of each multi-protocol campaign — GPL-2.0-only
 .github/workflows/  campaign-image.yml (one image per plan, through reusable-ns3-image.yml), campaign-cell.yml (one cell in it by digest)
-docs/               markers.md (the marker-line contract, ##PERF## included, #91), profiling.md (perf / heaptrack / massif on one cell); arena reference (planned)
+docs/               markers.md (the marker-line contract, ##PERF## included, #91), profiling.md (perf / heaptrack / massif on one cell), roadmap.md (the release ladder), references.bib; the user guide is #4, not written yet
 ```
 
 ## Build & verify
@@ -53,9 +58,19 @@ ships `helper/<module>-bench-arms.cc` keeps registering against it. CI
 (`.github/workflows/ns3.yml`) also checks that each stock arm delivers.
 **Temporary exception (ns3-containers#35, option A):** ns-3.49's stock AODV
 livelocks, so the `aodv` arm's check runs on `ns3-dev:3.48`; move it back to
-`latest` when a fixed ns-3 release reaches it. Formatting is not checked yet:
-the harness keeps AntHocNet's style until a restyle PR adopts the org
-`.clang-format`.
+`latest` when a fixed ns-3 release reaches it. C++ formatting is not checked
+yet, in CI (`format: false` in `ns3.yml`) or by `make`: the harness keeps
+AntHocNet's style until a restyle PR adopts the org `.clang-format` and adds
+clang-format back to `make lint` and `make format`. Never run clang-format on
+`ns3/` before that PR.
+
+Before pushing, run `make check` (needs `ruff`, and network for the org
+tooling). It runs four targets: `lint` (`ruff check` and `ruff format
+--check` on `python/` with the org ruff configuration, as CI's
+`python-quality / python`), `test` (the Python self-tests), `headers` and
+`org-sync-check`. `make format` runs
+`ruff format python` only. The ns-3 build, its suites and the stock-arm
+checks need the docker line above and run in CI.
 
 Python (no pytest dependency; each test exits non-zero on its first failure):
 
@@ -403,13 +418,13 @@ because the issue threads were thorough. Caveman the chat, not the record.
 
 | You want to… | Go to |
 |--------------|-------|
-| Python sources to port (MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`; `scenario_check.py` is ported, #28; `campaign.py` as `change_plan.py`, #81), `ns3/tools/run-scenarios.py` |
-| Harness to port into `ns3/` (GPL-2.0-only, so it lands as-is in a GPL path) | AntHocNet `ns3/routing-bench/`, `docs/comparison-harness.md`, ADR-0027 |
+| Where the Python came from (ported, MIT OR GPL-2.0-only → `python/`) | AntHocNet `tools/bench/` (`bench_parse.py`, `stats_util.py`; `scenario_check.py`, #28; `campaign.py` as `change_plan.py`, #81), `ns3/tools/run-scenarios.py` (`ns3-tool sweep`, #39); AntHocNet runs them from here since #29 |
+| Where the harness came from (moved, GPL-2.0-only), and its design | `ns3/routing-bench/` (README there); AntHocNet `docs/comparison-harness.md`, ADR-0027 |
 | Run a multi-protocol campaign (one image, cells by digest, a benchmarks manifest) | `python/ns3_tool/campaign.py` (`ns3-campaign`: `validate`, `plan`, `build`, `dispatch`, `status`, `collect`, `verdicts`; its docstring is the plan format), a plan in `campaigns/`, `campaign-image.yml` + `campaign-cell.yml`; #66, swarm-routing/.github#107. Every cell has a key over every pinned input (`cell_key`; in `##PROV##` and the artifact name): `dispatch` reuses a cell already run, from the local cache (`~/.cache/ns3-campaign/`), a benchmarks checkout (`--benchmarks DIR`) or this repository's artifacts, and stops on any mismatch; `--no-reuse` runs everything (#94) |
 | Run a protocol repository's change tests (AntHocNet's plans: cells x arms) | `python/ns3_tool/change_plan.py`, reached through `ns3-campaign` for any plan with a `generation` key (`plan`, `dispatch`, `status`, `collect [--redispatch]`, `verdicts`; `--repo`, `--workflow`; its docstring is the plan format): every cell goes to the repository's caller of swarm-routing/.github's `reusable-benchmark-cell.yml` pinned to the plan's `source_sha` and image (swarm-routing/.github#157); verdicts byte for byte AntHocNet's (`NS3_TOOL_ANTHOCNET=<checkout> python3 python/tests/test_change_plan.py`, as CI); `verdicts` pairs arms; a plan's `reference: <protocol>` (or a list) also pairs every other protocol of a cell against it by seed, an anchor's read (#152); when the caller forwards `key`, `dispatch` passes each job's cell key and reuses a cell an earlier run with that key produced (`--dry-run` shows which, `--no-reuse` runs all; #155); `plan` shows each arm's ns-3 release, image and commit and flags a control whose arms differ in more than it `isolates` (#89); #81, epic swarm-routing/.github#156 |
 | Comparator arms (SAODV, SEAD, TAODV, DRL, DTN) and their gates | epic #15; the arm contract: AntHocNet `docs/comparison-harness.md`, ADR-0027 |
 | Measure what an arm costs, or read a protocol's internals | `##PERF##` (CPU, wall time and events per arm and seed; peak RSS only when the process runs one arm, and then the process peak up to that seed, `-` otherwise; `--perf`, default on; never compared between cells): `docs/markers.md`, `tools/checks/check-perf-markers.sh`, `bench_parse --from perf`, `docs/profiling.md` (#91, #97); a protocol's own counters come from swarm-core's router observer (`SwarmRoutingHelper::CollectStats`, swarm-routing/ns3-swarm-core#42), state footprint in the harness still open in #91 |
-| Open issues being migrated here | AntHocNet #764, #771, #772, #773, #791, #431, #294 |
+| Issues migrated from AntHocNet (2026-11-01) | the issues labelled `migrated`, each starting with *Migrated from*; #2 to #8 here came from AntHocNet #764, #771, #772, #773, #791, #294, #431 |
 | The org's invariants, labels, issue shape | [`swarm-routing/.github` CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md) |
 | The reference implementation and its history | [`swarm-routing/AntHocNet`](https://github.com/swarm-routing/AntHocNet) (`AGENTS.md`, `CONTEXT.md`, `docs/adr/`) |
 | Know which release a piece of work serves, or why something is not planned | [`docs/roadmap.md`](docs/roadmap.md): the ladder v0.1.0 → v1.0.0, per-release exit criteria, the non-goals; issues carry `release:` labels |

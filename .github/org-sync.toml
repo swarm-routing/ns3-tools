@@ -62,10 +62,23 @@ see `swarm-routing/.github` `reusable-ns3-image.yml` for its verify commands."""
 [make]
 build = 'docker run --rm -v "$(CURDIR):/src:ro" $(NS3_IMAGE) ns3-build-contrib routing-bench=/src/ns3/routing-bench'
 test = 'for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done'
+# What CI gates on (#162): the required check `python-quality / python` (ruff with the org
+# ruff.toml, fetched by org-tools). No clang-format: the harness keeps AntHocNet's style
+# (ns3.yml `format: false`); the restyle PR that adopts the org .clang-format adds it back.
+# A recipe here cannot declare a prerequisite, so these fetch org-tools in a sub-make. The
+# Makefile (the repository's own) has `lint: org-tools` and `format: org-tools` instead, so
+# `make -j check` fetches the org tooling once, not twice at the same time.
+lint = """
+@$(MAKE) --no-print-directory org-tools
+ruff check --config "$(ORG_DIR)/ruff.toml" python
+ruff format --check --config "$(ORG_DIR)/ruff.toml" python"""
+format = """
+@$(MAKE) --no-print-directory org-tools
+ruff format --config "$(ORG_DIR)/ruff.toml" python"""
 
 [settings]
 # GitHub settings as code: swarm-routing/.github tools/repo-settings (swarm-routing/.github#117).
-description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench harness every protocol arm registers with, the readers and paired statistics for its marker lines, and (planned) probes, universal arenas and the ns3-tool CLI."
+description = "Protocol-agnostic ns-3 comparison and diagnostics tooling: the routing-bench harness every protocol arm registers with, the readers and paired statistics for its marker lines behind the ns3-tool CLI, the ns3-campaign driver, and (planned) probes and universal arenas."
 homepage = "https://swarm-routing.github.io/arena/ns3-tools/"
 topics = ["ns-3", "benchmarking", "routing-protocol", "manet", "network-simulation", "statistics", "reproducibility", "aodv", "olsr"]
 ruleset = "tooling"

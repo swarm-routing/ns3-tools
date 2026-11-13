@@ -7,14 +7,14 @@
 > `gpsr`, `oracle`, `adaptive`) keeps registering against it. Issue numbers
 > below without a repo are AntHocNet's.
 
-`routing-bench` is the ns-3 module that will hold the comparison harness, so
+`routing-bench` is the ns-3 module that holds the comparison harness, so
 the harness builds without AntHocNet
 ([ADR-0027](https://github.com/swarm-routing/AntHocNet/blob/main/docs/adr/0027-the-comparison-harness-is-protocol-agnostic.md),
 epic [#764](https://github.com/swarm-routing/AntHocNet/issues/764)). It links
 only stock ns-3 and names no protocol of its own. Arm modules depend on it;
 it depends on none of them.
 
-## What is here (v2.6.0)
+## What is here
 
 | file | what |
 |---|---|
@@ -91,5 +91,8 @@ The optional hooks, in the order the harness calls them, are documented in
 ## Compatibility
 
 No published number may move: the byte-identical control on the committed
-cells is #769. The user guide is
-[comparison-harness.md](https://github.com/swarm-routing/AntHocNet/blob/main/docs/comparison-harness.md).
+cells was AntHocNet's
+[#769](https://github.com/swarm-routing/AntHocNet/issues/769). The user guide
+is still AntHocNet's
+[comparison-harness.md](https://github.com/swarm-routing/AntHocNet/blob/main/docs/comparison-harness.md);
+this repository's own guide is swarm-routing/ns3-tools#4.

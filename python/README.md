@@ -85,7 +85,7 @@ ns3-scenario-check results CELL --anchors anchors.yml --anchor broch-low-mobilit
 the fixture cells (AntHocNet's output recorded in
 `tests/fixtures/scenario_check/`), and on the whole corpus in CI.
 
-AntHocNet's
-`tools/bench/campaign.py` is AntHocNet-only (it dispatches AntHocNet's own
-`benchmark-cell.yml`); `campaign` here ports its shape (throttle, run log,
-collect) for campaigns that pair several repositories' modules.
+`campaign` here ports the shape of AntHocNet's `tools/bench/campaign.py`
+(throttle, run log, collect) for campaigns that pair several repositories'
+modules, and `change_plan` runs that script's own plan format in any protocol
+repository (#81, the table above).
