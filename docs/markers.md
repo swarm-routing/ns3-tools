@@ -20,6 +20,18 @@ yet (#3), and v1 does not require one. Version 2 (#79) adds that line, makes
 the harness print `##BENCH##` and `##DIAG##` itself, and records the positional
 fields of `##PERF##` below.
 
+## Stability
+
+From ns3-tools **v1.0.0** (maintainer decision 2026-11-13, `docs/roadmap.md`),
+contract v1 as this page describes it and the `ns3-tool` CLI (`compare`,
+`sweep`, `diagnose`, `scaffold`, and the console scripts kept as aliases) are
+**frozen**: marker fields, marker lines, commands and options are only
+appended. Removing one, or changing what one means or its units, is a
+breaking change: it waits for the next major release (v2.0.0, contract v2,
+#79), which says what changed and how to migrate, and moves `benchmarks`'
+schema in step. Until then a replacement is added beside the old field or
+option, and the old one keeps working.
+
 ## Results and cost
 
 Every line below except `##PERF##` is a **result**: for a fixed seed it is

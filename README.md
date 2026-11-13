@@ -25,7 +25,8 @@ Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 and statistics (`python/`) behind one CLI, `ns3-tool` (`compare`, `sweep`,
 `diagnose`, `scaffold`; `pip install ./python`, then `ns3-tool --help`), the
 campaign driver `ns3-campaign`, and, planned, non-intrusive probes as their
-own module (#40). **Status:** being populated (Phase 4); v0.1.0 is released.
+own module (#40). **Status:** v0.2.0 is released; v1.0.0 declares today's CLI and marker
+contract v1 stable ([docs/markers.md](docs/markers.md) "Stability").
 
 What each release must show, and what blocks what: [docs/roadmap.md](docs/roadmap.md).
 

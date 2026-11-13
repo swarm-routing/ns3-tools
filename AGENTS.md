@@ -7,7 +7,7 @@ before changing anything. Org-wide conventions:
 
 ## What this repo is
 
-**Status: being populated (Phase 4); v0.1.0 released.** On `main`, moved from AntHocNet: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39), plus the campaign driver `ns3-campaign` (#66, #81). Probes as their own module are planned (#40); update this file in the PR that adds each part.
+**Status: v0.2.0 released; v1.0.0 next: today's `ns3-tool` CLI and marker contract v1 (`docs/markers.md`) frozen (maintainer decision 2026-11-13, `docs/roadmap.md`); contract v2 is v2.0.0.** On `main`, moved from AntHocNet: the `routing-bench` comparison harness (`ns3/routing-bench/`, #2) and the result readers (`python/`, #3), behind the `ns3-tool` CLI (`compare`, `sweep`, `diagnose`, `scaffold`, #39), plus the campaign driver `ns3-campaign` (#66, #81). Probes as their own module are planned (#40); update this file in the PR that adds each part.
 
 Protocol-agnostic diagnostics and comparison tooling: the comparison harness
 (`routing-compare`), which today holds the measurement itself (the topology
@@ -428,5 +428,5 @@ because the issue threads were thorough. Caveman the chat, not the record.
 | Issues migrated from AntHocNet (2026-11-01) | the issues labelled `migrated`, each starting with *Migrated from*; #2 to #8 here came from AntHocNet #764, #771, #772, #773, #791, #294, #431 |
 | The org's invariants, labels, issue shape | [`swarm-routing/.github` CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md) |
 | The reference implementation and its history | [`swarm-routing/AntHocNet`](https://github.com/swarm-routing/AntHocNet) (`AGENTS.md`, `CONTEXT.md`, `docs/adr/`) |
-| Know which release a piece of work serves, or why something is not planned | [`docs/roadmap.md`](docs/roadmap.md): the ladder v0.1.0 → v1.0.0, per-release exit criteria, the non-goals; issues carry `release:` labels |
+| Know which release a piece of work serves, or why something is not planned | [`docs/roadmap.md`](docs/roadmap.md): the ladder v0.1.0 → v0.2.0 → v1.0.0 (contract v1 frozen) → v1.1.0 → v2.0.0 (contract v2), per-release exit criteria, the non-goals; issues carry `release:` labels |
 | Pick up open work | this repo's issues — highest open `priority:P*` first; newest open `handoff` issue for work in flight |

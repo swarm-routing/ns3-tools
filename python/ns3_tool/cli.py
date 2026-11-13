@@ -51,6 +51,9 @@ def usage():
     lines = ["usage: ns3-tool {" + ",".join(COMMANDS) + "} ...", "", __doc__.split("\n")[0], ""]
     lines += [f"  {name:<9} {text}" for name, (_f, text) in COMMANDS.items()]
     lines += ["", "ns3-tool <command> --help: that command's options"]
+    lines += [
+        "Stable since v1.0.0: commands and options are only added until 2.0.0 (docs/markers.md)."
+    ]
     return "\n".join(lines)
 
 

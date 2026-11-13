@@ -24,6 +24,11 @@ on:
         type: choice
         options: [dry-run, bump]
         default: dry-run
+      increment:
+        description: "auto: Commitizen picks the bump from the commits; PATCH, MINOR or MAJOR force it (cz bump --increment; MAJOR for v1.0.0 and v2.0.0)"
+        type: choice
+        options: [auto, PATCH, MINOR, MAJOR]   # a choice cannot be empty: auto is passed as ''
+        default: auto
   push:
     branches: [main]   # the merged bump PR releases; any other push is a no-op
 permissions:
@@ -41,6 +46,7 @@ jobs:
     uses: swarm-routing/.github/.github/workflows/reusable-release.yml@main
     with:
       mode: ${{ inputs.mode }}   # empty on push: release
+      increment: ${{ inputs.increment != 'auto' && inputs.increment || '' }}   # '' for auto and on push
     secrets:
       BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
       BOT_APP_PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
