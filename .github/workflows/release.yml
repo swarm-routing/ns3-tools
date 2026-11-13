@@ -11,7 +11,10 @@ name: Release
 #                       (routing-bench-<ver>.tar.gz, the ns3-tool wheel and
 #                       sdist; tools/release/dist.sh), then SBOM, checksums,
 #                       signed provenance, the v<ver> tag and the GitHub release.
-# The `image` job then publishes ghcr.io/swarm-routing/ns3-tools-ns3:v<ver>-{optimized,debug}
+# The `image` job then publishes ghcr.io/swarm-routing/ns3-tools:v<ver>-{optimized,debug}
+# and moves latest-{optimized,debug} and latest to them (named after the
+# repository, swarm-routing/.github#370 and swarm-routing/.github#373;
+# v0.1.0 is in the frozen ns3-tools-ns3)
 # with the harness built in (CONTRIBUTING "Images").
 on:
   workflow_dispatch:
@@ -50,4 +53,5 @@ jobs:
     uses: swarm-routing/.github/.github/workflows/reusable-ns3-image.yml@main
     with:
       modules: routing-bench=ns3/routing-bench
+      image: ns3-tools
       tag: ${{ needs.release.outputs.tag }}

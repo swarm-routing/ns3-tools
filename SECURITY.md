@@ -77,7 +77,9 @@ gh attestation verify routing-bench-X.Y.Z.tar.gz --repo swarm-routing/ns3-tools 
 The same commands verify the wheel and the sdist. The signer is the org's
 reusable workflow, not this repository, so every command names it with
 `--signer-workflow` (without it `gh` expects a workflow of `--repo`); this
-repository is in the certificate's workflow-repository extension. Each release also publishes the image
-`ghcr.io/swarm-routing/ns3-tools-ns3:vX.Y.Z-optimized` and `-debug`, the
+repository is in the certificate's workflow-repository extension. Each release from v0.2.0 on also publishes the image
+`ghcr.io/swarm-routing/ns3-tools:vX.Y.Z-optimized` and `-debug`, and moves the
+rolling `latest-optimized`, `latest-debug` and `latest` to them (v0.1.0:
+`ghcr.io/swarm-routing/ns3-tools-ns3`, frozen), the
 harness built on a pinned `ns3-dev` digest, signed with cosign (keyless):
 see `swarm-routing/.github` `reusable-ns3-image.yml` for its verify commands.
