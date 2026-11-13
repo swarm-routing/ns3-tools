@@ -6,7 +6,7 @@
 # Commits since the last tag and rewrites the files below.
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.0"
+version = "1.0.0"
 version_scheme = "semver"
 tag_format = "v$version"
 # 1.0.0, maintainer decision 2026-11-13 (docs/roadmap.md): a breaking change
