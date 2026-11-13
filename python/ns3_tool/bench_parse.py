@@ -743,11 +743,12 @@ def _main(args):
         for path in args.files:
             with sys.stdin if path == "-" else open(path) as fh:
                 texts.append(fh.read())
-        # #293's column-mapping check, per file (each carries its own '# stddev'):
+        # #293's column-mapping check, per file, each '# stddev' line over its
+        # own seed block (a collected campaign cell carries one per block, #740):
         # numbers from a cell whose mapping is wrong are not compared.
         mapping_failed = False
         for path, text in zip(args.files, texts):
-            runs, sds = parse_runs(text), parse_stddev(text)
+            runs, sds = parse_runs(text), parse_stddev(text, blocks=True)
             if runs and sds:
                 checks, fails = mapping_check(runs, sds)
                 if fails:
