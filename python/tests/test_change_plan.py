@@ -1014,6 +1014,7 @@ def _plan_registry_malformed():
     answers = [
         ["not", "a", "config"],  # a list where the config belongs
         {"Labels": ["x"]},  # labels that are not a mapping
+        {"Labels": {cp.NS3_LABEL: ["3.48"]}},  # a label that is a list, not text
         {"Env": [1, 2]},  # env entries that are not strings
     ]
     real = cp.registry_config

@@ -515,7 +515,10 @@ def image_ns3(image, offline=False):
     if image not in _NS3:
         try:  # any malformed registry answer is a release not read, never a crash
             config = registry_config(image)
-            tag = str((config.get("Labels") or {}).get(NS3_LABEL, ""))
+            tag = (config.get("Labels") or {}).get(NS3_LABEL, "")
+            if not isinstance(tag, (str, int, float)):
+                raise TypeError(f"label {NS3_LABEL} is a {type(tag).__name__}")
+            tag = str(tag)
             env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as e:
             print(f"warning: cannot read {image}'s labels: {e}", file=sys.stderr)
