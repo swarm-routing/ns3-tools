@@ -49,6 +49,17 @@ def _load(name):
 cp = _load("change_plan")
 cp.POLL = 0
 cp.time.sleep = lambda _s: None
+# The registry, for `plan`'s ns-3 column (#89): image -> ns-3 release, offline.
+REGISTRY = {}
+
+
+def fake_registry(image):
+    if image not in REGISTRY:
+        raise OSError(f"no such image {image}")
+    return {"Labels": {cp.NS3_LABEL: f"ghcr.io/swarm-routing/ns3-dev:{REGISTRY[image]}-optimized"}}
+
+
+cp.registry_config = fake_registry
 
 CASES = []
 
@@ -518,9 +529,10 @@ def _routing():
         with open(path, "w") as f:
             json.dump(PLAN, f)
         out = subprocess.run(
-            [sys.executable, campaign, "plan", path], capture_output=True, text=True, check=False
-        )
-        expect(out.returncode == 0 and out.stdout.startswith(f"control/grid\t{IMAGE}\tanthocnet-compare ")
+            [sys.executable, campaign, "plan", path], capture_output=True, text=True, check=False,
+            env=dict(os.environ, NS3_TOOL_OFFLINE="1"),
+        )  # fmt: skip
+        expect(out.returncode == 0 and out.stdout.startswith(f"control/grid\tns-3 ?\t{IMAGE}\t{SHA}\tanthocnet-compare ")
                and f"source_sha {SHA}" in out.stderr, "route-change", out.stdout + out.stderr)  # fmt: skip
     example = os.path.join(HERE, "..", "..", "campaigns", "anthocnet-aodv-smoke.toml")
     out = subprocess.run(
@@ -602,6 +614,135 @@ def _gh_fails():
     finally:
         cp.subprocess.run = real
     expect(raised, "gh-fails", "no RuntimeError")
+
+
+def plan_out(plan, offline=False):
+    """(exit code, stdout, stderr) of cmd_plan."""
+    code = 0
+    with (
+        contextlib.redirect_stdout(io.StringIO()) as out,
+        contextlib.redirect_stderr(io.StringIO()) as err,
+    ):
+        try:
+            cp.cmd_plan(plan, argparse.Namespace(offline=offline))
+        except SystemExit as e:
+            code = e.code
+    return code, out.getvalue(), err.getvalue()
+
+
+OLD = "ghcr.io/danieljoppi/ns3@sha256:" + "1" * 64
+OLD48 = "ghcr.io/danieljoppi/ns3@sha256:" + "2" * 64
+CONTROL = {
+    "generation": "ctl", "ref": "main", "repo": "swarm-routing/AntHocNet",
+    "source_sha": SHA, "control": "old", "arms": {"old": "", "dev": ""},
+    "pins": {"dev": {"image": IMAGE}},
+    "legacy_arms": {"old": {"3.42-opt": OLD, "3.48": OLD48}},
+    "cells": {
+        "grid": {"workflow": "paper-benchmark.yml", "inputs": {"version": "3.42-opt"}},
+        "leo": {"workflow": "satellite-benchmark.yml",
+                "inputs": {"harness": "leo-walker", "version": "3.48"}},
+    },
+    "jobs": [{"arms": ["old", "dev"], "cells": "*"}],
+}  # fmt: skip
+
+
+def control_of(d, **over):
+    path = os.path.join(d, "ctl.json")
+    with open(path, "w") as f:
+        json.dump(dict(CONTROL, **over), f)
+    return cp.load_plan(path)
+
+
+@case("plan: each arm's ns-3 release, image and commit; a release difference is flagged (#89)")
+def _plan_arms():
+    REGISTRY[IMAGE] = "3.48"
+    cp._NS3.clear()
+    with tempfile.TemporaryDirectory() as d:
+        code, out, err = plan_out(control_of(d))
+    rows = {ln.split("\t")[0]: ln.split("\t")[1:4] for ln in out.splitlines()}
+    expect(rows["old/grid"] == ["ns-3 3.42", OLD, SHA] and rows["old/leo"] == ["ns-3 3.48", OLD48, SHA]
+           and rows["dev/grid"] == ["ns-3 3.48", IMAGE, SHA], "plan-columns", out)  # fmt: skip
+    expect(code == 0 and "warning: grid: the arms run different ns-3 releases (old 3.42, dev 3.48)" in err
+           and "leo:" not in err, "plan-release-warning", err)  # fmt: skip
+    # The same plan with the old arm on 3.48 everywhere: nothing to flag.
+    with tempfile.TemporaryDirectory() as d:
+        same = control_of(d, cells={"grid": {"workflow": "paper-benchmark.yml",
+                                             "inputs": {"version": "3.48"}}})  # fmt: skip
+        code, _out, err = plan_out(same)
+    expect(code == 0 and "warning" not in err, "plan-same-release", err)
+    # Offline (or an unreadable image): the release prints ?, and is flagged as unknown.
+    with tempfile.TemporaryDirectory() as d:
+        code, out, err = plan_out(control_of(d), offline=True)
+    expect(
+        "dev/grid\tns-3 ?\t" in out and "(old 3.42, dev ?) (? = not read)" in err and code == 0,
+        "plan-offline",
+        err,
+    )
+
+
+@case("plan/dispatch: a declared isolation is refused when the arms differ in more (#89)")
+def _plan_isolates():
+    REGISTRY[IMAGE] = "3.48"
+    cp._NS3.clear()
+    with tempfile.TemporaryDirectory() as d:
+        code, _out, err = plan_out(control_of(d, isolates="image"))
+        expect(code == 1 and "CONFOUND grid: isolates image, but the arms also differ in ns-3 "
+               "release (old 3.42, dev 3.48)" in err and "CONFOUND leo" not in err,
+               "isolates-refused", err)  # fmt: skip
+        code, _out, err = plan_out(control_of(d, isolates="image", allow_confounds=True))
+        expect(code == 0 and "allowed by allow_confounds" in err, "isolates-allowed", err)
+        # isolating ns3: the image may differ with it; the commit may not.
+        code, _out, err = plan_out(
+            control_of(d, isolates="ns3", pins={"dev": {"image": IMAGE, "source_sha": SHA2}})
+        )
+        expect(code == 1 and "differ in source_sha" in err and "differ in image" not in err,
+               "isolates-ns3", err)  # fmt: skip
+        fake = FakeGh()
+        err = dispatch(control_of(d, isolates="image"), os.path.join(d, "w"), fake, arm="dev")
+        expect("CONFOUND grid" in err and not fake.dispatched, "isolates-dispatch", err)
+        err = dispatch(control_of(d), os.path.join(d, "w2"), fake, arm="old")
+        expect("legacy_arms old" in err and not fake.dispatched, "legacy-arm-dispatch", err)
+        # The workload: a job entry that gives one arm other inputs is a confound too.
+        uneven = [{"arms": ["old"], "cells": "*", "inputs": {"speed": 1}},
+                  {"arms": ["dev"], "cells": "*", "inputs": {"speed": 20}}]  # fmt: skip
+        same = {"grid": {"workflow": "paper-benchmark.yml", "inputs": {"version": "3.48"}}}
+        code, _out, err = plan_out(control_of(d, isolates="image", jobs=uneven, cells=same))
+        expect(code == 1 and "differ in workload (the command lines of old, dev differ" in err,
+               "isolates-workload", err)  # fmt: skip
+        code, _out, err = plan_out(control_of(d, isolates="image", cells=same))
+        expect(code == 0 and "CONFOUND" not in err, "isolates-clean", err)
+        try:
+            control_of(d, isolates="weather")
+        except SystemExit as e:
+            expect("isolates" in str(e), "isolates-unknown", e)
+        else:
+            expect(False, "isolates-unknown", "accepted")
+
+
+@case("NS3_TOOL_ANTHOCNET: plan flags v2.7.x-image-control's 3.42-vs-3.48 MANET and ISL cells")
+def _corpus_control():
+    root = os.environ.get("NS3_TOOL_ANTHOCNET")
+    if not root:
+        print("     (skipped: set NS3_TOOL_ANTHOCNET=<AntHocNet checkout>)")
+        return
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("     (skipped: needs PyYAML)")
+        return
+    plan = cp.load_plan(
+        os.path.join(root, "tools", "bench", "campaigns", "v2.7.x-image-control.yaml")
+    )
+    # ctl867, the dev arm's image: its label names ns3-dev:3.48-optimized.
+    REGISTRY[plan["pins"]["dev"]["image"]] = "3.48"
+    cp._NS3.clear()
+    code, _out, err = plan_out(plan)
+    flagged = sorted(ln.removeprefix("warning: ").split(":")[0] for ln in err.splitlines()
+                     if "different ns-3 releases (old 3.42, dev 3.48)" in ln)  # fmt: skip
+    want = sorted(["grid-rwp-tworay", "static-mesh", "fanet-main", "vanet-sparse", "disaster-main",
+                   "sat-failcell"])  # fmt: skip
+    expect(code == 0 and flagged == want and "leo-" not in err and "sagin-" not in err,
+           "corpus-control", err)  # fmt: skip
 
 
 @case("NS3_TOOL_ANTHOCNET: verdicts equal AntHocNet's script on every committed plan")
