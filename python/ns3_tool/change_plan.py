@@ -513,13 +513,16 @@ def image_ns3(image, offline=False):
     if offline or not image or not IMAGE_RE.fullmatch(image):
         return "?"
     if image not in _NS3:
-        try:
+        try:  # any malformed registry answer is a release not read, never a crash
             config = registry_config(image)
-        except (OSError, ValueError, KeyError, StopIteration) as e:
+            tag = (config.get("Labels") or {}).get(NS3_LABEL, "")
+            if not isinstance(tag, (str, int, float)):
+                raise TypeError(f"label {NS3_LABEL} is a {type(tag).__name__}")
+            tag = str(tag)
+            env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+        except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as e:
             print(f"warning: cannot read {image}'s labels: {e}", file=sys.stderr)
-            config = {}
-        tag = (config.get("Labels") or {}).get(NS3_LABEL, "")
-        env = dict(v.split("=", 1) for v in config.get("Env") or [] if "=" in v)
+            tag, env = "", {}
         _NS3[image] = release(tag.rsplit(":", 1)[-1]) or release(env.get("NS3_VERSION")) or "?"
     return _NS3[image]
 

@@ -1009,6 +1009,44 @@ def _plan_arms():
     )
 
 
+@case("plan: a malformed registry answer is a warning and ?, never a crash (#89)")
+def _plan_registry_malformed():
+    answers = [
+        ["not", "a", "config"],  # a list where the config belongs
+        {"Labels": ["x"]},  # labels that are not a mapping
+        {"Labels": {cp.NS3_LABEL: ["3.48"]}},  # a label that is a list, not text
+        {"Env": [1, 2]},  # env entries that are not strings
+    ]
+    real = cp.registry_config
+    try:
+        for answer in answers:
+            cp.registry_config = lambda _image, answer=answer: answer
+            cp._NS3.clear()
+            with tempfile.TemporaryDirectory() as d:
+                code, out, err = plan_out(control_of(d))
+            expect(code == 0 and "dev/grid\tns-3 ?\t" in out and "cannot read" in err,
+                   "registry-malformed", (answer, out, err))  # fmt: skip
+
+        # a label that is not a string is read as its text, not a crash
+        cp.registry_config = lambda _image: {"Labels": {cp.NS3_LABEL: 3.48}}
+        cp._NS3.clear()
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = plan_out(control_of(d))
+        expect(code == 0 and "dev/grid\tns-3 3.48\t" in out, "registry-number", (out, err))
+
+        def token_null(_image):  # the token endpoint answers JSON null: None["token"]
+            raise TypeError("'NoneType' object is not subscriptable")
+
+        cp.registry_config = token_null
+        cp._NS3.clear()
+        with tempfile.TemporaryDirectory() as d:
+            code, out, err = plan_out(control_of(d))
+        expect(code == 0 and "dev/grid\tns-3 ?\t" in out, "registry-token-null", err)
+    finally:
+        cp.registry_config = real
+        cp._NS3.clear()
+
+
 @case("plan/dispatch: a declared isolation is refused when the arms differ in more (#89)")
 def _plan_isolates():
     REGISTRY[IMAGE] = "3.48"
