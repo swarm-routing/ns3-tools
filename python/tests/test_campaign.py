@@ -52,6 +52,7 @@ def _load(name):
 
 cp = _load("campaign")
 cp.POLL = 0
+cp.CACHE = tempfile.mkdtemp(prefix="ns3-campaign-cache-")  # never the user's ~/.cache
 
 BASE = "sha256:" + "b" * 64
 IMAGE = cp.IMAGE + "@sha256:" + "c" * 64
@@ -262,6 +263,7 @@ class FakeGitHub:
         self.failed, self.partial = tuple(failed), tuple(partial)
         self.runs, self.artifacts, self.dispatched = {}, {}, []
         self.next_id = 1000
+        self.expired = set()  # run ids whose artifact has expired
 
     def zip_of(self, files):
         buf = io.BytesIO()
@@ -289,10 +291,11 @@ class FakeGitHub:
         mods = ",".join(f"{m['name']}@{m['commit']}" for m in cp.modules(self.plan))
         image = OTHER if inputs["label"].endswith(tuple(self.wrong)) else inputs["image"]
         out.append(f"##ARGS## {inputs['program']} {inputs['args']}")
+        key = f" key={inputs['key']}" if inputs.get("key") else ""
         out.append(
             f"##PROV## base=ghcr.io/swarm-routing/ns3-dev:3.48-optimized-1a2b3c4@{BASE} "
             f"image={cp.IMAGE}:{LEAD7}-bbbbbbb-optimized@{image.split('@')[1]} "
-            f"modules={mods} run_id=1 attempt=1"
+            f"modules={mods} run_id=1 attempt=1{key}"
         )
         return "\n".join(out) + "\n"
 
@@ -323,7 +326,7 @@ class FakeGitHub:
                 name = "campaign-image"
             else:
                 files = {"results.txt": self.results(inputs)}
-                name = "campaign-cell"
+                name = "campaign-cell" + (f"-{inputs['key']}" if inputs.get("key") else "")
             self.artifacts[rid] = (name, self.zip_of(files))
             return ""
         m = re.match(r"repos/[^/]+/[^/]+/actions/workflows/([^/]+)/runs\?(.*)$", path)
@@ -337,6 +340,15 @@ class FakeGitHub:
             rid = int(m[1])
             arts = [{"id": rid, "name": self.artifacts[rid][0]}] if rid in self.artifacts else []
             return json.dumps({"artifacts": arts})
+        m = re.match(r"repos/[^/]+/[^/]+/actions/artifacts\?name=([^&]+)", path)
+        if m:
+            arts = [
+                {"id": rid, "name": name, "expired": rid in self.expired,
+                 "workflow_run": {"id": rid}}
+                for rid, (name, _z) in self.artifacts.items()
+                if name == m[1]
+            ]  # fmt: skip
+            return json.dumps({"total_count": len(arts), "artifacts": arts})
         m = re.match(r"repos/[^/]+/[^/]+/actions/artifacts/(\d+)/zip$", path)
         if m:
             return self.artifacts[int(m[1])][1]
@@ -478,7 +490,7 @@ def test_campaign():
             work2 = os.path.join(d, "work2")
             cp.gh = FakeGitHub(plan, wrong=["static-mesh-s11"])
             run(["build", plan_path, "--work", work2])
-            run(["dispatch", plan_path, "--work", work2])
+            run(["dispatch", plan_path, "--work", work2, "--no-reuse"])
             code, _o, _e = run(["collect", plan_path, "--work", work2, "--out", runs_root + "2"])
             check(
                 code and "not the campaign image" in code,
@@ -495,7 +507,7 @@ def test_campaign():
                 label = "static-mesh-s1" if kind == "failed" else "static-mesh-s11"
                 cp.gh = FakeGitHub(plan, **{kind: [label]})
                 run(["build", plan_path, "--work", work4])
-                run(["dispatch", plan_path, "--work", work4])
+                run(["dispatch", plan_path, "--work", work4, "--no-reuse"])
                 code, _o, _e = run(
                     ["collect", plan_path, "--work", work4, "--out", work4 + "-runs"]
                 )
@@ -512,7 +524,7 @@ def test_campaign():
             cp.gh = FakeGitHub(bad)
             work3 = os.path.join(d, "work3")
             run(["build", plan_path, "--work", work3])
-            run(["dispatch", plan_path, "--work", work3])
+            run(["dispatch", plan_path, "--work", work3, "--no-reuse"])
             code, _o, _e = run(["collect", plan_path, "--work", work3, "--out", runs_root + "3"])
             check(
                 code and "has modules" in code, "collect: refuses a cell built from other commits"
@@ -521,9 +533,279 @@ def test_campaign():
         os.chdir(old)
 
 
+def test_cell_key():
+    mods = ["anthocnet@" + "1" * 40, "routing-bench@" + "2" * 40]
+    args = "--scenario=paper --nNodes=50 --diag --protocols=anthocnet,aodv --runs=10 --firstRun=11"
+    k = cp.cell_key(IMAGE, mods, "routing-compare", args)
+    check(re.fullmatch(r"[0-9a-f]{64}", k), "cell_key: a 64-hex sha256")
+    toks = args.split()
+    for seed in range(5):
+        random.Random(seed).shuffle(toks)
+        same = cp.cell_key(IMAGE, list(reversed(mods)), "routing-compare", " ".join(toks))
+        check(same == k, f"cell_key: flags and modules in any order give the same key ({seed})")
+    check(
+        cp.cell_key(cp.IMAGE + ":tag@sha256:" + "c" * 64, mods, "routing-compare", args) == k,
+        "cell_key: only the image digest counts, not its tag",
+    )
+    other_mods = [mods[0], "routing-bench@" + "3" * 40]
+    changed = {
+        "the image digest": (OTHER, mods, "routing-compare", args),
+        "a module commit": (IMAGE, other_mods, "routing-compare", args),
+        "the module list": (IMAGE, mods[:1], "routing-compare", args),
+        "the program": (IMAGE, mods, "isl-grid", args),
+        "a flag value": (IMAGE, mods, "routing-compare", args.replace("50", "51")),
+        "a flag added": (IMAGE, mods, "routing-compare", args + " --pause=0"),
+        "the arms": (IMAGE, mods, "routing-compare", args.replace(",aodv", "")),
+        "the arm order": (
+            IMAGE,
+            mods,
+            "routing-compare",
+            args.replace("anthocnet,aodv", "aodv,anthocnet"),
+        ),
+        "the seed block": (IMAGE, mods, "routing-compare", args.replace("=11", "=1")),
+        "the seed count": (IMAGE, mods, "routing-compare", args.replace("--runs=10", "--runs=9")),
+    }
+    for what, inputs in changed.items():
+        check(cp.cell_key(*inputs) != k, f"cell_key: changing {what} changes the key")
+    real = cp.MARKERS_VERSION
+    try:
+        cp.MARKERS_VERSION = real + 1
+        check(
+            cp.cell_key(IMAGE, mods, "routing-compare", args) != k,
+            "cell_key: the marker contract version changes the key",
+        )
+    finally:
+        cp.MARKERS_VERSION = real
+
+
+def cell_files(run_dir):
+    """{cell: text without collect's '#' header line} of a collected run."""
+    out = {}
+    for name in sorted(os.listdir(os.path.join(run_dir, "cells"))):
+        with open(os.path.join(run_dir, "cells", name)) as f:
+            out[name] = f.read().split("\n", 1)[1]
+    return out
+
+
+def only_run(parent):
+    return os.path.join(parent, os.listdir(parent)[0])
+
+
+def test_reuse():
+    """#94: dispatch reuses a cell found by its key; status, collect and
+    verdicts read it as any other; a mismatch is an error."""
+    root = os.path.join(HERE, "..", "..")
+    old, cache = os.getcwd(), cp.CACHE
+    os.chdir(root)
+    plan_path = "campaigns/anthocnet-aodv-smoke.toml"
+    plan = cp.load_plan(plan_path)
+
+    def fresh(d, name, fake):
+        """A new work directory with the image built in it."""
+        cp.gh = fake
+        work = os.path.join(d, name)
+        run(["build", plan_path, "--work", work])
+        return work
+
+    def sent(fake):
+        return [b for wf, b in fake.dispatched if wf == cp.CELL_WORKFLOW]
+
+    def results(fake, rid):
+        with zipfile.ZipFile(io.BytesIO(fake.artifacts[rid][1])) as z:
+            return z.read("results.txt").decode()
+
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            cp.CACHE = os.path.join(d, "cache")
+            fake = FakeGitHub(plan)
+            work = fresh(d, "a", fake)
+            code, out, err = run(["plan", plan_path, "--work", work])
+            keys = [
+                ln.split("\t")[1]
+                for ln in out.splitlines()
+                if ln.startswith("anthocnet-aodv-smoke/")
+            ]
+            check(
+                code is None
+                and all(re.fullmatch(r"[0-9a-f]{64}", k) for k in keys)
+                and len(set(keys)) == 3,
+                "plan: prints each cell's key once the image is built",
+            )
+            check("3 cells, 0 reusable, 3 to run" in err, f"plan: nothing reusable yet ({err})")
+            code, _o, _e = run(["dispatch", plan_path, "--work", work])
+            check(
+                code is None
+                and len(sent(fake)) == 3
+                and [b["inputs"]["key"] for b in sent(fake)] == keys,
+                "dispatch: found nowhere, so every cell runs, each with its key",
+            )
+            rid = max(fake.artifacts)
+            check(
+                fake.artifacts[rid][0] == f"campaign-cell-{keys[-1]}"
+                and f" key={keys[-1]}\n" in results(fake, rid),
+                "the cell's artifact and ##PROV## carry its key",
+            )
+            code, _o, _e = run(["collect", plan_path, "--work", work, "--out", d + "/runs-a"])
+            check(code is None, f"collect: a keyed run ({code})")
+            run_a = only_run(d + "/runs-a")
+            _c, verdicts_a, _e = run(["verdicts", plan_path, "--dir", run_a])
+
+            # Found in the workflow artifacts (the cache emptied).
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            work_b = fresh(d, "b", fake)
+            n = len(sent(fake))
+            code, _o, err = run(["plan", plan_path, "--work", work_b])
+            check(
+                "3 cells, 3 reusable, 0 to run" in err, f"plan: counts the reusable cells ({err})"
+            )
+            code, out, err = run(["dispatch", plan_path, "--work", work_b])
+            check(
+                code is None
+                and len(sent(fake)) == n
+                and out.count("\treused run:") == 3
+                and "(3 reused)" in err,
+                f"dispatch: found in the workflow artifacts, nothing dispatched ({out})",
+            )
+            code, _o, err = run(["status", plan_path, "--work", work_b])
+            check(
+                "3 reused" in err and "3 cells, 3 reused, 0 run here" in err,
+                f"status: reused cells count as done ({err})",
+            )
+            code, _o, _e = run(["collect", plan_path, "--work", work_b, "--out", d + "/runs-b"])
+            check(code is None, f"collect: reads the reused cells ({code})")
+            run_b = only_run(d + "/runs-b")
+            check(
+                cell_files(run_b) == cell_files(run_a), "collect: a reused cell's text is the run's"
+            )
+            _c, verdicts_b, _e = run(["verdicts", plan_path, "--dir", run_b])
+            check(
+                verdicts_a and verdicts_b == verdicts_a,
+                "verdicts: byte-identical, reused or re-run",
+            )
+            bench = os.environ.get("NS3_TOOL_BENCHMARKS") or os.path.join(HERE, "benchmarks")
+            p = subprocess.run(
+                [sys.executable, os.path.join(bench, "tools", "validate_run.py"), "check", run_b],
+                capture_output=True,
+                text=True,
+            )
+            check(
+                p.returncode == 0,
+                f"benchmarks validate_run.py passes a run of keyed, reused cells:\n{p.stdout}{p.stderr}",
+            )
+
+            # The local cache: artifacts expired, no benchmarks, still reused, offline.
+            fake.expired = set(fake.artifacts)
+            work_c = fresh(d, "c", fake)
+            code, out, _e = run(["dispatch", plan_path, "--work", work_c])
+            check(
+                code is None and out.count("\treused run:") == 3 and len(sent(fake)) == n,
+                "dispatch: found in the local cache",
+            )
+
+            # Expired and not cached: not found, so the cells run.
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            work_d = fresh(d, "d", fake)
+            code, _o, err = run(["dispatch", plan_path, "--work", work_d])
+            check(
+                code is None and len(sent(fake)) == n + 3 and "artifact expired" in err,
+                "dispatch: an expired artifact is not reused; the cell runs",
+            )
+
+            # A swarm-routing/benchmarks checkout holding the run collected above.
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            bench_root = os.path.join(d, "benchmarks")
+            shutil.copytree(d + "/runs-a", os.path.join(bench_root, "runs"))
+            fake.expired = set(fake.artifacts)
+            work_e = fresh(d, "e", fake)
+            n = len(sent(fake))
+            code, out, _e = run(
+                ["dispatch", plan_path, "--work", work_e, "--benchmarks", bench_root]
+            )
+            check(
+                code is None and out.count("\treused benchmarks:") == 3 and len(sent(fake)) == n,
+                f"dispatch: found in a benchmarks run ({code})",
+            )
+            shutil.rmtree(cp.CACHE, ignore_errors=True)  # collect reads the benchmarks file again
+            code, _o, _e = run(["collect", plan_path, "--work", work_e, "--out", d + "/runs-e"])
+            _c, verdicts_e, _e = run(["verdicts", plan_path, "--dir", only_run(d + "/runs-e")])
+            check(
+                code is None and verdicts_e == verdicts_a,
+                f"verdicts: byte-identical from a benchmarks run ({code})",
+            )
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            cell = os.path.join(
+                bench_root, "runs", os.path.basename(run_a), "cells", "grid-rwp.txt"
+            )
+            with open(cell, "a") as f:
+                f.write("# edited\n")
+            code, _o, _e = run(
+                ["dispatch", plan_path, "--work", fresh(d, "f", fake), "--benchmarks", bench_root]
+            )
+            check(
+                code and "sha256 is not its manifest entry" in code,
+                f"dispatch: a benchmarks cell that is not its manifest's is an error ({code})",
+            )
+
+            # A mismatched ##PROV## under the right artifact name: an error, never a re-run.
+            shutil.rmtree(cp.CACHE, ignore_errors=True)
+            fake.expired = set()
+            rid = max(r for r, (nm, _z) in fake.artifacts.items() if nm.endswith(keys[0]))
+            good = results(fake, rid)
+            name = fake.artifacts[rid][0]
+            for what, bad, needle in (
+                (
+                    "modules",
+                    re.sub(r"modules=\S+", "modules=anthocnet@" + "9" * 40, good),
+                    "has modules",
+                ),
+                ("key", good.replace(f"key={keys[0]}", "key=" + "0" * 64), "key=" + "0" * 64),
+                ("seeds", good.replace("--firstRun=1", "--firstRun=2"), "recompute to key"),
+            ):
+                fake.artifacts[rid] = (name, fake.zip_of({"results.txt": bad}))
+                work_g = os.path.join(d, f"g-{what}")
+                fresh(d, f"g-{what}", fake)
+                n = len(sent(fake))
+                code, _o, _e = run(["dispatch", plan_path, "--work", work_g])
+                check(
+                    code and code.startswith("reuse:") and needle in code and len(sent(fake)) == n,
+                    f"dispatch: a reused cell whose ##ARGS##/##PROV## {what} disagrees stops dispatch",
+                )
+            fake.artifacts[rid] = (name, fake.zip_of({"results.txt": good}))
+
+            # --no-reuse runs every cell; plan counts nothing.
+            work_h = fresh(d, "h", fake)
+            n = len(sent(fake))
+            code, _o, _e = run(["dispatch", plan_path, "--work", work_h, "--no-reuse"])
+            check(code is None and len(sent(fake)) == n + 3, "dispatch --no-reuse: every cell runs")
+            code, _o, err = run(["plan", plan_path, "--work", work_h, "--no-reuse"])
+            check(
+                "3 cells, 0 reusable, 3 to run" in err, "plan --no-reuse: counts nothing reusable"
+            )
+
+            # The cache keeps to its bound, the least recently used out first.
+            cp.CACHE = os.path.join(d, "small")
+            real = cp.CACHE_BYTES
+            try:
+                cp.CACHE_BYTES = 250
+                for i in range(4):
+                    cp.cache_put(f"{i:064x}", "x" * 100, "run:1")
+                    os.utime(os.path.join(cp.CACHE, f"{i:064x}"), (1000 + i, 1000 + i))
+                cp.cache_put("f" * 64, "y" * 100, "run:2")
+                left = sorted(os.listdir(cp.CACHE))
+                check(left == [f"{3:064x}", "f" * 64], f"cache: trimmed to its bound, LRU ({left})")
+                check(cp.cache_get("f" * 64) == ("y" * 100, "run:2"), "cache: text and source")
+            finally:
+                cp.CACHE_BYTES = real
+    finally:
+        cp.CACHE = cache
+        os.chdir(old)
+
+
 if __name__ == "__main__":
     test_validate()
     test_plan_and_inputs()
     test_stage()
     test_campaign()
+    test_cell_key()
+    test_reuse()
     print("test_campaign: all ok")
