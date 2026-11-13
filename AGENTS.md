@@ -53,9 +53,18 @@ ships `helper/<module>-bench-arms.cc` keeps registering against it. CI
 (`.github/workflows/ns3.yml`) also checks that each stock arm delivers.
 **Temporary exception (ns3-containers#35, option A):** ns-3.49's stock AODV
 livelocks, so the `aodv` arm's check runs on `ns3-dev:3.48`; move it back to
-`latest` when a fixed ns-3 release reaches it. Formatting is not checked yet:
-the harness keeps AntHocNet's style until a restyle PR adopts the org
-`.clang-format`.
+`latest` when a fixed ns-3 release reaches it. C++ formatting is not checked
+yet, in CI (`format: false` in `ns3.yml`) or by `make`: the harness keeps
+AntHocNet's style until a restyle PR adopts the org `.clang-format` and adds
+clang-format back to `make lint` and `make format`. Never run clang-format on
+`ns3/` before that PR.
+
+Before pushing, run `make check` (needs `ruff`, and network for the org
+tooling): `lint` (`ruff check` and `ruff format --check` on `python/` with
+the org `ruff.toml`, the required check `python-quality / python`), `test`
+(the Python self-tests), `headers` and `org-sync-check`. `make format` runs
+`ruff format python` only. The ns-3 build, its suites and the stock-arm
+checks need the docker line above and run in CI.
 
 Python (no pytest dependency; each test exits non-zero on its first failure):
 

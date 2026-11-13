@@ -28,10 +28,13 @@ test: ## the fast tests CI runs on every PR
 	for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done
 
 lint: ## static checks, no changes
-	git ls-files "*.h" "*.cc" "*.cpp" "*.hpp" | xargs -r clang-format --dry-run --Werror
+	@$(MAKE) --no-print-directory org-tools
+	ruff check --config "$(ORG_DIR)/ruff.toml" python
+	ruff format --check --config "$(ORG_DIR)/ruff.toml" python
 
 format: ## apply the formatters
-	git ls-files "*.h" "*.cc" "*.cpp" "*.hpp" | xargs -r clang-format -i
+	@$(MAKE) --no-print-directory org-tools
+	ruff format --config "$(ORG_DIR)/ruff.toml" python
 
 clean: ## remove build outputs
 	rm -rf build dist
