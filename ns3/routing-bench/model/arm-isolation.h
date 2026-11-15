@@ -72,14 +72,13 @@ public:
     [[noreturn]] static void WorkerFinish(const std::string& payload);
 
 private:
-    int m_req = -1;     ///< parent -> zygote: arm names
-    int m_res = -1;     ///< zygote and workers -> parent: frames
-    long m_zygote = -1; ///< the zygote's pid
+    int m_req = -1;      ///< parent -> zygote: arm names
+    int m_res = -1;      ///< zygote and workers -> parent: frames
+    long m_zygote = -1;  ///< the zygote's pid
 };
 
 // The payload a worker sends back: plain bytes, in the order written.
-template <typename T>
-void Put(std::string& out, const T& v) {
+template <typename T> void Put(std::string& out, const T& v) {
     static_assert(std::is_trivially_copyable_v<T>, "Put copies bytes");
     out.append(reinterpret_cast<const char*>(&v), sizeof v);
 }
@@ -91,8 +90,7 @@ inline void Put(std::string& out, const ns3::Address& a) {
     out.append(reinterpret_cast<const char*>(buf), n);
 }
 
-template <typename K, typename V>
-void Put(std::string& out, const std::map<K, V>& m) {
+template <typename K, typename V> void Put(std::string& out, const std::map<K, V>& m) {
     Put(out, static_cast<uint64_t>(m.size()));
     for (const auto& [k, v] : m) {
         Put(out, k);
@@ -104,8 +102,7 @@ class PayloadReader {
 public:
     explicit PayloadReader(const std::string& s) : m_s(s) {}
 
-    template <typename T>
-    void Get(T& v) {
+    template <typename T> void Get(T& v) {
         static_assert(std::is_trivially_copyable_v<T>, "Get copies bytes");
         Take(&v, sizeof v);
     }
@@ -116,8 +113,7 @@ public:
         Take(buf, n);
         a.CopyAllFrom(buf, n);
     }
-    template <typename K, typename V>
-    void Get(std::map<K, V>& m) {
+    template <typename K, typename V> void Get(std::map<K, V>& m) {
         uint64_t n = 0;
         Get(n);
         m.clear();

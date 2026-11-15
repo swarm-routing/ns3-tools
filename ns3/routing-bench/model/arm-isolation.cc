@@ -15,9 +15,17 @@
 #include <cstdio>
 #include <iostream>
 
+// A --coverage build's counters, written before _exit skips the exit handlers
+// that would write them (null without --coverage).
+extern "C" void __gcov_dump() __attribute__((weak));
+
 namespace routing_bench_detail {
 
 namespace {
+
+void DumpCoverage() {
+    if (__gcov_dump) __gcov_dump();
+}
 
 constexpr int kMaxArgs = 1024;      // a worker's command line lives on the stack
 constexpr uint32_t kMaxName = 255;  // an arm name, in a stack buffer
@@ -54,8 +62,7 @@ bool WriteAll(int fd, const void* p, std::size_t n) {
 
 // True unless the value spells false the way BooleanValue reads it.
 bool BoolValue(const char* v) {
-    return !(std::strcmp(v, "false") == 0 || std::strcmp(v, "0") == 0 ||
-             std::strcmp(v, "f") == 0);
+    return !(std::strcmp(v, "false") == 0 || std::strcmp(v, "0") == 0 || std::strcmp(v, "f") == 0);
 }
 
 // The worker: the parent's command line with --protocols=<name>, re-entering
@@ -100,6 +107,7 @@ bool BoolValue(const char* v) {
         uint32_t len = 0;
         if (!ReadAll(reqFd, &len, sizeof len) || len == 0 || len > kMaxName ||
             !ReadAll(reqFd, name, len)) {
+            DumpCoverage();
             _exit(0);  // the parent is done (or gone)
         }
         name[len] = '\0';
@@ -200,11 +208,12 @@ std::string ArmIsolation::RunArm(const std::string& arm) {
         int32_t st = 0;
         NS_ABORT_MSG_UNLESS(ReadAll(m_res, &st, sizeof st), "--isolateArms: short status");
         NS_ABORT_MSG_UNLESS(got && st == 0,
-                            "arm '" << arm << "' failed in its own process ("
-                                    << (st < 0          ? std::string("not started")
-                                        : WIFSIGNALED(st) ? "signal " + std::to_string(WTERMSIG(st))
-                                                          : "exit " + std::to_string(WEXITSTATUS(st)))
-                                    << "; its error is above)");
+                            "arm '"
+                                << arm << "' failed in its own process ("
+                                << (st < 0            ? std::string("not started")
+                                    : WIFSIGNALED(st) ? "signal " + std::to_string(WTERMSIG(st))
+                                                      : "exit " + std::to_string(WEXITSTATUS(st)))
+                                << "; its error is above)");
         return payload;
     }
 }
@@ -224,6 +233,7 @@ void ArmIsolation::WorkerFinish(const std::string& payload) {
         !WriteAll(g_resultFd, payload.data(), n)) {
         _exit(123);
     }
+    DumpCoverage();
     _exit(0);
 }
 
