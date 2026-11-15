@@ -8,14 +8,16 @@ name: Release
 #   dispatch `bump`     open the PR `chore(release): bump version A to B`
 #                       from bot/release (Commitizen, .cz.toml);
 #   merge that PR       the release: `make dist` builds and checks the assets
-#                       (routing-bench-<ver>.tar.gz, the ns3-tool wheel and
+#                       (routing-bench-<ver>.tar.gz, the ns3-tools wheel and
 #                       sdist; tools/release/dist.sh), then SBOM, checksums,
 #                       signed provenance, the v<ver> tag and the GitHub release.
 # The `image` job then publishes ghcr.io/swarm-routing/ns3-tools:v<ver>-{optimized,debug}
 # and moves latest-{optimized,debug} and latest to them (named after the
 # repository, swarm-routing/.github#370 and swarm-routing/.github#373;
 # v0.1.0 is in the frozen ns3-tools-ns3)
-# with the harness built in (CONTRIBUTING "Images").
+# with the harness built in (CONTRIBUTING "Images"), and the `pypi` job
+# publishes the Python distribution ns3-tools to PyPI (a dry run: TestPyPI)
+# by trusted publishing (#196).
 on:
   workflow_dispatch:
     inputs:
@@ -61,3 +63,45 @@ jobs:
       modules: routing-bench=ns3/routing-bench
       image: ns3-tools
       tag: ${{ needs.release.outputs.tag }}
+
+  # The Python distribution `ns3-tools` (the wheel and sdist `make dist`
+  # builds and checks) on PyPI by trusted publishing (OIDC, no token; #196):
+  # a release to PyPI, a dry-run to TestPyPI (skip-existing, so a repeated
+  # dry run of one version passes). The pending publishers on both indexes
+  # name this workflow and the `release` environment (swarm-routing/.github#441).
+  pypi:
+    needs: release
+    if: ${{ needs.release.outputs.mode == 'release' || needs.release.outputs.mode == 'dry-run' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      id-token: write   # the trusted-publishing token exchange, nothing else
+    env:
+      MODE: ${{ needs.release.outputs.mode }}
+      VER: ${{ needs.release.outputs.version }}
+    steps:
+      - name: Harden the runner (audit egress)
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        timeout-minutes: 2
+        with:
+          egress-policy: audit
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.release.outputs.artifact }}
+          path: ${{ runner.temp }}/rel
+      - name: The wheel and the sdist only
+        run: |
+          mkdir -p "$RUNNER_TEMP/pypi"
+          for f in "ns3_tools-${VER}-py3-none-any.whl" "ns3_tools-${VER}.tar.gz"; do
+            test -f "$RUNNER_TEMP/rel/release/$f" || { echo "::error::$f is not in the release assets"; exit 1; }
+            cp "$RUNNER_TEMP/rel/release/$f" "$RUNNER_TEMP/pypi/"
+          done
+          ls -l "$RUNNER_TEMP/pypi"
+      - name: Publish (${{ needs.release.outputs.mode == 'release' && 'PyPI' || 'TestPyPI' }})
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        timeout-minutes: 5
+        with:
+          packages-dir: ${{ runner.temp }}/pypi
+          repository-url: ${{ needs.release.outputs.mode == 'release' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          skip-existing: ${{ needs.release.outputs.mode != 'release' }}

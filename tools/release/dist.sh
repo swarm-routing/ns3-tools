@@ -8,8 +8,8 @@
 #   routing-bench-VERSION.tar.gz   the harness module, ready for ns-3's contrib/:
 #                                  routing-bench/ with its README, the GPL-2.0
 #                                  text and INSTALL.txt
-#   ns3_tool-VERSION-*.whl         the readers (python/), wheel and sdist, each
-#   ns3_tool-VERSION.tar.gz        with both licence texts (#14)
+#   ns3_tools-VERSION-*.whl        the readers (python/), wheel and sdist, each
+#   ns3_tools-VERSION.tar.gz       with both licence texts (#14)
 #
 # Deterministic: the tarball's entries are sorted with a fixed owner and the
 # release commit's time, gzip -n; the Python build gets SOURCE_DATE_EPOCH.
@@ -66,7 +66,7 @@ python3 -m venv "$tmp/build-venv"
 cp -rL "$repo/python" "$tmp/python"
 SOURCE_DATE_EPOCH=$epoch "$tmp/build-venv/bin/python" -m build --quiet \
     --sdist --wheel --outdir "$out" "$tmp/python" > /dev/null
-for f in "$out/ns3_tool-$ver.tar.gz" "$out/ns3_tool-$ver-py3-none-any.whl"; do
+for f in "$out/ns3_tools-$ver.tar.gz" "$out/ns3_tools-$ver-py3-none-any.whl"; do
     [ -f "$f" ] || { echo "dist.sh: the Python build wrote no $(basename "$f")" >&2; exit 1; }
 done
 ls -l "$out"
@@ -75,12 +75,12 @@ ls -l "$out"
 
 # --- check: the wheel installs, carries both licence texts, its scripts start -
 python3 -m venv "$tmp/check-venv"
-"$tmp/check-venv/bin/python" -m pip install --quiet --no-index "$out/ns3_tool-$ver-py3-none-any.whl"
+"$tmp/check-venv/bin/python" -m pip install --quiet --no-index "$out/ns3_tools-$ver-py3-none-any.whl"
 for s in ns3-bench-parse ns3-native-view ns3-comparator-view ns3-pool-runs \
          ns3-sweep-summary ns3-scenario-check ns3-campaign ns3-tool; do
     "$tmp/check-venv/bin/$s" --help > /dev/null
 done
-lic=$(python3 -m zipfile -l "$out/ns3_tool-$ver-py3-none-any.whl" | grep -c '\.dist-info/licenses/LICENSE' || true)
+lic=$(python3 -m zipfile -l "$out/ns3_tools-$ver-py3-none-any.whl" | grep -c '\.dist-info/licenses/LICENSE' || true)
 [ "$lic" -eq 2 ] || { echo "dist.sh: the wheel carries $lic licence texts, not 2" >&2; exit 1; }
 echo "dist.sh: the wheel installs and its scripts start"
 
