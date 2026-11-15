@@ -122,7 +122,7 @@ STDDEV = re.compile(r"^#\s+stddev\s+([A-Za-z][\w-]*)\s+(.+)$")
 # rows. Two forms (docs/markers.md):
 #   routing-bench (ns3-tools#91), one per arm and seed:
 #     "##PERF## <scenario> <arm> <seed> <cpu_s> <wall_s> <events> <maxrss_kb>"
-#     (maxrss_kb is "-" when the process ran more than one arm)
+#     (maxrss_kb is "-" when the process ran more than one arm: --isolateArms=0)
 #   AntHocNet's run-scenarios.py (AntHocNet#131), one per process:
 #     "##PERF## <scenario> all <wall_s> <maxrss_kb>"
 # Cost, never a result: it is wall-clock-dependent, so no comparison of

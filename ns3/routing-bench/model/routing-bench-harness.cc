@@ -99,9 +99,11 @@
 #include <numeric>
 #include <set>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "arm-isolation.h"
 #include "routing-bench-internal.h"
 
 using namespace ns3;
@@ -146,9 +148,20 @@ PerfMark PerfNow() {
     return {tv(ru.ru_utime) + tv(ru.ru_stime), wall, maxrssKb};
 }
 
+// ns3-tools#198: what an --isolateArms worker runs.
+int HarnessEntry(int argc, char* argv[], void* program) {
+    return ns3::bench::RunHarness(argc, argv, *static_cast<const std::string*>(program));
+}
+
 }  // namespace
 
 int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
+    // ns3-tools#198: fork the worker zygote first, before anything allocates,
+    // so every arm's worker starts from the same heap (arm-isolation.h).
+    ArmIsolation isolation;
+    if (ArmIsolation::Requested(argc, argv)) {
+        isolation.Start(argc, argv, &HarnessEntry, const_cast<std::string*>(&program));
+    }
     // Sentinels (<0 / 0) mean "unset" so a preset or the legacy defaults fill in.
     std::string scenario;
     bool perf = true;  // ns3-tools#91: ##PERF## per arm and seed
@@ -255,6 +268,14 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                  "<maxrss_kb>' line per arm and seed (ns3-tools#91): what the run cost, "
                  "never a result; maxrss is '-' when the process runs more than one arm",
                  perf);
+    bool isolateArms = true;  // ns3-tools#198
+    cmd.AddValue("isolateArms",
+                 "Run each arm in its own process (ns3-tools#198): an arm's rows then do not "
+                 "depend on the arms listed before it. Stock AODV and DSDV order their "
+                 "sockets by heap address, so on a node with several interfaces their "
+                 "result follows what earlier arms allocated. 0 runs every arm in this "
+                 "process, as before",
+                 isolateArms);
     std::string mobilityModel;  // "" = preset default: gaussmarkov for fanet, else rwp
     std::string transport = "udp";
     std::string propagation;  // "" = preset default: urban for vanet, else range
@@ -377,6 +398,8 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                  "paths (#217); default 10",
                  pathWindowS);
     cmd.Parse(argc, argv);
+    NS_ABORT_MSG_IF(!ArmIsolation::InWorker() && isolateArms != isolation.Active(),
+                    "--isolateArms: spell it --isolateArms=0 or --isolateArms=1");
 
     // 'paper' = the Broch/CMU MobiCom'98 field (the literature *calibration*
     // anchor, #24). 'thesis' = AntHocNet's own evaluation field, read from
@@ -849,7 +872,7 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
               << " offTime=" << P.offTime << " rateManager=" << P.rateManager;
     // #708: named only off the default, so 802.11b rows stay byte-identical.
     if (P.standard != "80211b") std::cout << " standard=" << P.standard;
-    std::cout << " protocols=" << protocols << '\n';
+    std::cout << " protocols=" << protocols << " isolateArms=" << isolateArms << '\n';
     // Module-level ##CONFIG## lines (AntHocNet's attributes at their effective
     // values), then those of each listed arm (the oracle's recompute cadence
     // off its default).
@@ -873,7 +896,49 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
         }
     }
     std::vector<std::vector<MatchCell>> matchGrid(list.size(), std::vector<MatchCell>(runs));
+    // ns3-tools#198: an arm's aggregates as its worker sends them back. Agg is
+    // copied as bytes; a MatchCell field added later goes in both lambdas.
+    static_assert(std::is_trivially_copyable_v<Agg>, "Agg travels as bytes (--isolateArms)");
+    const auto packArm = [](const Agg& a, const std::vector<MatchCell>& cells) {
+        std::string out;
+        Put(out, a);
+        Put(out, static_cast<uint64_t>(cells.size()));
+        for (const MatchCell& c : cells) {
+            Put(out, c.hist);
+            Put(out, c.binWidth);
+            Put(out, c.rx);
+            Put(out, c.delay99Ms);
+            Put(out, c.bySeq);
+            Put(out, c.hopsBySeq);
+        }
+        return out;
+    };
+    const auto unpackArm = [](const std::string& in, Agg& a, std::vector<MatchCell>& cells) {
+        PayloadReader r(in);
+        r.Get(a);
+        uint64_t n = 0;
+        r.Get(n);
+        NS_ABORT_MSG_UNLESS(n == cells.size(), "--isolateArms: a worker ran another seed count");
+        for (MatchCell& c : cells) {
+            r.Get(c.hist);
+            r.Get(c.binWidth);
+            r.Get(c.rx);
+            r.Get(c.delay99Ms);
+            r.Get(c.bySeq);
+            r.Get(c.hopsBySeq);
+        }
+        NS_ABORT_MSG_UNLESS(r.Done(), "--isolateArms: a worker sent more than one arm");
+    };
+    if (ArmIsolation::InWorker()) {
+        NS_ABORT_MSG_UNLESS(list.size() == 1, "--isolateArms: a worker runs one arm");
+        ArmIsolation::WorkerBeginOutput();
+    }
     for (std::size_t i = 0; i < list.size(); ++i) {
+        if (isolation.Active()) {
+            // The worker prints this arm's per-seed lines itself.
+            unpackArm(isolation.RunArm(list[i]), agg[i], matchGrid[i]);
+            continue;
+        }
         for (uint32_t s = firstRun; s < firstRun + runs; ++s) {
             const PerfMark perf0 = PerfNow();
             Result r = RunOne(list[i], P, s);
@@ -983,7 +1048,7 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                           << ' ' << list[i] << ' ' << s << ' ' << std::setprecision(3)
                           << perf1.cpuS - perf0.cpuS << ' ' << std::setprecision(3)
                           << perf1.wallS - perf0.wallS << ' ' << r.events << ' ';
-                if (list.size() == 1)
+                if (list.size() == 1)  // a worker, or one arm in this process
                     std::cout << perf1.maxrssKb;
                 else
                     std::cout << '-';
@@ -1097,6 +1162,8 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
             agg[i].nrlBytesSd = sd(agg[i].nrlBytes * runs, agg[i].nrlBytesSq);
         }
     }
+
+    if (ArmIsolation::InWorker()) ArmIsolation::WorkerFinish(packArm(agg[0], matchGrid[0]));
 
     // -----------------------------------------------------------------------
     // #308: matched-delivery 99th-percentile delay.

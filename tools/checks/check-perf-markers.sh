@@ -6,8 +6,9 @@
 #
 # routing-compare's ##PERF## line (ns3-tools#91), on a built ns-3 tree:
 #   - one ##PERF## line per arm and seed, read through the reader
-#     (bench_parse --from perf), with maxrss '-' when two arms share the
-#     process and a number when one arm runs alone;
+#     (bench_parse --from perf), with maxrss a number when the arm has a
+#     process to itself (alone, or --isolateArms, the default, #198) and '-'
+#     when two arms share the process (--isolateArms=0);
 #   - ##PERF## changes no other byte: two same-seed runs minus their ##PERF##
 #     lines are byte-identical, and equal to the same run with --perf=0
 #     (org rule 5: wall-clock and CPU time never reach ##RUN##/##BENCH##/##DIAG##).
@@ -45,9 +46,19 @@ for arm in "${arms[@]}"; do
     # row: scenario seed cpu_s wall_s events maxrss_kb
     seeds=$(awk '{print $2}' <<<"$rows" | tr '\n' ' ')
     [ "$seeds" = "3 4 " ] || fail "$arm: ##PERF## seeds '$seeds', expected '3 4 '"
+    awk '$1 != "paper" || $5 <= 0 || $6 !~ /^[1-9][0-9]*$/ {bad = 1} END {exit bad}' <<<"$rows" \
+        || fail "$arm: bad ##PERF## rows (scenario paper, events > 0, maxrss in kB): $rows"
+    echo "ok    $arm, own process (--isolateArms): $(tr '\n' ';' <<<"$rows")"
+done
+
+run "--isolateArms=0" "$tmp/shared.txt"
+for arm in "${arms[@]}"; do
+    rows=$(python3 "$bp" --get row --from perf --proto "$arm" "$tmp/shared.txt")
+    seeds=$(awk '{print $2}' <<<"$rows" | tr '\n' ' ')
+    [ "$seeds" = "3 4 " ] || fail "$arm (--isolateArms=0): ##PERF## seeds '$seeds', expected '3 4 '"
     awk '$1 != "paper" || $5 <= 0 || $6 != "-" {bad = 1} END {exit bad}' <<<"$rows" \
         || fail "$arm: bad ##PERF## rows (scenario paper, events > 0, maxrss '-'): $rows"
-    echo "ok    $arm, shared process: $(tr '\n' ';' <<<"$rows")"
+    echo "ok    $arm, shared process (--isolateArms=0): $(tr '\n' ';' <<<"$rows")"
 done
 
 arm=${arms[0]}

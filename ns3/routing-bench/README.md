@@ -22,17 +22,41 @@ it depends on none of them.
 | `model/routing-bench-run.cc` | one (seed, arm) run: the world (scenario presets, mobility, channels, devices, traffic), stream pinning, the measurement (FlowMonitor and the trace sinks, the drop book, route stability, the identity-matched set, energy) and `RunOne` (#767) |
 | `model/routing-bench-harness.cc` | the command line, the runs over seeds and arms, and the summary and marker output: `bench::RunHarness()` |
 | `model/routing-bench-internal.h` | what those two share (`Params`, `Result`, `RunOne`, the defaults); not part of the API |
+| `model/arm-isolation.h/.cc` | `--isolateArms` (default on, ns3-tools#198): every arm runs in its own worker process, forked from one zygote made before the harness allocates anything; not part of the API |
 | `model/urban-obstacle-loss-model.h/.cc` | the urban building-shadowing channel (#488, #580), Sommer et al.'s obstacle model |
 | `model/source-refusal-counter.h/.cc` | the #510 fallback that counts the sends OLSR refuses at the source |
 | `helper/stock-arms.h/.cc` | `RegisterStockArms()`: `aodv`, `olsr`, `dsdv` and `hwmp` (with its 802.11s devices) |
 | `examples/routing-compare.cc` | the program |
 | `examples/anthocnet-compare.cc` | the same program under its original name (ADR-0027 §4), kept at least through v3.x |
 | `examples/CMakeLists.txt` | finds the arm modules installed beside it and generates `arms-generated.cc` (#768) |
-| `test/routing-bench-test-suite.cc` | registry rules and the stock arms (`./test.py -s routing-bench`) |
+| `test/routing-bench-test-suite.cc` | registry rules, the stock arms, and that every stock arm's rows are the same alone and after other arms and a reshaped heap (`./test.py -s routing-bench`) |
 
 The other arms live in their own modules, each in one
 `helper/<module>-bench-arms.cc`: `anthocnet`, `aomdv`, `gpsr` (`gpsr`, `gpcr`,
 `gpsr3d`), `oracle` and `adaptive` (`ara`, `termite`, `qrouting`, `beeadhoc`).
+
+## Each arm in its own process (`--isolateArms`)
+
+Stock ns-3 AODV and DSDV keep their per-interface sockets in a
+`std::map<Ptr<Socket>, Ipv4InterfaceAddress>`, ordered by heap address, and
+AODV draws one broadcast jitter per socket in that order (RREQ, its
+forwarding, RERR, hello). On a node with one interface the order cannot vary;
+on a node with several (isl-grid, leo-walker, any arm that adds devices) it
+decides which interface gets which draw. In one process the heap is what the
+earlier arms left, so the same seed gave another row when an earlier arm
+allocated differently (ns3-tools#198, swarm-routing/AntHocNet#1039, #362). It
+is stock code, so the harness isolates instead: by default each arm runs in a
+fresh worker process. `RunHarness` forks a zygote before it allocates
+anything; for each arm the zygote forks a worker that re-runs the command
+line with `--protocols=<arm>`, prints that arm's per-seed lines and sends its
+aggregates back for `##MATCH##`, `##COMMON##` and the summary. Every worker
+starts from the same heap with the same command line, so an arm's rows do not
+depend on the arms before it. The output is byte-identical to
+`--isolateArms=0` (one process, as before) wherever nothing reads the heap
+layout, apart from `isolateArms=` on `##CONFIG##` and `##PERF##`'s `maxrss_kb`,
+which is now each arm's own. An arm's own code is still in its own process:
+isolation removes the dependence on other arms, not on the arm's own
+allocations.
 
 ## Registering an arm
 

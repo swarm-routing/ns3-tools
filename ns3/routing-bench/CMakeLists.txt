@@ -29,6 +29,7 @@ build_lib(
   LIBNAME routing-bench
   SOURCE_FILES
     model/routing-bench-arm.cc
+    model/arm-isolation.cc
     model/routing-bench-harness.cc
     model/routing-bench-run.cc
     model/urban-obstacle-loss-model.cc
