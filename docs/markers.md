@@ -88,11 +88,11 @@ the summary table and `# stddev` lines. Before the runs: `##CONFIG##`
 | `maxrss_kb` | the process's peak resident set in kB (`ru_maxrss`), **only when the process runs a single arm**; `-` otherwise |
 
 `maxrss` is a process-lifetime peak, so with two arms in one process the second
-arm's number would include the first's. It is printed only with one arm in
-`--protocols`; with several seeds of that one arm it is the peak up to that
-seed. Campaign cells (`campaign-cell.yml`, swarm-routing/.github's
-`reusable-benchmark-cell.yml`) already run one arm per cell, so a campaign
-records it for every arm.
+arm's number would include the first's. It is printed only when the arm has
+its process to itself: one arm in `--protocols`, or every arm under
+`--isolateArms` (the default since ns3-tools#198, each arm in its own worker
+process); with several seeds of that arm it is the peak up to that seed. With
+`--isolateArms=0` and several arms it is `-`.
 
 Read it through the reader, never by column position:
 

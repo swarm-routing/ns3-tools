@@ -23,7 +23,7 @@ the harness, the family catalogue #55 and the satellite harnesses #5 replace
 them) is the maintainer's open decision in #161.
 
 ```
-ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias) — GPL-2.0-only
+ns3/routing-bench/  the comparison harness module `routing-bench` (moved from AntHocNet as-is; routing-compare + the anthocnet-compare alias; each arm in its own process by default, `--isolateArms`, #198) — GPL-2.0-only
 ns3/arms/<name>/    (planned) non-swarm comparator arms, one contrib module each (epic #15) — GPL-2.0-only
 ns3/                (planned) the probe module (#40), the satellite harnesses on the arm registry (#5) — GPL-2.0-only
 tools/checks/       CI scripts (check-stock-arms.sh; arm-delivers.sh, its verdict read through the reader, #6; check-perf-markers.sh, the ##PERF## line, #91; check-scaffold-arm.sh, the arm `ns3-tool scaffold` writes, #39) — MIT OR GPL-2.0-only

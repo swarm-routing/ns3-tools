@@ -5,14 +5,29 @@
  * Unit tests for the routing-bench arm registry (ADR-0027, #766):
  * registration, lookup, the rejection of a duplicate or empty name, the
  * optional hooks' defaults, and the stock arms' names and stream-free hwmp
- * arm.
+ * arm; and that an arm's rows do not depend on the arms run before it
+ * (--isolateArms, ns3-tools#198).
  */
 
+#include "ns3/aodv-helper.h"
+#include "ns3/ipv4.h"
 #include "ns3/routing-bench-arm.h"
+#include "ns3/simple-channel.h"
+#include "ns3/simple-net-device.h"
 #include "ns3/stock-arms.h"
 #include "ns3/test.h"
 
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <sstream>
+#include <string>
+#include <vector>
 
 // TestSuite/TestCase enums became scoped (enum class) in ns-3.42 and the
 // unscoped aliases were removed in ns-3.47 (the oracle module's pattern).
@@ -36,6 +51,125 @@ public:
 };
 
 Ptr<Arm> MakeFakeArm() { return Create<FakeArm>(); }
+
+// ns3-tools#198. Stock AODV, with a second interface on every node: a
+// SimpleNetDevice alone on its own channel, so it carries nothing, but AODV
+// opens sockets on it, and its RREQ loop draws one jitter per socket in the
+// order of std::map<Ptr<Socket>, ...>, which is heap-address order. Which
+// draw the Wi-Fi interface gets then depends on the heap: the leo-walker and
+// isl-grid shape (swarm-routing/AntHocNet#1039, #362), on the harness's
+// one-radio scenario.
+class SpareIfAodvArm : public Arm {
+public:
+    std::string Name() const override { return "aodv-spare-if"; }
+    void InstallRouting(InternetStackHelper& internet, RunContext&) override {
+        internet.SetRoutingHelper(m_aodv);
+    }
+    int64_t AssignStreams(RunContext& run, int64_t stream) override {
+        return m_aodv.AssignStreams(run.nodes, stream);
+    }
+    void AfterAddresses(RunContext& run, const Ipv4InterfaceContainer&) override {
+        for (uint32_t i = 0; i < run.nodes.GetN(); ++i) {
+            Ptr<Node> node = run.nodes.Get(i);
+            Ptr<SimpleNetDevice> dev = CreateObject<SimpleNetDevice>();
+            dev->SetChannel(CreateObject<SimpleChannel>());
+            dev->SetAddress(Mac48Address::ConvertFrom(Mac48Address::Allocate()));
+            node->AddDevice(dev);
+            Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+            const uint32_t ifIndex = ipv4->AddInterface(dev);
+            ipv4->AddAddress(ifIndex,
+                             Ipv4InterfaceAddress(Ipv4Address(0xac100001u + (i << 8)),
+                                                  Ipv4Mask("255.255.255.0")));
+            ipv4->SetUp(ifIndex);
+        }
+    }
+
+private:
+    AodvHelper m_aodv;
+};
+
+// ns3-tools#198: stock AODV that also leaves the heap in another state, the
+// way an earlier arm's own allocations do (AntHocNet#1035's function-local
+// static): it allocates blocks of many sizes, frees two in three and keeps
+// the rest for the life of the process.
+class HeapChurnArm : public Arm {
+public:
+    std::string Name() const override { return "heap-churn"; }
+    void InstallRouting(InternetStackHelper& internet, RunContext&) override {
+        static std::vector<char*> kept;
+        std::vector<char*> blocks;
+        for (uint32_t k = 0; k < 6000; ++k) blocks.push_back(new char[16 + (k % 256) * 8]);
+        for (std::size_t k = 0; k < blocks.size(); ++k) {
+            if (k % 3 == 0)
+                kept.push_back(blocks[k]);
+            else
+                delete[] blocks[k];
+        }
+        internet.SetRoutingHelper(m_aodv);
+    }
+    int64_t AssignStreams(RunContext& run, int64_t stream) override {
+        return m_aodv.AssignStreams(run.nodes, stream);
+    }
+
+private:
+    AodvHelper m_aodv;
+};
+
+Ptr<Arm> MakeSpareIfAodvArm() { return Create<SpareIfAodvArm>(); }
+Ptr<Arm> MakeHeapChurnArm() { return Create<HeapChurnArm>(); }
+
+// The harness run in a child process (so every run starts from this
+// process's heap), its stdout in a file; returns that output.
+std::string RunHarnessInChild(const std::vector<std::string>& args, int& status) {
+    char path[] = "/tmp/routing-bench-isolation-XXXXXX";
+    const int fd = mkstemp(path);
+    NS_ABORT_MSG_IF(fd < 0, "mkstemp failed");
+    std::vector<std::string> words{"routing-compare"};
+    words.insert(words.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    for (std::string& w : words) argv.push_back(w.data());
+    argv.push_back(nullptr);
+    std::cout.flush();
+    std::fflush(nullptr);
+    const pid_t pid = fork();
+    NS_ABORT_MSG_IF(pid < 0, "fork failed");
+    if (pid == 0) {
+        dup2(fd, 1);
+        close(fd);
+        const int rc = RunHarness(static_cast<int>(words.size()), argv.data(), "routing-compare");
+        std::cout.flush();
+        std::fflush(nullptr);
+        _exit(rc);
+    }
+    close(fd);
+    status = -1;
+    waitpid(pid, &status, 0);
+    std::ifstream in(path);
+    std::stringstream out;
+    out << in.rdbuf();
+    std::remove(path);
+    return out.str();
+}
+
+// One arm's per-seed result rows (everything printed per arm and seed except
+// ##PERF##, which is cost, not result).
+std::string ArmRows(const std::string& output, const std::string& arm) {
+    std::istringstream in(output);
+    std::string line;
+    std::string rows;
+    for (const char* marker : {"##RUN## ", "##GOODPUT## ", "##ROUTE## ", "##HOLD## "}) {
+        in.clear();
+        in.seekg(0);
+        while (std::getline(in, line)) {
+            if (line.rfind(marker, 0) != 0) continue;
+            std::istringstream f(line);
+            std::string m, seed, name;
+            f >> m >> seed >> name;
+            if (name == arm) rows += line + "\n";
+        }
+    }
+    return rows;
+}
 
 /// A measurement no hook may touch: every count is zero.
 class NullMeasurement : public Measurement {
@@ -164,12 +298,68 @@ private:
     }
 };
 
+class ArmIsolationTest : public TestCase {
+public:
+    ArmIsolationTest()
+        : TestCase("isolateArms: an arm's rows do not depend on the arms run before it (#198)") {}
+
+private:
+    void DoRun() override {
+        if (!Registry().Has("aodv")) RegisterStockArms();
+        if (!Registry().Has("aodv-spare-if")) {
+            RegisterArm("aodv-spare-if", "test: AODV with a second, idle interface",
+                        &MakeSpareIfAodvArm);
+        }
+        if (!Registry().Has("heap-churn")) {
+            RegisterArm("heap-churn", "test: AODV that reshapes the heap", &MakeHeapChurnArm);
+        }
+        const std::vector<std::string> base{"--scenario=paper", "--nNodes=8", "--time=8",
+                                            "--runs=2", "--perf=0"};
+        const auto with = [&base](std::vector<std::string> extra) {
+            std::vector<std::string> a = base;
+            a.insert(a.end(), extra.begin(), extra.end());
+            return a;
+        };
+        const std::vector<std::string> arms{"aodv-spare-if", "aodv", "olsr", "dsdv"};
+        // Every arm after another arm and after a reshaped heap, in one run.
+        int st = 0;
+        const std::string after =
+            RunHarnessInChild(with({"--protocols=heap-churn,olsr,aodv-spare-if,aodv,dsdv"}), st);
+        NS_TEST_ASSERT_MSG_EQ(st, 0, "the multi-arm run exits cleanly");
+        for (const std::string& arm : arms) {
+            const std::string alone = RunHarnessInChild(with({"--protocols=" + arm}), st);
+            NS_TEST_ASSERT_MSG_EQ(st, 0, arm << " alone exits cleanly");
+            const std::string rows = ArmRows(alone, arm);
+            NS_TEST_ASSERT_MSG_NE(rows.find("##RUN## 2 " + arm), std::string::npos,
+                                  arm << " printed its rows");
+            NS_TEST_ASSERT_MSG_EQ(ArmRows(after, arm), rows,
+                                  arm << ": same rows alone and after other arms");
+        }
+        // The same with the reshaping in the arm's own process is not this
+        // test's business: --isolateArms isolates arms, not code. What it
+        // fixes shows with it off: the aodv-spare-if rows after heap-churn
+        // differ from the rows alone on glibc's allocator (not under ASan,
+        // which does not reuse freed blocks soon), so that half is reported,
+        // not asserted.
+        const std::string inAlone = RunHarnessInChild(
+            with({"--isolateArms=0", "--protocols=aodv-spare-if"}), st);
+        const std::string inAfter = RunHarnessInChild(
+            with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}), st);
+        std::clog << "isolateArms=0: aodv-spare-if after heap-churn "
+                  << (ArmRows(inAlone, "aodv-spare-if") == ArmRows(inAfter, "aodv-spare-if")
+                          ? "matches"
+                          : "DIFFERS from")
+                  << " its rows alone (#198)\n";
+    }
+};
+
 class RoutingBenchTestSuite : public TestSuite {
 public:
     RoutingBenchTestSuite() : TestSuite("routing-bench", BENCH_TEST_TYPE_UNIT) {
         AddTestCase(new RegistryRulesTest, BENCH_TEST_QUICK);
         AddTestCase(new DefaultHooksTest, BENCH_TEST_QUICK);
         AddTestCase(new StockArmsTest, BENCH_TEST_QUICK);
+        AddTestCase(new ArmIsolationTest, BENCH_TEST_QUICK);
     }
 };
 
