@@ -13,7 +13,7 @@
 Protocol-agnostic diagnostics and comparison tooling for ns-3: the
 `routing-bench` comparison harness (`ns3/routing-bench/`), the result readers
 and statistics (`python/`) behind one CLI, `ns3-tool` (`compare`, `sweep`,
-`diagnose`, `scaffold`; `pip install ./python`, then `ns3-tool --help`), the
+`diagnose`, `scaffold`; `pip install ns3-tools` from PyPI from the release after v1.0.0, or `pip install ./python`; then `ns3-tool --help`), the
 campaign driver `ns3-campaign`, and, planned, non-intrusive probes as their
 own module (#40). **Status:** v1.0.0 is released; it declares today's CLI and marker
 contract v1 stable ([docs/markers.md](docs/markers.md) "Stability").

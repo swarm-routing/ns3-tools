@@ -80,7 +80,7 @@ NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells python3 python/tests/test_bench_
 NS3_TOOL_CELLS=/path/to/AntHocNet/results/cells NS3_TOOL_SCENARIO_CHECK=/path/to/AntHocNet/tools/bench/scenario_check.py \
     python3 python/tests/test_scenario_check_corpus.py   # scenario_check's verdicts = AntHocNet's, as CI
 NS3_TOOL_ANTHOCNET=/path/to/AntHocNet python3 python/tests/test_change_plan.py   # change-plan verdicts = AntHocNet's campaign.py on every plan (PyYAML), as CI
-pip install ./python   # ns3-tool {compare,sweep,diagnose,scaffold}; the older scripts stay: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
+pip install ./python   # (or `pip install ns3-tools` from PyPI, published by release.yml's pypi job, #196) ns3-tool {compare,sweep,diagnose,scaffold}; the older scripts stay: ns3-bench-parse, ns3-native-view, ns3-comparator-view, ns3-pool-runs, ns3-sweep-summary, ns3-scenario-check, ns3-campaign
 ns3-tool sweep /opt/ns-3 --only discrete --runs 10 --time 120 --dry-run   # the harness command lines, nothing run
 ns3-campaign plan campaigns/anthocnet-aodv-smoke.toml   # offline: the image and every cell; validate checks a plan alone
 ```
