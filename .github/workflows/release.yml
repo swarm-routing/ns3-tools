@@ -104,4 +104,6 @@ jobs:
         with:
           packages-dir: ${{ runner.temp }}/pypi
           repository-url: ${{ needs.release.outputs.mode == 'release' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
-          skip-existing: ${{ needs.release.outputs.mode != 'release' }}
+          # a re-run of a partly uploaded release skips what is already there and
+          # uploads the rest ("Re-run all jobs" recovers it)
+          skip-existing: true
