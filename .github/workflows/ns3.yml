@@ -145,6 +145,17 @@ jobs:
           persist-credentials: false
       - name: Build routing-bench alone (stock ns-3 only) and run its suite
         run: ns3-build-contrib --test "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench"
+      - name: routing-bench's suite through the bare test runner, routing-bench alone (#211)
+        timeout-minutes: 10
+        working-directory: /opt/ns-3
+        # As a consumer runs it: test.py passes the runner extra arguments, so
+        # the bare runner starts from another process state, and v1.1.0's
+        # isolation test failed there 3 of 3 with routing-bench alone (#211).
+        # The scaffold job runs the same with a second arm module installed.
+        run: |
+          runner=$(find build/utils -name 'ns3.*-test-runner-*' -type f | head -1)
+          [ -n "$runner" ] || { echo "::error::no ns-3 test runner under build/utils"; exit 1; }
+          for _ in 1 2 3; do "$runner" --suite=routing-bench; done
       - name: Every listed arm delivers; an unknown arm aborts
         run: bash tools/checks/check-stock-arms.sh /opt/ns-3 "${{ matrix.arms }}"
       - name: "One ##PERF## line per arm and seed, and no other byte moves (#91)"
