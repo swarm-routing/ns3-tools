@@ -189,6 +189,16 @@ std::vector<ChildRun> RunHarnessInChildren(const std::vector<std::vector<std::st
     return out;
 }
 
+// Every line that starts with `marker`.
+std::string MarkerLines(const std::string& output, const std::string& marker) {
+    std::istringstream in(output);
+    std::string line;
+    std::string lines;
+    while (std::getline(in, line))
+        if (line.rfind(marker, 0) == 0) lines += line + "\n";
+    return lines;
+}
+
 // One arm's per-seed result rows (everything printed per arm and seed except
 // ##PERF##, which is cost, not result).
 std::string ArmRows(const std::string& output, const std::string& arm) {
@@ -378,6 +388,11 @@ private:
         // 7, 8: the same comparison with --isolateArms=0, reported below.
         runs.push_back(with({"--isolateArms=0", "--protocols=aodv-spare-if"}));
         runs.push_back(with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}));
+        // 9, 10 (#218): the cross-arm rows of hwmp and olsr, isolated and in one
+        // process. The hwmp worker numbers its address types in another order.
+        runs.push_back(meshArgs("--protocols=hwmp,olsr"));
+        runs.push_back(meshArgs("--protocols=hwmp,olsr"));
+        runs.back().push_back("--isolateArms=0");
         const std::vector<ChildRun> res = RunHarnessInChildren(runs);
         for (std::size_t i = 0; i < res.size(); ++i) {
             NS_TEST_ASSERT_MSG_EQ(res[i].status, 0, "run " << i << " exits cleanly");
@@ -396,6 +411,14 @@ private:
                               "hwmp printed its rows");
         NS_TEST_ASSERT_MSG_EQ(ArmRows(res[6].output, "hwmp"), hwmpRows,
                               "hwmp: same rows alone and after other arms");
+        // #218: ##MATCH## and ##COMMON## span arms, so the parent compares
+        // keys from different workers; they must be what one process prints.
+        for (const char* marker : {"##MATCH## ", "##COMMON## "}) {
+            const std::string iso = MarkerLines(res[9].output, marker);
+            NS_TEST_ASSERT_MSG_NE(iso, "", "hwmp,olsr isolated printed " << marker << "rows");
+            NS_TEST_ASSERT_MSG_EQ(iso, MarkerLines(res[10].output, marker),
+                                  "hwmp,olsr: " << marker << "rows isolated = in one process");
+        }
         // The same with the reshaping in the arm's own process is not this
         // test's business: --isolateArms isolates arms, not code. What it
         // fixes shows with it off: the aodv-spare-if rows after heap-churn
