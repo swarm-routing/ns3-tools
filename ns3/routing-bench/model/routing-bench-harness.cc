@@ -1274,7 +1274,20 @@ int ns3::bench::RunHarness(int argc, char* argv[], const std::string& program) {
                                       std::inserter(both, both.begin()));
                 common.swap(both);
             }
-            if (common.empty()) continue;
+            if (common.empty()) {
+                // #218: arms that each delivered something always share keys
+                // (same flows, same seeds); none shared means the keys did not
+                // line up, and the rows would vanish without a word.
+                bool allDelivered = list.size() > 1;
+                for (std::size_t i = 0; i < list.size(); ++i)
+                    if (matchGrid[i][s - firstRun].bySeq.empty()) allDelivered = false;
+                if (allDelivered) {
+                    std::cerr << "warning: ##COMMON## run " << s
+                              << ": every arm delivered, but no (flow, seq) was delivered by all; "
+                                 "no ##COMMON## rows (#218)\n";
+                }
+                continue;
+            }
             for (std::size_t i = 0; i < list.size(); ++i) {
                 std::vector<double> inCommon, surplus;
                 std::size_t nSelf = 0;

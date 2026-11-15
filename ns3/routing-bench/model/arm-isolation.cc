@@ -279,6 +279,10 @@ void ArmIsolation::WorkerFinish(const std::string& payload) {
     _exit(0);
 }
 
+void PayloadReader::Bad(bool bad, const char* what) {
+    NS_ABORT_MSG_IF(bad, "--isolateArms: corrupt payload: " << what);
+}
+
 void PayloadReader::Take(void* p, std::size_t n) {
     NS_ABORT_MSG_IF(m_pos + n > m_s.size(), "--isolateArms: truncated payload");
     std::memcpy(p, m_s.data() + m_pos, n);

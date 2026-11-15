@@ -37,6 +37,10 @@
 #define ROUTING_BENCH_ARM_ISOLATION_H
 
 #include "ns3/address.h"
+#include "ns3/inet-socket-address.h"
+#include "ns3/inet6-socket-address.h"
+#include "ns3/ipv4-address.h"
+#include "ns3/ipv6-address.h"
 
 #include <cstdint>
 #include <cstring>
@@ -90,9 +94,36 @@ template <typename T> void Put(std::string& out, const T& v) {
     out.append(reinterpret_cast<const char*>(&v), sizeof v);
 }
 
+// An Address carries a type number that Address::Register hands out per
+// process, in first-use order: a worker that builds other devices first (the
+// hwmp arm's 802.11s mesh) numbers InetSocketAddress differently from its
+// parent, and its keys never compared equal there (#218). Socket addresses
+// travel by value and are rebuilt with the parent's own type; anything else
+// keeps its bytes and type number.
+constexpr uint8_t kAddrInet = 1;
+constexpr uint8_t kAddrInet6 = 2;
+constexpr uint8_t kAddrRaw = 3;
+
 inline void Put(std::string& out, const ns3::Address& a) {
+    if (ns3::InetSocketAddress::IsMatchingType(a)) {
+        const ns3::InetSocketAddress s = ns3::InetSocketAddress::ConvertFrom(a);
+        Put(out, kAddrInet);
+        Put(out, s.GetIpv4().Get());
+        Put(out, s.GetPort());
+        return;
+    }
+    if (ns3::Inet6SocketAddress::IsMatchingType(a)) {
+        const ns3::Inet6SocketAddress s = ns3::Inet6SocketAddress::ConvertFrom(a);
+        uint8_t ip[16];
+        s.GetIpv6().GetBytes(ip);
+        Put(out, kAddrInet6);
+        out.append(reinterpret_cast<const char*>(ip), sizeof ip);
+        Put(out, s.GetPort());
+        return;
+    }
     uint8_t buf[ns3::Address::MAX_SIZE + 2];
     const uint8_t n = static_cast<uint8_t>(a.CopyAllTo(buf, sizeof buf));
+    Put(out, kAddrRaw);
     Put(out, n);
     out.append(reinterpret_cast<const char*>(buf), n);
 }
@@ -114,8 +145,28 @@ public:
         Take(&v, sizeof v);
     }
     void Get(ns3::Address& a) {
+        uint8_t kind = 0;
+        Get(kind);
+        if (kind == kAddrInet) {
+            uint32_t ip = 0;
+            uint16_t port = 0;
+            Get(ip);
+            Get(port);
+            a = ns3::InetSocketAddress(ns3::Ipv4Address(ip), port);
+            return;
+        }
+        if (kind == kAddrInet6) {
+            uint8_t ip[16];
+            uint16_t port = 0;
+            Take(ip, sizeof ip);
+            Get(port);
+            a = ns3::Inet6SocketAddress(ns3::Ipv6Address(ip), port);
+            return;
+        }
+        Bad(kind != kAddrRaw, "unknown address kind");
         uint8_t n = 0;
         Get(n);
+        Bad(n > ns3::Address::MAX_SIZE + 2, "address too long");
         uint8_t buf[ns3::Address::MAX_SIZE + 2];
         Take(buf, n);
         a.CopyAllFrom(buf, n);
@@ -136,6 +187,7 @@ public:
 
 private:
     void Take(void* p, std::size_t n);
+    static void Bad(bool bad, const char* what);
     const std::string& m_s;
     std::size_t m_pos = 0;
 };
