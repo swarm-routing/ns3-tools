@@ -18,6 +18,10 @@ name: Release
 # with the harness built in (CONTRIBUTING "Images"), and the `pypi` job
 # publishes the Python distribution ns3-tools to PyPI (a dry run: TestPyPI)
 # by trusted publishing (#196).
+# A dry run also builds and tests AntHocNet, ns3-tools' main consumer, against
+# the commit (routing-bench staged from it, its suites, routing-bench's suite
+# through the bare test runner, #211), report-only (.github/downstream.txt,
+# `downstream-consumers`, swarm-routing/.github#482).
 on:
   workflow_dispatch:
     inputs:
@@ -49,6 +53,9 @@ jobs:
     with:
       mode: ${{ inputs.mode }}   # empty on push: release
       increment: ${{ inputs.increment != 'auto' && inputs.increment || '' }}   # '' for auto and on push
+      # a dry run builds AntHocNet against this commit, report-only
+      # (.github/downstream.txt, swarm-routing/.github#482)
+      downstream-consumers: .github/downstream.txt
     secrets:
       BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
       BOT_APP_PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}

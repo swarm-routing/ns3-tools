@@ -1,0 +1,17 @@
+# The consumers a release of ns3-tools is checked against before it ships
+# (swarm-routing/.github#482): release.yml passes this file as
+# reusable-release.yml's `downstream-consumers`, and a dry run builds and
+# tests each line on ns3-dev latest-debug with this repository's checkout as
+# the `ns3-tools` line (swarm-routing/.github tools/downstream/downstream.sh,
+# whose header documents the columns). Report-only.
+#
+#   name | owner/repo@ref | ns-3 | modules | suites | stage | run
+#
+# ns3-tools alone: routing-bench's suite through test.py, then through the
+# bare test runner three times, as a consumer invokes it (#211).
+ns3-tools | swarm-routing/ns3-tools@main | 3.42+ | routing-bench=ns3-tools/ns3/routing-bench | routing-bench | | cd /opt/ns-3 && r=$(find build/utils -name 'ns3.*-test-runner-*' -type f -print -quit) && for i in 1 2 3; do "$r" --suite=routing-bench; done
+# AntHocNet, the main consumer: its install stages this checkout's
+# routing-bench (NS3_TOOLS_DIR) in place of the release its ns3-tools.lock
+# names, beside its own arm modules; its suites, routing-bench's suite through
+# the bare runner beside `adaptive` (#211), and its example.
+AntHocNet | swarm-routing/AntHocNet@main | 3.36+ | swarm-core=AntHocNet/.stage/contrib/swarm-core routing-bench=AntHocNet/.stage/contrib/routing-bench oracle=AntHocNet/.stage/contrib/oracle aomdv=AntHocNet/.stage/contrib/aomdv gpsr=AntHocNet/.stage/contrib/gpsr adaptive=AntHocNet/.stage/contrib/adaptive anthocnet=AntHocNet/.stage/contrib/anthocnet | anthocnet oracle adaptive routing-bench | mkdir -p .stage/contrib && touch .stage/CMakeLists.txt && NS3_TOOLS_DIR=/w/ns3-tools make -s install-ns3 NS3DIR="$PWD/.stage" | cd /opt/ns-3 && r=$(find build/utils -name 'ns3.*-test-runner-*' -type f -print -quit) && for i in 1 2 3; do "$r" --suite=routing-bench; done && ./ns3 run --no-build anthocnet-example
