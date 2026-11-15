@@ -80,7 +80,8 @@ jobs:
       # every committed plan (the plans are YAML: PyYAML, for both scripts).
       - name: PyYAML
         timeout-minutes: 5
-        run: python3 -m pip install --quiet --only-binary :all: pyyaml==6.0.2
+        run: |
+          python3 -m pip install --quiet --only-binary :all: pyyaml==6.0.2
       - run: NS3_TOOL_ANTHOCNET="$PWD/anthocnet" python3 python/tests/test_change_plan.py
 
 # ruff and the self-tests under coverage (reusable-python-ci.yml) run in
