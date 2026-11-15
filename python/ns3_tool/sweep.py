@@ -272,9 +272,15 @@ def build_args(flags, runs, time, protocols, propagation, extra_args="", run_fir
 
 def run_compare(ns3dir, arg_str, dry_run, label="", program=PROGRAM, protocols=PROTOCOLS):
     """Run one harness invocation; return parsed CSV dict rows."""
-    cmd = f'cd "{ns3dir}" && ./ns3 run "{program} {arg_str}"'
+    # No shell (#192): ns-3's `./ns3 run` takes the
+    # program and its arguments as one string and word-splits it itself, so the
+    # argv below passes exactly what the old `./ns3 run "<program> <args>"`
+    # shell line did, without the shell expanding $(...), backticks or quotes
+    # in a sweep value or in --extra-args.
+    cmd = ["./ns3", "run", f"{program} {arg_str}"]
     if dry_run:
-        print(f"[dry-run] {cmd}", file=sys.stderr)
+        # The printed line stays AntHocNet's run-scenarios.py text (test_cli.py).
+        print(f'[dry-run] cd "{ns3dir}" && ./ns3 run "{program} {arg_str}"', file=sys.stderr)
         return [], []
     print(f"[run] {program} {arg_str}", file=sys.stderr)
     # #131: sim cost per point — wall clock always; peak RSS via
@@ -285,9 +291,9 @@ def run_compare(ns3dir, arg_str, dry_run, label="", program=PROGRAM, protocols=P
     if os.path.exists("/usr/bin/time"):
         fd, timefile = tempfile.mkstemp(prefix="time-v-", suffix=".log")
         os.close(fd)
-        cmd = f'cd "{ns3dir}" && /usr/bin/time -v -o "{timefile}" ./ns3 run "{program} {arg_str}"'
+        cmd = ["/usr/bin/time", "-v", "-o", timefile, *cmd]
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, cwd=ns3dir, capture_output=True, text=True, check=False)
     wall = time.monotonic() - t0
     maxrss = "-"
     if timefile is not None:
