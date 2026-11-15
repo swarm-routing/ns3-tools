@@ -1,0 +1,11 @@
+# coverage.py settings for the Python self-tests (ns3.yml's python-quality
+# job, swarm-routing/.github's reusable-python-ci.yml, which runs each
+# python/tests/test_*.py under `coverage run` from the repository root).
+#
+# patch = subprocess: test_cli.py, test_change_plan.py, test_campaign.py and
+# test_bench_parse_query.py run the tools as `python3 <tool>.py ...` child
+# processes (the CLI as a user calls it); without this, coverage.py measured
+# only the test process, so cli.py, sweep.py and diagnose.py read 0-33 % in
+# SonarQube Cloud although the tests run them (#204).
+[run]
+patch = subprocess
