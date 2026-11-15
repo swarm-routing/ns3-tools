@@ -1,3 +1,16 @@
+## v1.1.0 (2026-11-15)
+
+### Feat
+
+- **release**: publish ns3-tools to pypi by trusted publishing; the distribution is ns3-tools (#197)
+
+### Fix
+
+- **routing-bench**: write the forked workers' coverage: a strong __gcov_dump in coverage builds (#205)
+- **routing-bench**: run each arm in its own process, so a row does not follow earlier arms' heap (#202)
+- **release**: publish the dry run to testpypi from the dry-run environment (#200)
+- **security**: run the sweep harness without a shell; pyyaml from wheels only (#194)
+
 ## v1.0.0 (2026-11-13)
 
 The stability release: no new features or fixes, a promise. The `ns3-tool` CLI
