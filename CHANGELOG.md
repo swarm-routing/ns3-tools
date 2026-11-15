@@ -1,3 +1,9 @@
+## v1.1.2 (2026-11-15)
+
+### Fix
+
+- **routing-bench**: send flow keys from arm workers by value, so ##COMMON## spans isolated arms (#219)
+
 ## v1.1.1 (2026-11-15)
 
 ### Fix
