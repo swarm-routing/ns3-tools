@@ -67,14 +67,15 @@ jobs:
   # The Python distribution `ns3-tools` (the wheel and sdist `make dist`
   # builds and checks) on PyPI by trusted publishing (OIDC, no token; #196):
   # a release to PyPI, a dry-run to TestPyPI (skip-existing, so a repeated
-  # dry run of one version passes). The pending publishers on both indexes
-  # name this workflow and the `release` environment (swarm-routing/.github#441).
+  # dry run of one version passes). The trusted publishers name this workflow
+  # and an environment per index: `release` on PyPI, `dry-run` on TestPyPI
+  # (swarm-routing/.github#441), so a dry run cannot publish to PyPI.
   pypi:
     needs: release
     if: ${{ needs.release.outputs.mode == 'release' || needs.release.outputs.mode == 'dry-run' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release
+    environment: ${{ needs.release.outputs.mode == 'release' && 'release' || 'dry-run' }}
     permissions:
       id-token: write   # the trusted-publishing token exchange, nothing else
     env:
