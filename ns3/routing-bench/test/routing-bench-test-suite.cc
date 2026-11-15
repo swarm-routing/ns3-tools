@@ -39,9 +39,11 @@
 #define BENCH_TEST_QUICK TestCase::QUICK
 #endif
 
-// A --coverage build's counters, written before the child's _exit (null
-// without --coverage).
-extern "C" void __gcov_dump() __attribute__((weak));
+// A --coverage build's counters, written before the child's _exit (strong, and
+// only in a coverage build: see model/arm-isolation.cc).
+#ifdef ROUTING_BENCH_GCOV_DUMP
+extern "C" void __gcov_dump();
+#endif
 
 namespace ns3 {
 namespace bench {
@@ -143,7 +145,9 @@ std::string RunHarnessInChild(const std::vector<std::string>& args, int& status)
         const int rc = RunHarness(static_cast<int>(words.size()), argv.data(), "routing-compare");
         std::cout.flush();
         std::fflush(nullptr);
-        if (__gcov_dump) __gcov_dump();
+#ifdef ROUTING_BENCH_GCOV_DUMP
+        __gcov_dump();
+#endif
         _exit(rc);
     }
     close(fd);

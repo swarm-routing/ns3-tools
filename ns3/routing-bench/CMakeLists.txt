@@ -25,6 +25,16 @@ else()
   add_compile_definitions(ROUTING_BENCH_NS3_SCOPED_TEST_ENUMS)
 endif()
 
+# A --coverage build (ns3-build-contrib --coverage with this module among its
+# quality modules: swarm-quality.cmake's cache variables) must write the
+# counters of the forked --isolateArms workers, which end with _exit (#202):
+# the define turns on a strong reference to libgcov's __gcov_dump. Only when
+# this module is instrumented: built as a dependency, it has no libgcov to
+# resolve it against.
+if(SWARM_COVERAGE AND "routing-bench" IN_LIST SWARM_CONTRIB_MODULES)
+  add_compile_definitions(ROUTING_BENCH_GCOV_DUMP)
+endif()
+
 build_lib(
   LIBNAME routing-bench
   SOURCE_FILES
