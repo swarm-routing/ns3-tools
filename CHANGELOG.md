@@ -1,3 +1,9 @@
+## v1.1.1 (2026-11-15)
+
+### Fix
+
+- **routing-bench**: fork every isolation-test run from one process state, so its rows compare arms, not the test's heap (#212)
+
 ## v1.1.0 (2026-11-15)
 
 ### Feat
