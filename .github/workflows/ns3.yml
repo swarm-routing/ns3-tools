@@ -84,6 +84,11 @@ jobs:
       # the project is on Automatic Analysis.
       coverage: ${{ inputs.ns3-versions == '' }}
       sonar: ${{ inputs.ns3-versions == '' }}
+      # Leave gcov's exception-edge branches and those gcovr judges unreachable
+      # out of the C++ report (swarm-routing/.github#446, opt-in; #204): every
+      # call that may throw otherwise adds a branch no test can take
+      # (arm-isolation.cc counted 842 branches for 168 lines).
+      coverage-branch-filter: true
       # coverage.py's report of python/ns3_tool into the same analysis (#67).
       sonar-python-coverage: python-coverage
       dual-roots: 'python/ tools/'
