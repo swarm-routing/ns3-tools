@@ -22,6 +22,13 @@
  * heap and runs the same command line, so an arm's rows are the same whatever
  * arms are listed before it, and whatever they allocated.
  *
+ * What it does not remove: the state RunHarness is entered with. Workers
+ * start from that heap, so a caller that allocates differently before each
+ * call (a test calling RunHarness in-process with heap-allocated argv, say)
+ * still sees an arm's rows move with it. routing-compare and
+ * anthocnet-compare call it first thing from main(), with argv on the stack,
+ * so every invocation enters it in the same state (#211).
+ *
  * The zygote's loop allocates nothing (read, fork, waitpid, write on file
  * descriptors and stack buffers), so its heap never changes after the fork.
  */

@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -124,40 +125,68 @@ private:
 Ptr<Arm> MakeSpareIfAodvArm() { return Create<SpareIfAodvArm>(); }
 Ptr<Arm> MakeHeapChurnArm() { return Create<HeapChurnArm>(); }
 
-// The harness run in a child process (so every run starts from this
-// process's heap), its stdout in a file; returns that output.
-std::string RunHarnessInChild(const std::vector<std::string>& args, int& status) {
-    char path[] = "/tmp/routing-bench-isolation-XXXXXX";
-    const int fd = mkstemp(path);
-    NS_ABORT_MSG_IF(fd < 0, "mkstemp failed");
-    std::vector<std::string> words{"routing-compare"};
-    words.insert(words.end(), args.begin(), args.end());
-    std::vector<char*> argv;
-    for (std::string& w : words) argv.push_back(w.data());
-    argv.push_back(nullptr);
+// The harness run once per command line, each in a child process, every
+// child forked from this process in the same state (#211). Every argument
+// vector, temporary file and status slot is made before the first fork, and
+// nothing is allocated between two forks, so each child enters RunHarness
+// with the same heap whatever its arguments, as routing-compare does from
+// main(), whose argv lives on the stack. --isolateArms forks its workers from
+// the state RunHarness is entered with: when the test built one child's argv,
+// read its output and only then forked the next, each later child started
+// from another heap, and an arm's rows could differ between "alone" and
+// "after other arms" for that reason alone (seen under the bare test runner
+// and beside AntHocNet's arm modules, not under test.py).
+struct ChildRun {
+    std::string output;
+    int status = -1;
+};
+
+std::vector<ChildRun> RunHarnessInChildren(const std::vector<std::vector<std::string>>& runs) {
+    const std::size_t n = runs.size();
+    std::vector<std::vector<std::string>> words(n);
+    std::vector<std::vector<char*>> argvs(n);
+    std::vector<std::array<char, 40>> paths(n);
+    std::vector<int> fds(n, -1);
+    std::vector<int> statuses(n, -1);
+    for (std::size_t i = 0; i < n; ++i) {
+        words[i].push_back("routing-compare");
+        words[i].insert(words[i].end(), runs[i].begin(), runs[i].end());
+        for (std::string& w : words[i]) argvs[i].push_back(w.data());
+        argvs[i].push_back(nullptr);
+        std::snprintf(paths[i].data(), paths[i].size(), "/tmp/routing-bench-isolation-XXXXXX");
+        fds[i] = mkstemp(paths[i].data());
+        NS_ABORT_MSG_IF(fds[i] < 0, "mkstemp failed");
+    }
     std::cout.flush();
     std::fflush(nullptr);
-    const pid_t pid = fork();
-    NS_ABORT_MSG_IF(pid < 0, "fork failed");
-    if (pid == 0) {
-        dup2(fd, 1);
-        close(fd);
-        const int rc = RunHarness(static_cast<int>(words.size()), argv.data(), "routing-compare");
-        std::cout.flush();
-        std::fflush(nullptr);
+    // From here to the last waitpid: no allocation in this process.
+    for (std::size_t i = 0; i < n; ++i) {
+        const pid_t pid = fork();
+        if (pid < 0) break;  // statuses[i] stays -1
+        if (pid == 0) {
+            dup2(fds[i], 1);
+            const int rc =
+                RunHarness(static_cast<int>(words[i].size()), argvs[i].data(), "routing-compare");
+            std::cout.flush();
+            std::fflush(nullptr);
 #ifdef ROUTING_BENCH_GCOV_DUMP
-        __gcov_dump();
+            __gcov_dump();
 #endif
-        _exit(rc);
+            _exit(rc);
+        }
+        waitpid(pid, &statuses[i], 0);
     }
-    close(fd);
-    status = -1;
-    waitpid(pid, &status, 0);
-    std::ifstream in(path);
-    std::stringstream out;
-    out << in.rdbuf();
-    std::remove(path);
-    return out.str();
+    std::vector<ChildRun> out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        close(fds[i]);
+        std::ifstream in(paths[i].data());
+        std::stringstream text;
+        text << in.rdbuf();
+        std::remove(paths[i].data());
+        out[i].output = text.str();
+        out[i].status = statuses[i];
+    }
+    return out;
 }
 
 // One arm's per-seed result rows (everything printed per arm and seed except
@@ -330,35 +359,42 @@ private:
             return a;
         };
         const std::vector<std::string> arms{"aodv-spare-if", "aodv", "olsr", "dsdv"};
-        // Every arm after another arm and after a reshaped heap, in one run.
-        int st = 0;
-        const std::string after =
-            RunHarnessInChild(with({"--protocols=heap-churn,olsr,aodv-spare-if,aodv,dsdv"}), st);
-        NS_TEST_ASSERT_MSG_EQ(st, 0, "the multi-arm run exits cleanly");
-        for (const std::string& arm : arms) {
-            const std::string alone = RunHarnessInChild(with({"--protocols=" + arm}), st);
-            NS_TEST_ASSERT_MSG_EQ(st, 0, arm << " alone exits cleanly");
-            const std::string rows = ArmRows(alone, arm);
+        // hwmp, the fourth stock arm, brings its own 802.11s devices and needs
+        // 802.11a (#708). Its multi-arm run spells -protocols with one dash, a
+        // spelling CommandLine reads too: the worker replaces it.
+        const std::vector<std::string> mesh{"--standard=80211a", "--rateManager=constant6"};
+        auto meshArgs = [&with, &mesh](const std::string& protocols) {
+            std::vector<std::string> a = with(mesh);
+            a.push_back(protocols);
+            return a;
+        };
+        // Every run is made up front and forked from one state (#211).
+        std::vector<std::vector<std::string>> runs;
+        // 0: every arm after another arm and after a reshaped heap, in one run.
+        runs.push_back(with({"--protocols=heap-churn,olsr,aodv-spare-if,aodv,dsdv"}));
+        for (const std::string& arm : arms) runs.push_back(with({"--protocols=" + arm}));  // 1-4
+        runs.push_back(meshArgs("--protocols=hwmp"));                                      // 5
+        runs.push_back(meshArgs("-protocols=heap-churn,aodv,hwmp"));                       // 6
+        // 7, 8: the same comparison with --isolateArms=0, reported below.
+        runs.push_back(with({"--isolateArms=0", "--protocols=aodv-spare-if"}));
+        runs.push_back(with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}));
+        const std::vector<ChildRun> res = RunHarnessInChildren(runs);
+        for (std::size_t i = 0; i < res.size(); ++i) {
+            NS_TEST_ASSERT_MSG_EQ(res[i].status, 0, "run " << i << " exits cleanly");
+        }
+        const std::string& after = res[0].output;
+        for (std::size_t k = 0; k < arms.size(); ++k) {
+            const std::string& arm = arms[k];
+            const std::string rows = ArmRows(res[1 + k].output, arm);
             NS_TEST_ASSERT_MSG_NE(rows.find("##RUN## 2 " + arm), std::string::npos,
                                   arm << " printed its rows");
             NS_TEST_ASSERT_MSG_EQ(ArmRows(after, arm), rows,
                                   arm << ": same rows alone and after other arms");
         }
-        // hwmp, the fourth stock arm, brings its own 802.11s devices and needs
-        // 802.11a (#708): alone, and after heap-churn and aodv. The single
-        // dash is a spelling CommandLine reads too: the worker replaces it.
-        const std::vector<std::string> mesh{"--standard=80211a", "--rateManager=constant6"};
-        auto meshArgs = with(mesh);
-        meshArgs.push_back("--protocols=hwmp");
-        const std::string hwmpAlone = RunHarnessInChild(meshArgs, st);
-        NS_TEST_ASSERT_MSG_EQ(st, 0, "hwmp alone exits cleanly");
-        meshArgs.back() = "-protocols=heap-churn,aodv,hwmp";
-        const std::string hwmpAfter = RunHarnessInChild(meshArgs, st);
-        NS_TEST_ASSERT_MSG_EQ(st, 0, "heap-churn,aodv,hwmp exits cleanly");
-        const std::string hwmpRows = ArmRows(hwmpAlone, "hwmp");
+        const std::string hwmpRows = ArmRows(res[5].output, "hwmp");
         NS_TEST_ASSERT_MSG_NE(hwmpRows.find("##RUN## 2 hwmp"), std::string::npos,
                               "hwmp printed its rows");
-        NS_TEST_ASSERT_MSG_EQ(ArmRows(hwmpAfter, "hwmp"), hwmpRows,
+        NS_TEST_ASSERT_MSG_EQ(ArmRows(res[6].output, "hwmp"), hwmpRows,
                               "hwmp: same rows alone and after other arms");
         // The same with the reshaping in the arm's own process is not this
         // test's business: --isolateArms isolates arms, not code. What it
@@ -366,12 +402,8 @@ private:
         // differ from the rows alone on glibc's allocator (not under ASan,
         // which does not reuse freed blocks soon), so that half is reported,
         // not asserted.
-        const std::string inAlone =
-            RunHarnessInChild(with({"--isolateArms=0", "--protocols=aodv-spare-if"}), st);
-        NS_TEST_ASSERT_MSG_EQ(st, 0, "aodv-spare-if alone in one process exits cleanly");
-        const std::string inAfter =
-            RunHarnessInChild(with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}), st);
-        NS_TEST_ASSERT_MSG_EQ(st, 0, "heap-churn,aodv-spare-if in one process exits cleanly");
+        const std::string& inAlone = res[7].output;
+        const std::string& inAfter = res[8].output;
         std::clog << "isolateArms=0: aodv-spare-if after heap-churn "
                   << (ArmRows(inAlone, "aodv-spare-if") == ArmRows(inAfter, "aodv-spare-if")
                           ? "matches"

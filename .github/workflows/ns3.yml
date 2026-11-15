@@ -177,3 +177,11 @@ jobs:
       - name: routing-compare offers the arm, and it delivers
         timeout-minutes: 15
         run: bash tools/checks/check-scaffold-arm.sh /opt/ns-3 scaffold-demo
+      - name: routing-bench's suite through the bare test runner, another arm module installed (#211)
+        timeout-minutes: 10
+        working-directory: /opt/ns-3
+        # test.py passes extra arguments to the runner, so the runner alone is
+        # another process state: the isolation test must pass there as well.
+        run: |
+          runner=$(find build/utils -name 'ns3.*-test-runner-*' -type f | head -1)
+          for _ in 1 2 3; do "$runner" --suite=routing-bench; done

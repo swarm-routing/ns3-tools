@@ -56,7 +56,9 @@ depend on the arms before it. The output is byte-identical to
 layout, apart from `isolateArms=` on `##CONFIG##` and `##PERF##`'s `maxrss_kb`,
 which is now each arm's own. An arm's own code is still in its own process:
 isolation removes the dependence on other arms, not on the arm's own
-allocations.
+allocations, nor on the state `RunHarness` is entered with: a program calls it
+first thing from `main()`, as `routing-compare` does, and the test suite forks
+every harness run from one prepared state (ns3-tools#211).
 
 ## Registering an arm
 
