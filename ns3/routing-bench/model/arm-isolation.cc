@@ -29,7 +29,7 @@ void DumpCoverage() {
 
 constexpr int kMaxArgs = 1024;      // a worker's command line lives on the stack
 constexpr uint32_t kMaxName = 255;  // an arm name, in a stack buffer
-constexpr char kResult = 'R';       // worker -> parent: the payload
+constexpr char kData = 'D';         // zygote -> parent: a chunk of the worker's payload
 constexpr char kStatus = 'S';       // zygote -> parent: the worker's wait status
 
 bool g_worker = false;
@@ -60,6 +60,18 @@ bool WriteAll(int fd, const void* p, std::size_t n) {
     return true;
 }
 
+// The value of `arg` if it is option `name` with a value, spelled the ways
+// CommandLine reads it (any number of leading dashes: -name=v, --name=v);
+// nullptr otherwise.
+const char* OptionValue(const char* arg, const char* name) {
+    if (*arg != '-') return nullptr;
+    while (*arg == '-')
+        ++arg;
+    const std::size_t n = std::strlen(name);
+    if (std::strncmp(arg, name, n) != 0 || arg[n] != '=') return nullptr;
+    return arg + n + 1;
+}
+
 // True unless the value spells false the way BooleanValue reads it.
 bool BoolValue(const char* v) {
     return !(std::strcmp(v, "false") == 0 || std::strcmp(v, "0") == 0 || std::strcmp(v, "f") == 0);
@@ -85,7 +97,7 @@ bool BoolValue(const char* v) {
     int n = 0;
     bool replaced = false;
     for (int i = 0; i < argc; ++i) {
-        if (std::strncmp(argv[i], "--protocols=", sizeof("--protocols=") - 1) == 0) {
+        if (i > 0 && OptionValue(argv[i], "protocols")) {  // every spelling goes
             if (!replaced) wargv[n++] = protocols;
             replaced = true;
             continue;
@@ -111,10 +123,32 @@ bool BoolValue(const char* v) {
             _exit(0);  // the parent is done (or gone)
         }
         name[len] = '\0';
-        const pid_t w = fork();
-        if (w == 0) {
-            close(reqFd);
-            RunWorker(resFd, name, argc, argv, entry, ctx);
+        // The worker's payload comes through a pipe of its own, relayed here
+        // in chunks: a worker that dies mid-payload closes it, so the parent
+        // gets the status frame after the chunks and never misreads a frame.
+        int wp[2];
+        pid_t w = -1;
+        if (pipe(wp) == 0) {
+            w = fork();
+            if (w == 0) {
+                close(reqFd);
+                close(resFd);
+                close(wp[0]);
+                RunWorker(wp[1], name, argc, argv, entry, ctx);
+            }
+            close(wp[1]);
+            char chunk[1 << 16];
+            for (;;) {
+                const ssize_t r = read(wp[0], chunk, sizeof chunk);
+                if (r < 0 && errno == EINTR) continue;
+                if (r <= 0) break;
+                const uint32_t m = static_cast<uint32_t>(r);
+                if (!WriteAll(resFd, &kData, 1) || !WriteAll(resFd, &m, sizeof m) ||
+                    !WriteAll(resFd, chunk, m)) {
+                    _exit(0);  // the parent is gone
+                }
+            }
+            close(wp[0]);
         }
         int32_t status = -1;
         if (w > 0) {
@@ -138,10 +172,13 @@ bool ArmIsolation::Requested(int argc, char* argv[]) {
     bool on = true;
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
-        if (std::strcmp(a, "--isolateArms") == 0) {
+        const char* bare = a;
+        while (*bare == '-')
+            ++bare;
+        if (bare != a && std::strcmp(bare, "isolateArms") == 0) {
             on = true;
-        } else if (std::strncmp(a, "--isolateArms=", sizeof("--isolateArms=") - 1) == 0) {
-            on = BoolValue(a + sizeof("--isolateArms=") - 1);
+        } else if (const char* v = OptionValue(a, "isolateArms")) {
+            on = BoolValue(v);
         }
     }
     return on;
@@ -192,22 +229,23 @@ std::string ArmIsolation::RunArm(const std::string& arm) {
     NS_ABORT_MSG_UNLESS(WriteAll(m_req, &len, sizeof len) && WriteAll(m_req, arm.data(), len),
                         "--isolateArms: the zygote is gone");
     std::string payload;
-    bool got = false;
     for (;;) {
         char kind = 0;
         NS_ABORT_MSG_UNLESS(ReadAll(m_res, &kind, 1), "--isolateArms: the zygote is gone");
-        if (kind == kResult) {
-            uint64_t n = 0;
-            NS_ABORT_MSG_UNLESS(ReadAll(m_res, &n, sizeof n), "--isolateArms: short result");
-            payload.resize(n);
-            NS_ABORT_MSG_UNLESS(ReadAll(m_res, payload.data(), n), "--isolateArms: short result");
-            got = true;
+        if (kind == kData) {
+            uint32_t n = 0;
+            NS_ABORT_MSG_UNLESS(ReadAll(m_res, &n, sizeof n), "--isolateArms: the zygote is gone");
+            const std::size_t at = payload.size();
+            payload.resize(at + n);
+            NS_ABORT_MSG_UNLESS(ReadAll(m_res, payload.data() + at, n),
+                                "--isolateArms: the zygote is gone");
             continue;
         }
         NS_ABORT_MSG_UNLESS(kind == kStatus, "--isolateArms: bad frame");
         int32_t st = 0;
         NS_ABORT_MSG_UNLESS(ReadAll(m_res, &st, sizeof st), "--isolateArms: short status");
-        NS_ABORT_MSG_UNLESS(got && st == 0,
+        // A worker exits 0 only after its whole payload is written.
+        NS_ABORT_MSG_UNLESS(st == 0 && !payload.empty(),
                             "arm '"
                                 << arm << "' failed in its own process ("
                                 << (st < 0            ? std::string("not started")
@@ -228,11 +266,8 @@ void ArmIsolation::WorkerBeginOutput() {
 void ArmIsolation::WorkerFinish(const std::string& payload) {
     std::cout.flush();
     std::fflush(nullptr);
-    const uint64_t n = payload.size();
-    if (!WriteAll(g_resultFd, &kResult, 1) || !WriteAll(g_resultFd, &n, sizeof n) ||
-        !WriteAll(g_resultFd, payload.data(), n)) {
-        _exit(123);
-    }
+    if (!WriteAll(g_resultFd, payload.data(), payload.size())) _exit(123);
+    close(g_resultFd);
     DumpCoverage();
     _exit(0);
 }

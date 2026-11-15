@@ -54,6 +54,8 @@ done
 run "--isolateArms=0" "$tmp/shared.txt"
 for arm in "${arms[@]}"; do
     rows=$(python3 "$bp" --get row --from perf --proto "$arm" "$tmp/shared.txt")
+    seeds=$(awk '{print $2}' <<<"$rows" | tr '\n' ' ')
+    [ "$seeds" = "3 4 " ] || fail "$arm (--isolateArms=0): ##PERF## seeds '$seeds', expected '3 4 '"
     awk '$1 != "paper" || $5 <= 0 || $6 != "-" {bad = 1} END {exit bad}' <<<"$rows" \
         || fail "$arm: bad ##PERF## rows (scenario paper, events > 0, maxrss '-'): $rows"
     echo "ok    $arm, shared process (--isolateArms=0): $(tr '\n' ';' <<<"$rows")"

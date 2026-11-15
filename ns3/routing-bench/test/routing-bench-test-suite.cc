@@ -340,16 +340,34 @@ private:
             NS_TEST_ASSERT_MSG_EQ(ArmRows(after, arm), rows,
                                   arm << ": same rows alone and after other arms");
         }
+        // hwmp, the fourth stock arm, brings its own 802.11s devices and needs
+        // 802.11a (#708): alone, and after heap-churn and aodv. The single
+        // dash is a spelling CommandLine reads too: the worker replaces it.
+        const std::vector<std::string> mesh{"--standard=80211a", "--rateManager=constant6"};
+        auto meshArgs = with(mesh);
+        meshArgs.push_back("--protocols=hwmp");
+        const std::string hwmpAlone = RunHarnessInChild(meshArgs, st);
+        NS_TEST_ASSERT_MSG_EQ(st, 0, "hwmp alone exits cleanly");
+        meshArgs.back() = "-protocols=heap-churn,aodv,hwmp";
+        const std::string hwmpAfter = RunHarnessInChild(meshArgs, st);
+        NS_TEST_ASSERT_MSG_EQ(st, 0, "heap-churn,aodv,hwmp exits cleanly");
+        const std::string hwmpRows = ArmRows(hwmpAlone, "hwmp");
+        NS_TEST_ASSERT_MSG_NE(hwmpRows.find("##RUN## 2 hwmp"), std::string::npos,
+                              "hwmp printed its rows");
+        NS_TEST_ASSERT_MSG_EQ(ArmRows(hwmpAfter, "hwmp"), hwmpRows,
+                              "hwmp: same rows alone and after other arms");
         // The same with the reshaping in the arm's own process is not this
         // test's business: --isolateArms isolates arms, not code. What it
         // fixes shows with it off: the aodv-spare-if rows after heap-churn
         // differ from the rows alone on glibc's allocator (not under ASan,
         // which does not reuse freed blocks soon), so that half is reported,
         // not asserted.
-        const std::string inAlone = RunHarnessInChild(
-            with({"--isolateArms=0", "--protocols=aodv-spare-if"}), st);
-        const std::string inAfter = RunHarnessInChild(
-            with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}), st);
+        const std::string inAlone =
+            RunHarnessInChild(with({"--isolateArms=0", "--protocols=aodv-spare-if"}), st);
+        NS_TEST_ASSERT_MSG_EQ(st, 0, "aodv-spare-if alone in one process exits cleanly");
+        const std::string inAfter =
+            RunHarnessInChild(with({"--isolateArms=0", "--protocols=heap-churn,aodv-spare-if"}), st);
+        NS_TEST_ASSERT_MSG_EQ(st, 0, "heap-churn,aodv-spare-if in one process exits cleanly");
         std::clog << "isolateArms=0: aodv-spare-if after heap-churn "
                   << (ArmRows(inAlone, "aodv-spare-if") == ArmRows(inAfter, "aodv-spare-if")
                           ? "matches"
