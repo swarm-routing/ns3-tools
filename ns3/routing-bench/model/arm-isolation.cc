@@ -16,15 +16,22 @@
 #include <iostream>
 
 // A --coverage build's counters, written before _exit skips the exit handlers
-// that would write them (null without --coverage).
-extern "C" void __gcov_dump() __attribute__((weak));
+// that would write them. The reference is strong, and only in a coverage
+// build (ROUTING_BENCH_GCOV_DUMP, set by CMakeLists.txt when ns3-build-contrib
+// instruments this module): a weak one never pulls __gcov_dump's member out of
+// the static libgcov, so it stayed null and no worker's counters were written.
+#ifdef ROUTING_BENCH_GCOV_DUMP
+extern "C" void __gcov_dump();
+#endif
 
 namespace routing_bench_detail {
 
 namespace {
 
 void DumpCoverage() {
-    if (__gcov_dump) __gcov_dump();
+#ifdef ROUTING_BENCH_GCOV_DUMP
+    __gcov_dump();  // every instrumented library of the process, not only this one
+#endif
 }
 
 constexpr int kMaxArgs = 1024;      // a worker's command line lives on the stack
