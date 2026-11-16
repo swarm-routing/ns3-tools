@@ -53,7 +53,10 @@ jobs:
     with:
       paths: python tools
       tests: python/tests/test_*.py tools/checks/tests/test_*.py
-      source: python/ns3_tool tools/checks
+      # One comma-separated value: the reusable workflow passes one `--source`
+      # per space-separated item, and coverage.py keeps only the last one, so
+      # `python/ns3_tool tools/checks` measured tools/checks alone.
+      source: python/ns3_tool,tools/checks
 
   module:
     # After the Python job, whose coverage the scan imports; but a ruff finding
