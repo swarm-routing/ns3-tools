@@ -74,6 +74,12 @@ Listed for traceability, because they were found next to the bugs above:
 - The nightly build against ns-3-dev that catches upstream changes early:
   swarm-routing/AntHocNet `.github/workflows/ns3-dev.yml`
 - ns-3's issue tracker: https://gitlab.com/nsnam/ns-3-dev/-/issues
+- The upstream bridge, which files and follows every report on ns-3's
+  GitLab: [swarm-routing/ns3-upstream-report](https://github.com/swarm-routing/ns3-upstream-report)
+  (its design: swarm-routing/ns3-upstream-report#2). Each reported `NS3-NNN`
+  has a mirror ticket there, which mirrors the GitLab notes and state every
+  6 h and flags stalls: NS3-001 swarm-routing/ns3-upstream-report#3, NS3-002
+  swarm-routing/ns3-upstream-report#4, NS3-003 swarm-routing/ns3-upstream-report#5.
 
 ## Adding a bug
 
