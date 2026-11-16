@@ -8,8 +8,8 @@
 | RCAPA ticket | [#238](https://github.com/swarm-routing/ns3-tools/issues/238) |
 | Status | open upstream; draft ready, not yet reported; worked around (3.48 pin) |
 | Found | 2026-10-15 on ns-3-dev ([swarm-routing/AntHocNet#656](https://github.com/swarm-routing/AntHocNet/issues/656)); 2026-11-01 on ns-3.49 ([swarm-routing/AntHocNet#843](https://github.com/swarm-routing/AntHocNet/issues/843), [swarm-routing/ns3-containers#35](https://github.com/swarm-routing/ns3-containers/issues/35)) |
-| Last checked | 2026-11-16: ns-3.49 and ns-3.48 sources read at their tags for this page; nsnam GitLab searched for `SendIcmpNoRoute` (no issue) |
-| ns-3 versions | run: 3.49 (hangs), 3.48 (finishes), ns-3-dev `230ea2a3` of 2026-10-08 (hangs); read: ns-3-dev `master` 2026-11-01 (same code); not affected: 3.48 and earlier (no `SendIcmpNoRoute`) |
+| Last checked | 2026-11-16: reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); ns-3.49 and ns-3.48 sources read at their tags for this page; nsnam GitLab searched for `SendIcmpNoRoute` (no issue) |
+| ns-3 versions | run: 3.49 (hangs), 3.48 (finishes), ns-3-dev `230ea2a3` of 2026-10-08 (hangs), ns-3-dev `master` `8ec9b4a190b52dadb5a3c35572dec687e1b75379` of 2026-11-11 (hangs, run 2026-11-16); not affected: 3.48 and earlier (no `SendIcmpNoRoute`) |
 | Modules | `internet` (`Ipv4L3Protocol`, `Icmpv4L4Protocol`, `LoopbackNetDevice`), `aodv` (`RoutingProtocol`, `RequestQueue`) |
 | Impact on our repositories | every run of stock `aodv` or an AODV-derived arm (AntHocNet's vendored `aomdv`) in a partitioned network never finishes on 3.49: ns3-tools' `aodv` arm check, AntHocNet's gates, package checks, kits and campaigns, ARA's and BeeAdHoc's AODV comparisons. Protocols that do not use AODV are unaffected. |
 | Upstream | not yet reported; draft in [swarm-routing/ns3-containers#55](https://github.com/swarm-routing/ns3-containers/issues/55) |
@@ -89,6 +89,14 @@ test/run.sh --stages integration ghcr.io/swarm-routing/ns3-dev:3.49-debug
 - To see the storm: `NS_LOG='Icmpv4L4Protocol=function|prefix_time'` on the
   `--time=10` harness run logged 1,284,336 `SendDestUnreach*` calls, all at
   `+8.146253127s` (#843).
+- On ns-3-dev `master` `8ec9b4a1` (2026-11-11), built with the toolchain of
+  `ns3-dev:latest-debug` (`-d default`), `manet-canary` at `c8334e8` unchanged
+  ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)): aodv `--range=100` killed at 120 s (exit 124), with
+  `--seed=2` killed at 60 s; `--time=5` finishes in 0.1 s (before the storm);
+  aodv `--range=175` 1.6 s, olsr 0.4 s, dsdv 0.5 s. With the ICMP log on
+  `--time=10`: 2,456,656 `SendDestUnreach*` calls, all at `+5.160000000s`.
+  `SendIcmpNoRoute` and `RouteInputError` are still at
+  `ipv4-l3-protocol.cc:652` and `:1414`.
 
 ## Root cause: five whys
 
@@ -350,10 +358,10 @@ rejected: the images stay stock ns-3.
 **Status: draft ready, not yet reported.** The maintainer decided on
 2026-11-09 to file it
 ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6748640772)).
-Pending pre-filing step: re-run the reproducer on current ns-3-dev `master`
-and record the commit in swarm-routing/ns3-containers#55 and
-[#238](https://github.com/swarm-routing/ns3-tools/issues/238) (in progress on
-2026-11-16). Then the maintainer
+The pre-filing step is done: the reproducer still hangs on ns-3-dev `master`
+`8ec9b4a1` (2026-11-11), recorded on swarm-routing/ns3-containers#55
+([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)) and [#238](https://github.com/swarm-routing/ns3-tools/issues/238).
+What remains is the maintainer filing it. Then the maintainer
 files it on the nsnam GitLab under their own account and the link goes into
 #55, #35, swarm-routing/AntHocNet#843 and this page.
 
@@ -383,7 +391,7 @@ RFC 1812 §4.3.2.7); the suggested fix, in `SendIcmpNoRoute` or in
 | 2026-11-01 | ns-3.49 images: AntHocNet's CI steps hang; swarm-routing/AntHocNet#843 and swarm-routing/ns3-containers#35 opened, root cause found |
 | 2026-11-02 | `manet-canary` and the integration stage merged (swarm-routing/ns3-containers#48), strict XFAIL; maintainer picks option A; AntHocNet's CI moves with the 3.48 pin (swarm-routing/AntHocNet#842); #656 closed as a duplicate; upstream draft opened (swarm-routing/ns3-containers#55) |
 | 2026-11-09 | maintainer decides to file upstream after a re-run on ns-3-dev `master` |
-| 2026-11-16 | registered as NS3-001, RCAPA ticket #238; nsnam GitLab still has no report; the re-run on ns-3-dev `master` is in progress (result to #238 and swarm-routing/ns3-containers#55) |
+| 2026-11-16 | registered as NS3-001, RCAPA ticket #238; reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); nsnam GitLab still has no report |
 
 ## Links
 
