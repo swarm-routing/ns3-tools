@@ -28,11 +28,16 @@ namespace routing_bench_detail {
 
 namespace {
 
+// The lines that run after __gcov_dump() in a process that then _exits (this
+// function's end, and each `_exit` after a DumpCoverage call) are counted by
+// gcov only after the dump, so they always read 0 although every worker runs
+// them: GCOVR_EXCL_LINE keeps them out of the report, so a PR touching the
+// worker's exit path is not measured lower than the code it tests (#223).
 void DumpCoverage() {
 #ifdef ROUTING_BENCH_GCOV_DUMP
     __gcov_dump();  // every instrumented library of the process, not only this one
 #endif
-}
+}  // GCOVR_EXCL_LINE
 
 constexpr int kMaxArgs = 1024;      // a worker's command line lives on the stack
 constexpr uint32_t kMaxName = 255;  // an arm name, in a stack buffer
@@ -127,7 +132,7 @@ bool BoolValue(const char* v) {
         if (!ReadAll(reqFd, &len, sizeof len) || len == 0 || len > kMaxName ||
             !ReadAll(reqFd, name, len)) {
             DumpCoverage();
-            _exit(0);  // the parent is done (or gone)
+            _exit(0);  // the parent is done (or gone)  GCOVR_EXCL_LINE
         }
         name[len] = '\0';
         // The worker's payload comes through a pipe of its own, relayed here
@@ -276,7 +281,7 @@ void ArmIsolation::WorkerFinish(const std::string& payload) {
     if (!WriteAll(g_resultFd, payload.data(), payload.size())) _exit(123);
     close(g_resultFd);
     DumpCoverage();
-    _exit(0);
+    _exit(0);  // GCOVR_EXCL_LINE
 }
 
 void PayloadReader::Bad(bool bad, const char* what) {
