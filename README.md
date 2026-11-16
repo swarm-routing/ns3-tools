@@ -20,6 +20,10 @@ contract v1 stable ([docs/markers.md](docs/markers.md) "Stability").
 
 What each release must show, and what blocks what: [docs/roadmap.md](docs/roadmap.md).
 
+Upstream ns-3 bugs the org found, their workarounds and their upstream status:
+[docs/ns3-bugs.md](docs/ns3-bugs.md) (the index), one root-cause record each in
+[docs/ns3-rcapa/](docs/ns3-rcapa/README.md).
+
 How to work here, for people and AI agents alike: [AGENTS.md](AGENTS.md) has
 the rules and how to build and verify; the org conventions are in
 [CONTRIBUTING.md](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md).
