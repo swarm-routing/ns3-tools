@@ -6,6 +6,12 @@ register, [`../ns3-bugs.md`](../ns3-bugs.md), is the index: one row per bug,
 with its status and a link to its RCAPA here. This directory holds the detail
 (maintainer decision 2026-11-16, [swarm-routing/ns3-tools#233](https://github.com/swarm-routing/ns3-tools/issues/233)).
 
+This register is for upstream ns-3 bugs (`NS3-NNN`) and for defects in how we
+carry a report upstream (`PROC-NNN`). A regression in a published release of
+ns3-tools' **own** code is an `NST-NNN` RCAPA in
+[`../rcapa/README.md`](../rcapa/README.md), which holds that flow
+(swarm-routing/.github ADR-0003).
+
 | RCAPA | Register row | RCAPA ticket |
 |-------|--------------|--------------|
 | [`ns3-rcapa-aodv-icmp-livelock.md`](ns3-rcapa-aodv-icmp-livelock.md) | NS3-001: ns-3.49 AODV livelocks in a zero-time ICMP "net unreachable" storm | [swarm-routing/ns3-tools#238](https://github.com/swarm-routing/ns3-tools/issues/238) |
