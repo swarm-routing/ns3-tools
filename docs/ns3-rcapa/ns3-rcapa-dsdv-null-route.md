@@ -18,8 +18,9 @@ DSDV's `LookForQueuedPackets()` ignores a failed `LookupRoute()` and sends the
 queued packet on a default-constructed route whose output device is null.
 `Ipv4L3Protocol::SendRealOut` then asserts `interface >= 0`, or, with asserts
 compiled out, indexes with -1 and crashes with empty stderr. DSDV's hard-coded
-`GetAddress(1, 0)` advertisement makes the failed lookup certain on any node
-with more than one interface.
+`GetAddress(1, 0)` advertisement leaves a multi-interface neighbour's other
+addresses unadvertised, so a queued packet whose next hop is one of them
+fails the lookup: on the tested three-node chain this happens every run.
 
 ## Problem and detection
 
@@ -104,7 +105,9 @@ interfaces.
    frames on single-interface Wi-Fi and was closed in 2025 assuming a fix; MR
    !1652 (2023) moved the `NS_ASSERT(route)` that cannot fire and left the
    unchecked lookup (#434 §2). Our own per-PR satellite gates used a 1×2
-   anchor, one interface per node, where the defect cannot occur (#434 §5).
+   anchor, one interface per node, which does not exercise the deterministic
+   multi-interface trigger (#434 §5); whether the rare single-interface crash
+   of #503 is the same path is likely but not proven.
 
 **Root cause.** An unchecked routing-table lookup in
 `LookForQueuedPackets()` turns a missing next hop into a send on a device-less

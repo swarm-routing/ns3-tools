@@ -57,9 +57,15 @@ reshapes the heap (6000 blocks, two in three freed)
 (`ns3/routing-bench/test/routing-bench-test-suite.cc`).
 
 ```bash
-docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
+git clone https://github.com/swarm-routing/ns3-tools && cd ns3-tools
+git checkout bb2951e1d25eee3e5d5260927f6288a443fa4ee8
+docker run --rm -v "$PWD:/src:ro" \
+    ghcr.io/swarm-routing/ns3-dev@sha256:dc9d3e01e3c9c90060fc2f97f576446ff9affcbd5b240193cab7deeefffc1dd6 \
     ns3-build-contrib --test routing-bench=/src/ns3/routing-bench
 ```
+
+(The digest is `latest-debug` = `3.49-debug` as read from GHCR on 2026-11-16;
+the recorded runs used the tag `latest-debug` on that day.)
 
 - Expected (deterministic ns-3): `ArmIsolationTest` reports
   `isolateArms=0: aodv-spare-if after heap-churn matches its rows alone (#198)`.
@@ -105,14 +111,19 @@ docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
    before the sockets were created, in any code in the process.
 4. **Why does the order reach the results?** AODV draws
    `m_uniformRandomVariable->GetInteger(0, 10)` once per socket inside the
-   loop, when it sends a RREQ (`SendRequest`, `aodv-routing-protocol.cc:1123`,
-   `:1150`), forwards one (`RecvRequest`, `:1490`, `:1512`), sends a hello
-   (`SendHello`, `:1984`, `:2011`) and RERRs (`SendRerrWhenNoRouteToForward`,
-   `:2129`; `SendRerrMessage`, `:2182`, `:2223`); ns-3.49. So the order decides
-   which interface gets which draw, and the order of the sends. DSDV iterates
-   its map for every triggered and periodic update
-   (`dsdv-routing-protocol.cc:820` `SendTriggeredUpdate`, `:902`
-   `SendPeriodicUpdate`).
+   socket-map loop when it sends a RREQ (`SendRequest`,
+   `aodv-routing-protocol.cc:1123`, `:1150`), forwards one (`RecvRequest`,
+   `:1490`, `:1512`) and sends a hello (`SendHello`, `:1984`, `:2011`); ns-3.49.
+   So the order decides which interface gets which draw, and the order of the
+   sends; this is the path #198's patched control isolated. The RERR paths
+   differ: `SendRerrWhenNoRouteToForward` iterates the socket map but sends
+   directly, with no draw (`:2129`), and `SendRerrMessage` draws its jitter
+   while iterating the interfaces of the precursors, not the socket map
+   (`:2182`, `:2223`). DSDV draws nothing per socket: its triggered and
+   periodic updates send in socket-map order (`dsdv-routing-protocol.cc:820`
+   `SendTriggeredUpdate`, `:902` `SendPeriodicUpdate`), and the periodic
+   timer's jitter is drawn once after the loop (`:959–960`). That DSDV's send
+   order alone moves results is a hypothesis: no DSDV run has shown it yet.
 5. **Why did our checks not see it for months?** With one interface per node
    each map holds one entry and the order cannot vary, so every single-interface
    harness passed (#362: `anthocnet-compare` passed, `isl-grid` failed). And a
@@ -122,8 +133,9 @@ docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
    it").
 
 **Root cause.** A container keyed by pointer value orders by heap address;
-stock AODV and DSDV use one as the per-interface iteration order and consume
-random draws in that order.
+stock AODV and DSDV use one as the per-interface iteration order. AODV consumes
+random draws in that order (shown); DSDV only sends in it (its effect on
+results not yet shown).
 
 ## Diagrams
 

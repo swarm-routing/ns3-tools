@@ -11,7 +11,7 @@
 | Last checked | 2026-11-16: reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); ns-3.49 and ns-3.48 sources read at their tags for this page; nsnam GitLab searched for `SendIcmpNoRoute` (no issue) |
 | ns-3 versions | run: 3.49 (hangs), 3.48 (finishes), ns-3-dev `230ea2a3` of 2026-10-08 (hangs), ns-3-dev `master` `8ec9b4a190b52dadb5a3c35572dec687e1b75379` of 2026-11-11 (hangs, run 2026-11-16); not affected: 3.48 and earlier (no `SendIcmpNoRoute`) |
 | Modules | `internet` (`Ipv4L3Protocol`, `Icmpv4L4Protocol`, `LoopbackNetDevice`), `aodv` (`RoutingProtocol`, `RequestQueue`) |
-| Impact on our repositories | every run of stock `aodv` or an AODV-derived arm (AntHocNet's vendored `aomdv`) in a partitioned network never finishes on 3.49: ns3-tools' `aodv` arm check, AntHocNet's gates, package checks, kits and campaigns, ARA's and BeeAdHoc's AODV comparisons. Protocols that do not use AODV are unaffected. |
+| Impact on our repositories | on 3.49, a run of stock `aodv` or an AODV-derived arm (AntHocNet's vendored `aomdv`) never finishes once AODV's request queue drops a packet, which needs the network to stay partitioned long enough (a short run can finish first: `--time=5` does). Affected: ns3-tools' `aodv` arm check, AntHocNet's gates, package checks, kits and campaigns, ARA's and BeeAdHoc's AODV comparisons. Protocols that do not use AODV are unaffected. |
 | Upstream | not yet reported; draft in [swarm-routing/ns3-containers#55](https://github.com/swarm-routing/ns3-containers/issues/55) |
 
 ns-3.49 answers every routing failure of a forwarding node with an ICMP
@@ -130,8 +130,11 @@ test/run.sh --stages integration ghcr.io/swarm-routing/ns3-dev:3.49-debug
    `m_ipForward` and a multicast or broadcast destination
    (`ipv4-l3-protocol.cc:660–661`), and `SendDestUnreach` builds the error
    without looking at the offending packet (`icmpv4-l4-protocol.cc:175–188`).
-   So it answers ICMP errors and packets the node itself originated, which
-   RFC 1122 §3.2.2 and RFC 1812 §4.3.2.7 say it must not. The AODV side did
+   So it answers ICMP errors, which RFC 1122 §3.2.2 and RFC 1812 §4.3.2.7 say
+   it must not (they also exclude non-initial fragments and sources that do
+   not name a single host), and packets the node itself originated, which no
+   RFC forbids but which only loop back into this node (our proposal for
+   ns-3, not an RFC requirement). The AODV side did
    not change: the 3.48 → 3.49 AODV diff is only parameter validation and
    `iana::` renames, and `aodv-rqueue.cc` and `loopback-net-device.cc` are
    unchanged (#843; `aodv-rqueue.cc` re-diffed for this page: identical apart
@@ -348,7 +351,7 @@ rejected: the images stay stock ns-3.
 | Action | Where | Status |
 |--------|-------|--------|
 | Integration stage: `manet-canary` AODV/OLSR/DSDV under a wall-clock budget on every image before it is tagged | swarm-routing/ns3-containers `test/integration.sh` ([swarm-routing/ns3-containers#42](https://github.com/swarm-routing/ns3-containers/issues/42), [swarm-routing/ns3-containers#48](https://github.com/swarm-routing/ns3-containers/pull/48)) | done |
-| Strict expected failure `3.49 sparse-aodv ns3-containers#35 timeout`: shows as XFAIL on every run, fails the stage if the run ever finishes (so the pin is removed on time) | swarm-routing/ns3-containers `test/known-failures.txt` | done (XFAIL on all 9 images) |
+| Strict expected failure `3.49 sparse-aodv ns3-containers#35 timeout`: shows as XFAIL on every run and fails the stage if a 3.49 run ever finishes. It is keyed to exactly `3.49`, so it does **not** detect a fixed later release: that transition is #238's and swarm-routing/ns3-containers#35's step (re-run the reproducer on each new `latest`, then drop the pins) | swarm-routing/ns3-containers `test/known-failures.txt` | done (XFAIL on all 9 images) |
 | Downstream canary: the org's modules must build and pass on a new digest before `latest-*` moves | [swarm-routing/ns3-containers#44](https://github.com/swarm-routing/ns3-containers/issues/44) | open |
 | Nightly build against ns-3-dev, which found this before 3.49 shipped; an arm smoke there is still a to-do in #656 | swarm-routing/AntHocNet `ns3-dev.yml` ([swarm-routing/AntHocNet#658](https://github.com/swarm-routing/AntHocNet/pull/658)) | done (nightly); arm smoke open |
 | On the first ns-3 release with the fix: re-run the reproducer on `latest`, drop the XFAIL entry and every 3.48 pin, close #35 and #843 | swarm-routing/ns3-containers#35, swarm-routing/AntHocNet#843 | open |
@@ -378,8 +381,13 @@ RFC 1812 §4.3.2.7); the suggested fix, in `SendIcmpNoRoute` or in
 - send nothing if the offending packet is an ICMP error (protocol 1, type 3,
   4, 5, 11 or 12);
 - send nothing if its source is one of this node's own addresses, or
-  `0.0.0.0`;
+  `0.0.0.0` (the own-address half is our proposal for ns-3, not an RFC rule);
 - optionally, nothing for non-initial fragments.
+
+One correction for the maintainer's review of the draft: RFC 1122 §3.2.2
+lists a non-initial fragment among the datagrams an ICMP error MUST NOT be
+sent for, so that guard is required by the RFC, not optional (noted on
+swarm-routing/ns3-containers#55; the draft is edited there).
 
 ## Timeline
 
