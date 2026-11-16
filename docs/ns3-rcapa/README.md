@@ -11,6 +11,7 @@ with its status and a link to its RCAPA here. This directory holds the detail
 | [`ns3-rcapa-aodv-icmp-livelock.md`](ns3-rcapa-aodv-icmp-livelock.md) | NS3-001: ns-3.49 AODV livelocks in a zero-time ICMP "net unreachable" storm | [#238](https://github.com/swarm-routing/ns3-tools/issues/238) |
 | [`ns3-rcapa-socket-map-heap-order.md`](ns3-rcapa-socket-map-heap-order.md) | NS3-002: AODV and DSDV order per-interface sockets by heap address | [#239](https://github.com/swarm-routing/ns3-tools/issues/239) |
 | [`ns3-rcapa-dsdv-null-route.md`](ns3-rcapa-dsdv-null-route.md) | NS3-003: DSDV sends on a route with a null output device | [#240](https://github.com/swarm-routing/ns3-tools/issues/240) |
+| [`ns3-rcapa-upstream-report-tracking.md`](ns3-rcapa-upstream-report-tracking.md) | PROC-001 (process, ours): upstream reports have no owner after filing | [#247](https://github.com/swarm-routing/ns3-tools/issues/247) |
 
 ## What an RCAPA answers
 
@@ -37,7 +38,10 @@ with its status and a link to its RCAPA here. This directory holds the detail
 ## Adding a bug: the ticket first
 
 Every ns-3 bug, and every investigation of one, has its own **RCAPA ticket**
-(maintainer rule 2026-11-16). The full procedure is in the register's
+(maintainer rule 2026-11-16). The ticket stays open until the fix is in an
+ns-3 release we run: filing upstream is a step, not the end (PROC-001). A
+defect in how we carry a report (not in ns-3) gets a `PROC-NNN` RCAPA in the
+same format. The full procedure is in the register's
 ["Adding a bug"](../ns3-bugs.md#adding-a-bug); in short:
 
 1. **Open the RCAPA ticket first**: an issue in swarm-routing/ns3-tools titled
