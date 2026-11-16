@@ -44,7 +44,8 @@ forwarding, RERR, hello). On a node with one interface the order cannot vary;
 on a node with several (isl-grid, leo-walker, any arm that adds devices) it
 decides which interface gets which draw. In one process the heap is what the
 earlier arms left, so the same seed gave another row when an earlier arm
-allocated differently (ns3-tools#198, swarm-routing/AntHocNet#1039, #362). It
+allocated differently (ns3-tools#198, swarm-routing/AntHocNet#1039, #362;
+[`docs/ns3-bugs.md`](../../docs/ns3-bugs.md) NS3-002). It
 is stock code, so the harness isolates instead: by default each arm runs in a
 fresh worker process. `RunHarness` forks a zygote before it allocates
 anything; for each arm the zygote forks a worker that re-runs the command

@@ -6,7 +6,8 @@ name: ns-3
 # ghcr.io/swarm-routing/ns3-dev: build + test.py on the release ns-3 supports
 # (`latest`, debug and sanitized), then the stock arms must each deliver.
 #
-# TEMPORARY EXCEPTION (ns3-containers#35, AntHocNet#843, option A): on
+# TEMPORARY EXCEPTION (ns3-containers#35, AntHocNet#843, docs/ns3-bugs.md
+# NS3-001, option A): on
 # ns-3.49 stock AODV livelocks, so the aodv arm's delivery check runs on
 # ns3-dev:3.48 until the first ns-3 release with the fix reaches `latest`;
 # then move `aodv` into the latest leg and drop the 3.48 one.
