@@ -72,7 +72,8 @@ docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
   tree as control: `DIFFERS` in 3 of 3 tries on each, and the suite passes on
   both, so `--isolateArms` holds on `master` too ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)). The run
   shows *that* the rows differ, not by how much; the `delaySum`/`l3tx`
-  magnitudes above come from #198's torus run and were not repeated.
+  magnitudes above come from #198's torus run and were not repeated: measuring
+  them on `master` is [#244](https://github.com/swarm-routing/ns3-tools/issues/244).
 - Image: `ghcr.io/swarm-routing/ns3-dev:latest-debug` = `3.49-debug`
   (`sha256:dc9d3e01e3c9c90060fc2f97f576446ff9affcbd5b240193cab7deeefffc1dd6`
   on 2026-11-16).
@@ -259,6 +260,8 @@ The code is stock ns-3: we do not patch it (org golden rule 2; the
 | `ArmIsolationTest`: every stock arm and `aodv-spare-if` alone vs after `heap-churn` and other arms must be identical when isolated; the stock single-process behaviour is reported | ns3-tools `routing-bench-test-suite.cc` (#202, #212) | done |
 | The suite also runs through the bare test runner, with a second arm module installed | ns3-tools `.github/workflows/ns3.yml` ([#214](https://github.com/swarm-routing/ns3-tools/pull/214), #212) | done |
 | AntHocNet's seed-independence gate (order case for `isl-grid`) | swarm-routing/AntHocNet `tools/checks/check-seed-independence.py` (#471) | done |
+| Measure the dependence on ns-3-dev `master` with numbers (the differing `##RUN##` fields, #198's torus `delaySum`/`l3tx`) for the upstream text | [#244](https://github.com/swarm-routing/ns3-tools/issues/244) | open |
+| A standalone stock-ns-3 reproducer for the upstream report | [#241](https://github.com/swarm-routing/ns3-tools/issues/241) | open |
 | On a fixed ns-3 release: a multi-interface, single-process (`--isolateArms=0`) heap-churn case that must pass for `aodv` and `dsdv` | [#206](https://github.com/swarm-routing/ns3-tools/issues/206), [#239](https://github.com/swarm-routing/ns3-tools/issues/239) | open (needs the upstream fix) |
 
 ## Upstream report
