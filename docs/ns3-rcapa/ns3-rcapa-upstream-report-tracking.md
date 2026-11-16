@@ -56,10 +56,27 @@ those notes while the register's NS3-003 row was being recorded.
 3. **Why did closing on filing look right?** Neither the issue taxonomy nor
    AntHocNet ADR-0013 says that an upstream report's ticket stays open until
    the fix ships. A finding with a working workaround reads as done.
-4. **Why did no automation catch it?** Every org pipeline reads GitHub only:
-   org-bot, release-sync, zenodo, pr-status. Nothing reads gitlab.com, so a
-   stalled merge request, a competing one or an unanswered note is invisible to
-   the record.
+4. **Why did no automation catch it?** No org job reads an upstream issue,
+   merge request or note. The jobs that keep the record current read GitHub
+   only:
+   [`org-bot.yml`](https://github.com/swarm-routing/.github/blob/main/.github/workflows/org-bot.yml),
+   [`epics.yml`](https://github.com/swarm-routing/.github/blob/main/.github/workflows/epics.yml),
+   [`zenodo.yml`](https://github.com/swarm-routing/.github/blob/main/.github/workflows/zenodo.yml)
+   (GitHub releases against Zenodo),
+   [`repo-settings.yml`](https://github.com/swarm-routing/.github/blob/main/.github/workflows/repo-settings.yml),
+   the site's
+   [`release-sync.yml`](https://github.com/swarm-routing/swarm-routing.github.io/blob/main/.github/workflows/release-sync.yml)
+   and the `pr-status` tool. A search on 2026-11-16 (`git grep -i gitlab` over
+   `.github/workflows/` and `tools/` on `main` of swarm-routing/.github, the
+   site, ns3-tools, AntHocNet and ns3-containers) finds `gitlab.com` only where
+   ns-3's source is cloned or named: AntHocNet
+   [`ns3-dev.yml:66`](https://github.com/swarm-routing/AntHocNet/blob/main/.github/workflows/ns3-dev.yml#L66)
+   and [`bake.yml:59`](https://github.com/swarm-routing/AntHocNet/blob/main/.github/workflows/bake.yml#L59),
+   ns3-containers
+   [`tools/ns3_matrix.py:97`](https://github.com/swarm-routing/ns3-containers/blob/main/tools/ns3_matrix.py#L97),
+   and the SBOM references in `reusable-ns3-image.yml` and ns3-containers'
+   `publish-images.yml`. A stalled merge request, a competing one or an
+   unanswered note therefore never reaches the record.
 5. **Why has that gap survived?** Before 2026-11-16 there was no single list of
    our upstream reports to watch. NS3-003's history is spread over five
    AntHocNet issues and PRs, and the register (#235) with its RCAPA ticket rule
