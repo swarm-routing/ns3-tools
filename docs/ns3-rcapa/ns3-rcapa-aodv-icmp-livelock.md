@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | ID | NS3-001 |
-| RCAPA ticket | [#238](https://github.com/swarm-routing/ns3-tools/issues/238) |
+| RCAPA ticket | [swarm-routing/ns3-tools#238](https://github.com/swarm-routing/ns3-tools/issues/238) |
 | Status | open upstream; draft ready, not yet reported; worked around (3.48 pin) |
 | Found | 2026-10-15 on ns-3-dev ([swarm-routing/AntHocNet#656](https://github.com/swarm-routing/AntHocNet/issues/656)); 2026-11-01 on ns-3.49 ([swarm-routing/AntHocNet#843](https://github.com/swarm-routing/AntHocNet/issues/843), [swarm-routing/ns3-containers#35](https://github.com/swarm-routing/ns3-containers/issues/35)) |
 | Last checked | 2026-11-16: reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); ns-3.49 and ns-3.48 sources read at their tags for this page; nsnam GitLab searched for `SendIcmpNoRoute` (no issue) |
@@ -34,12 +34,12 @@ CPU until it is killed. No error, no output after the last line printed.
    `SendIcmpNoRoute` ([swarm-routing/AntHocNet#656](https://github.com/swarm-routing/AntHocNet/issues/656),
    from [swarm-routing/AntHocNet#658](https://github.com/swarm-routing/AntHocNet/pull/658)).
 2. 2026-11-01: moving AntHocNet's CI onto `ghcr.io/swarm-routing/ns3-dev:3.49`
-   (digest `sha256:24870b78…`, as recorded in #843; [swarm-routing/AntHocNet#842](https://github.com/swarm-routing/AntHocNet/pull/842)),
+   (digest `sha256:24870b78…`, as recorded in swarm-routing/AntHocNet#843; [swarm-routing/AntHocNet#842](https://github.com/swarm-routing/AntHocNet/pull/842)),
    the "3-D field smoke" ran about 1 h 55 min, both `package routing-bench*`
    jobs about 1 h 57 min, and "Run every kit" hit its 58 min job timeout. The
    e2e, ISL-grid, unit-test and ASan smokes passed in seconds
    ([swarm-routing/AntHocNet#843](https://github.com/swarm-routing/AntHocNet/issues/843)).
-3. Narrowed locally under `timeout` to stock AODV (table in #843 and
+3. Narrowed locally under `timeout` to stock AODV (table in swarm-routing/AntHocNet#843 and
    [swarm-routing/ns3-containers#35](https://github.com/swarm-routing/ns3-containers/issues/35)):
 
 | Scenario | ns-3.48 | ns-3.49 |
@@ -82,13 +82,13 @@ test/run.sh --stages integration ghcr.io/swarm-routing/ns3-dev:3.49-debug
   `sha256:dc9d3e01e3c9c90060fc2f97f576446ff9affcbd5b240193cab7deeefffc1dd6`,
   also `latest-debug`) and `ghcr.io/swarm-routing/ns3-dev:3.48-debug`
   (`sha256:d81ec51cd842c1fcae85f82c55973615cdde4c7a477c831897d62a6fdb62c2c2`).
-  The original runs used `ns3-dev:3.49` `sha256:24870b78…` (#843).
+  The original runs used `ns3-dev:3.49` `sha256:24870b78…` (swarm-routing/AntHocNet#843).
 - The trigger needs a network partitioned long enough for AODV's request queue
   to drop packets. Stock `examples/routing/manet-routing-compare` with its
   defaults does **not** reproduce it.
 - To see the storm: `NS_LOG='Icmpv4L4Protocol=function|prefix_time'` on the
   `--time=10` harness run logged 1,284,336 `SendDestUnreach*` calls, all at
-  `+8.146253127s` (#843).
+  `+8.146253127s` (swarm-routing/AntHocNet#843).
 - On ns-3-dev `master` `8ec9b4a1` (2026-11-11), built with the toolchain of
   `ns3-dev:latest-debug` (`-d default`), `manet-canary` at `c8334e8` unchanged
   ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)): aodv `--range=100` killed at 120 s (exit 124), with
@@ -102,14 +102,14 @@ test/run.sh --stages integration ghcr.io/swarm-routing/ns3-dev:3.49-debug
 
 1. **Why does the run never finish?** Simulated time stops: every event the
    cycle schedules is at the current instant. 1,284,336 ICMP errors were logged
-   at `+8.146253127s` and nothing after (#843). The loopback device delivers
+   at `+8.146253127s` and nothing after (swarm-routing/AntHocNet#843). The loopback device delivers
    with zero delay: `LoopbackNetDevice::Send` schedules `Receive` after
    `Seconds(0)` (`src/internet/model/loopback-net-device.cc:174–175`, ns-3.49).
 2. **Why does each step schedule another?** gdb on the hung process shows the
    cycle `LoopbackNetDevice::Receive` → `Ipv4L3Protocol::Receive` →
    `aodv::RoutingProtocol::RouteInput` → `DeferredRouteOutput` →
-   `RequestQueue::Enqueue` → `RequestQueue::Drop` → the error callback (#843,
-   [ns3-containers#35](https://github.com/swarm-routing/ns3-containers/issues/35)).
+   `RequestQueue::Enqueue` → `RequestQueue::Drop` → the error callback (swarm-routing/AntHocNet#843,
+   [swarm-routing/ns3-containers#35](https://github.com/swarm-routing/ns3-containers/issues/35)).
    A full queue drops its oldest entry on every enqueue
    (`src/aodv/model/aodv-rqueue.cc:52–55`), and a drop calls the entry's error
    callback (`aodv-rqueue.cc:143`), which for a forwarded packet is
@@ -137,7 +137,7 @@ test/run.sh --stages integration ghcr.io/swarm-routing/ns3-dev:3.49-debug
    ns-3, not an RFC requirement). The AODV side did
    not change: the 3.48 → 3.49 AODV diff is only parameter validation and
    `iana::` renames, and `aodv-rqueue.cc` and `loopback-net-device.cc` are
-   unchanged (#843; `aodv-rqueue.cc` re-diffed for this page: identical apart
+   unchanged (swarm-routing/AntHocNet#843; `aodv-rqueue.cc` re-diffed for this page: identical apart
    from line numbers).
 
 **Root cause.** ns-3.49's new `Ipv4L3Protocol::SendIcmpNoRoute` (ns-3 issue
@@ -351,10 +351,10 @@ rejected: the images stay stock ns-3.
 | Action | Where | Status |
 |--------|-------|--------|
 | Integration stage: `manet-canary` AODV/OLSR/DSDV under a wall-clock budget on every image before it is tagged | swarm-routing/ns3-containers `test/integration.sh` ([swarm-routing/ns3-containers#42](https://github.com/swarm-routing/ns3-containers/issues/42), [swarm-routing/ns3-containers#48](https://github.com/swarm-routing/ns3-containers/pull/48)) | done |
-| Strict expected failure `3.49 sparse-aodv ns3-containers#35 timeout`: shows as XFAIL on every run and fails the stage if a 3.49 run ever finishes. It is keyed to exactly `3.49`, so it does **not** detect a fixed later release: that transition is #238's and swarm-routing/ns3-containers#35's step (re-run the reproducer on each new `latest`, then drop the pins) | swarm-routing/ns3-containers `test/known-failures.txt` | done (XFAIL on all 9 images) |
+| Strict expected failure `3.49 sparse-aodv swarm-routing/ns3-containers#35 timeout`: shows as XFAIL on every run and fails the stage if a 3.49 run ever finishes. It is keyed to exactly `3.49`, so it does **not** detect a fixed later release: that transition is swarm-routing/ns3-tools#238's and swarm-routing/ns3-containers#35's step (re-run the reproducer on each new `latest`, then drop the pins) | swarm-routing/ns3-containers `test/known-failures.txt` | done (XFAIL on all 9 images) |
 | Downstream canary: the org's modules must build and pass on a new digest before `latest-*` moves | [swarm-routing/ns3-containers#44](https://github.com/swarm-routing/ns3-containers/issues/44) | open |
-| Nightly build against ns-3-dev, which found this before 3.49 shipped; an arm smoke there is still a to-do in #656 | swarm-routing/AntHocNet `ns3-dev.yml` ([swarm-routing/AntHocNet#658](https://github.com/swarm-routing/AntHocNet/pull/658)) | done (nightly); arm smoke open |
-| On the first ns-3 release with the fix: re-run the reproducer on `latest`, drop the XFAIL entry and every 3.48 pin, close #35 and #843 | swarm-routing/ns3-containers#35, swarm-routing/AntHocNet#843 | open |
+| Nightly build against ns-3-dev, which found this before 3.49 shipped; an arm smoke there is still a to-do in swarm-routing/AntHocNet#656 | swarm-routing/AntHocNet `ns3-dev.yml` ([swarm-routing/AntHocNet#658](https://github.com/swarm-routing/AntHocNet/pull/658)) | done (nightly); arm smoke open |
+| On the first ns-3 release with the fix: re-run the reproducer on `latest`, drop the XFAIL entry and every 3.48 pin, close swarm-routing/ns3-containers#35 and swarm-routing/AntHocNet#843 | swarm-routing/ns3-containers#35, swarm-routing/AntHocNet#843 | open |
 
 ## Upstream report
 
@@ -363,10 +363,10 @@ rejected: the images stay stock ns-3.
 ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6748640772)).
 The pre-filing step is done: the reproducer still hangs on ns-3-dev `master`
 `8ec9b4a1` (2026-11-11), recorded on swarm-routing/ns3-containers#55
-([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)) and [#238](https://github.com/swarm-routing/ns3-tools/issues/238).
+([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)) and [swarm-routing/ns3-tools#238](https://github.com/swarm-routing/ns3-tools/issues/238).
 What remains is the maintainer filing it. Then the maintainer
 files it on the nsnam GitLab under their own account and the link goes into
-#55, #35, swarm-routing/AntHocNet#843 and this page.
+swarm-routing/ns3-containers#55, swarm-routing/ns3-containers#35, swarm-routing/AntHocNet#843 and this page.
 
 The text to file is kept in one place,
 [swarm-routing/ns3-containers#55](https://github.com/swarm-routing/ns3-containers/issues/55)
@@ -397,9 +397,9 @@ swarm-routing/ns3-containers#55; the draft is edited there).
 | 2026-10-08 | ns-3-dev `230ea2a3`: the AODV run spins (found 2026-10-15) |
 | 2026-10-15 | swarm-routing/AntHocNet#656 opened from the ns-3-dev nightly |
 | 2026-11-01 | ns-3.49 images: AntHocNet's CI steps hang; swarm-routing/AntHocNet#843 and swarm-routing/ns3-containers#35 opened, root cause found |
-| 2026-11-02 | `manet-canary` and the integration stage merged (swarm-routing/ns3-containers#48), strict XFAIL; maintainer picks option A; AntHocNet's CI moves with the 3.48 pin (swarm-routing/AntHocNet#842); #656 closed as a duplicate; upstream draft opened (swarm-routing/ns3-containers#55) |
+| 2026-11-02 | `manet-canary` and the integration stage merged (swarm-routing/ns3-containers#48), strict XFAIL; maintainer picks option A; AntHocNet's CI moves with the 3.48 pin (swarm-routing/AntHocNet#842); swarm-routing/AntHocNet#656 closed as a duplicate; upstream draft opened (swarm-routing/ns3-containers#55) |
 | 2026-11-09 | maintainer decides to file upstream after a re-run on ns-3-dev `master` |
-| 2026-11-16 | registered as NS3-001, RCAPA ticket #238; reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); nsnam GitLab still has no report |
+| 2026-11-16 | registered as NS3-001, RCAPA ticket swarm-routing/ns3-tools#238; reproduced on ns-3-dev `master` `8ec9b4a1` ([comment](https://github.com/swarm-routing/ns3-containers/issues/55#issuecomment-6904704191)); nsnam GitLab still has no report |
 
 ## Links
 

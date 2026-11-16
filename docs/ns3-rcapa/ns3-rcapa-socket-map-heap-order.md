@@ -5,14 +5,14 @@
 | | |
 |---|---|
 | ID | NS3-002 |
-| RCAPA ticket | [#239](https://github.com/swarm-routing/ns3-tools/issues/239) |
+| RCAPA ticket | [swarm-routing/ns3-tools#239](https://github.com/swarm-routing/ns3-tools/issues/239) |
 | Status | open upstream; draft ready, not yet reported; worked around (`--isolateArms`) |
-| Found | 2026-08-05 in [swarm-routing/AntHocNet#362](https://github.com/swarm-routing/AntHocNet/issues/362); cause shown 2026-11-15 in [#198](https://github.com/swarm-routing/ns3-tools/issues/198) |
+| Found | 2026-08-05 in [swarm-routing/AntHocNet#362](https://github.com/swarm-routing/AntHocNet/issues/362); cause shown 2026-11-15 in [swarm-routing/ns3-tools#198](https://github.com/swarm-routing/ns3-tools/issues/198) |
 | Last checked | 2026-11-16: `ArmIsolationTest` re-run on ns-3-dev `master` `8ec9b4a1` and on ns-3.49, 3 tries each ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)); the declarations and loops below read at the ns-3.48 and ns-3.49 tags |
-| ns-3 versions | run: 3.42 (#362's CI), 3.48 (swarm-routing/AntHocNet#1039), 3.49 (#198, #212, 2026-11-16), ns-3-dev `master` `8ec9b4a190b52dadb5a3c35572dec687e1b75379` of 2026-11-11 (2026-11-16); read: 3.42, 3.48, 3.49; earlier releases not checked |
+| ns-3 versions | run: 3.42 (swarm-routing/AntHocNet#362's CI), 3.48 (swarm-routing/AntHocNet#1039), 3.49 (swarm-routing/ns3-tools#198, swarm-routing/ns3-tools#212, 2026-11-16), ns-3-dev `master` `8ec9b4a190b52dadb5a3c35572dec687e1b75379` of 2026-11-11 (2026-11-16); read: 3.42, 3.48, 3.49; earlier releases not checked |
 | Modules | `aodv` (`RoutingProtocol::m_socketAddresses`, `m_socketSubnetBroadcastAddresses`), `dsdv` (`RoutingProtocol::m_socketAddresses`); `core` (`Ptr<T>::operator<`) |
 | Impact on our repositories | any scenario with more than one interface per node (AntHocNet's `isl-grid` and `leo-walker`, routing-bench test arms) gives stock AODV and DSDV rows that move with unrelated allocations: byte-identity checks and attribution controls fail on them. Single-interface Wi-Fi scenarios (routing-compare's own) are unaffected. No published conclusion changed: the paired deltas stayed within noise (swarm-routing/AntHocNet#675). |
-| Upstream | not yet reported; text in [#206](https://github.com/swarm-routing/ns3-tools/issues/206) |
+| Upstream | not yet reported; text in [swarm-routing/ns3-tools#206](https://github.com/swarm-routing/ns3-tools/issues/206) |
 
 Stock AODV and DSDV keep one socket per interface in a `std::map` keyed by
 `Ptr<Socket>`, which orders by raw pointer, so the maps iterate in heap-address
@@ -47,7 +47,7 @@ depending only on what ran or allocated before it in the process.
    point-to-point torus, 3000 dummy allocations moved `delaySum`
    3.7024096 → 4.3779808 and `l3tx` 2432 → 2431; with the maps ordered by
    interface index every churn level gave the identical row
-   ([#198](https://github.com/swarm-routing/ns3-tools/issues/198#issuecomment-6896069314)).
+   ([swarm-routing/ns3-tools#198](https://github.com/swarm-routing/ns3-tools/issues/198#issuecomment-6896069314)).
 
 ## Reproduction
 
@@ -68,8 +68,8 @@ docker run --rm -v "$PWD:/src:ro" \
 the recorded runs used the tag `latest-debug` on that day.)
 
 - Expected (deterministic ns-3): `ArmIsolationTest` reports
-  `isolateArms=0: aodv-spare-if after heap-churn matches its rows alone (#198)`.
-- Actual (stock ns-3.49, glibc allocator): `... DIFFERS from its rows alone (#198)`.
+  `isolateArms=0: aodv-spare-if after heap-churn matches its rows alone (swarm-routing/ns3-tools#198)`.
+- Actual (stock ns-3.49, glibc allocator): `... DIFFERS from its rows alone (swarm-routing/ns3-tools#198)`.
   The test reports this half and does not assert it; under ASan (the sanitized
   image) freed blocks are not reused soon, so it may print `matches`.
 - On ns-3-dev `master` `8ec9b4a1` (routing-bench at `bb2951e` in `contrib/`,
@@ -78,18 +78,18 @@ the recorded runs used the tag `latest-debug` on that day.)
   tree as control: `DIFFERS` in 3 of 3 tries on each, and the suite passes on
   both, so `--isolateArms` holds on `master` too ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)). The run
   shows *that* the rows differ, not by how much; the `delaySum`/`l3tx`
-  magnitudes above come from #198's torus run and were not repeated: measuring
-  them on `master` is [#244](https://github.com/swarm-routing/ns3-tools/issues/244).
+  magnitudes above come from swarm-routing/ns3-tools#198's torus run and were not repeated: measuring
+  them on `master` is [swarm-routing/ns3-tools#244](https://github.com/swarm-routing/ns3-tools/issues/244).
 - Image: `ghcr.io/swarm-routing/ns3-dev:latest-debug` = `3.49-debug`
   (`sha256:dc9d3e01e3c9c90060fc2f97f576446ff9affcbd5b240193cab7deeefffc1dd6`
   on 2026-11-16).
 - Seeds: the suite's own command lines. The same command line from different
   starting heaps (churn 0, 50, 500, 5000 allocations) gave three different run-2
   rows, e.g. `##RUN## 2 aodv-spare-if 53.3 5.0 11.5 …` against
-  `53.3 2.7 4.5 …` ([#212](https://github.com/swarm-routing/ns3-tools/pull/212)).
+  `53.3 2.7 4.5 …` ([swarm-routing/ns3-tools#212](https://github.com/swarm-routing/ns3-tools/pull/212)).
 - Minimal program: the test arms above, at
   [`routing-bench-test-suite.cc` at `bb2951e`](https://github.com/swarm-routing/ns3-tools/blob/bb2951e1d25eee3e5d5260927f6288a443fa4ee8/ns3/routing-bench/test/routing-bench-test-suite.cc).
-  No standalone ns-3 program is committed yet; the upstream text in #206
+  No standalone ns-3 program is committed yet; the upstream text in swarm-routing/ns3-tools#206
   describes one (3×3 point-to-point torus, stock AODV, UDP traffic, a few
   thousand allocations kept alive before a second `Simulator::Run()`).
 
@@ -97,7 +97,7 @@ the recorded runs used the tag `latest-debug` on that day.)
 
 1. **Why does the same seed give different AODV rows?** Which interface sends
    first, and with which random jitter, changes between runs. Ordering the maps
-   by interface index made every churn level give the identical row (#198), so
+   by interface index made every churn level give the identical row (swarm-routing/ns3-tools#198), so
    the order of the per-interface loop is what varies.
 2. **Why does the loop order vary?** AODV and DSDV iterate
    `std::map<Ptr<Socket>, Ipv4InterfaceAddress>`
@@ -115,7 +115,7 @@ the recorded runs used the tag `latest-debug` on that day.)
    `aodv-routing-protocol.cc:1123`, `:1150`), forwards one (`RecvRequest`,
    `:1490`, `:1512`) and sends a hello (`SendHello`, `:1984`, `:2011`); ns-3.49.
    So the order decides which interface gets which draw, and the order of the
-   sends; this is the path #198's patched control isolated. The RERR paths
+   sends; this is the path swarm-routing/ns3-tools#198's patched control isolated. The RERR paths
    differ: `SendRerrWhenNoRouteToForward` iterates the socket map but sends
    directly, with no draw (`:2129`), and `SendRerrMessage` draws its jitter
    while iterating the interfaces of the precursors, not the socket map
@@ -126,10 +126,10 @@ the recorded runs used the tag `latest-debug` on that day.)
    order alone moves results is a hypothesis: no DSDV run has shown it yet.
 5. **Why did our checks not see it for months?** With one interface per node
    each map holds one entry and the order cannot vary, so every single-interface
-   harness passed (#362: `anthocnet-compare` passed, `isl-grid` failed). And a
+   harness passed (swarm-routing/AntHocNet#362: `anthocnet-compare` passed, `isl-grid` failed). And a
    "run it twice" determinism gate allocates identically both times; only a
    change in *preceding* work (another arm, another protocol order, a static
-   in unrelated code) exposes it (#362 "Why the existing gates did not catch
+   in unrelated code) exposes it (swarm-routing/AntHocNet#362 "Why the existing gates did not catch
    it").
 
 **Root cause.** A container keyed by pointer value orders by heap address;
@@ -259,8 +259,8 @@ The code is stock ns-3: we do not patch it (org golden rule 2; the
 
 | Action | Where | Status |
 |--------|-------|--------|
-| Each arm in its own worker process, forked from one zygote, by default (`--isolateArms`) | ns3-tools [#202](https://github.com/swarm-routing/ns3-tools/pull/202), v1.1.0; `ns3/routing-bench/README.md` "Each arm in its own process" | done |
-| The isolation test forks every run from one prepared state | ns3-tools [#212](https://github.com/swarm-routing/ns3-tools/pull/212), v1.1.1 | done |
+| Each arm in its own worker process, forked from one zygote, by default (`--isolateArms`) | ns3-tools [swarm-routing/ns3-tools#202](https://github.com/swarm-routing/ns3-tools/pull/202), v1.1.0; `ns3/routing-bench/README.md` "Each arm in its own process" | done |
+| The isolation test forks every run from one prepared state | ns3-tools [swarm-routing/ns3-tools#212](https://github.com/swarm-routing/ns3-tools/pull/212), v1.1.1 | done |
 | AntHocNet's own adapter orders its maps by the bound device's interface index | [swarm-routing/AntHocNet#471](https://github.com/swarm-routing/AntHocNet/pull/471) | done |
 | The `leo-walker` gate runs the stock `aodv` arm in its own process | [swarm-routing/AntHocNet#1059](https://github.com/swarm-routing/AntHocNet/pull/1059) | done |
 | The `isl-grid` order case compares the `anthocnet` rows only ("aodv is upstream ns-3 and still pointer-keyed"); methodology's threat-to-validity note | swarm-routing/AntHocNet `tools/checks/check-seed-independence.py`, `docs/benchmarks/methodology.md` | done |
@@ -269,25 +269,25 @@ The code is stock ns-3: we do not patch it (org golden rule 2; the
 
 | Action | Where | Status |
 |--------|-------|--------|
-| `ArmIsolationTest`: every stock arm and `aodv-spare-if` alone vs after `heap-churn` and other arms must be identical when isolated; the stock single-process behaviour is reported | ns3-tools `routing-bench-test-suite.cc` (#202, #212) | done |
-| The suite also runs through the bare test runner, with a second arm module installed | ns3-tools `.github/workflows/ns3.yml` ([#214](https://github.com/swarm-routing/ns3-tools/pull/214), #212) | done |
-| AntHocNet's seed-independence gate (order case for `isl-grid`) | swarm-routing/AntHocNet `tools/checks/check-seed-independence.py` (#471) | done |
-| Measure the dependence on ns-3-dev `master` with numbers (the differing `##RUN##` fields, #198's torus `delaySum`/`l3tx`) for the upstream text | [#244](https://github.com/swarm-routing/ns3-tools/issues/244) | open |
-| A standalone stock-ns-3 reproducer for the upstream report | [#241](https://github.com/swarm-routing/ns3-tools/issues/241) | open |
-| On a fixed ns-3 release: a multi-interface, single-process (`--isolateArms=0`) heap-churn case that must pass for `aodv` and `dsdv` | [#206](https://github.com/swarm-routing/ns3-tools/issues/206), [#239](https://github.com/swarm-routing/ns3-tools/issues/239) | open (needs the upstream fix) |
+| `ArmIsolationTest`: every stock arm and `aodv-spare-if` alone vs after `heap-churn` and other arms must be identical when isolated; the stock single-process behaviour is reported | ns3-tools `routing-bench-test-suite.cc` (swarm-routing/ns3-tools#202, swarm-routing/ns3-tools#212) | done |
+| The suite also runs through the bare test runner, with a second arm module installed | ns3-tools `.github/workflows/ns3.yml` ([swarm-routing/ns3-tools#214](https://github.com/swarm-routing/ns3-tools/pull/214), swarm-routing/ns3-tools#212) | done |
+| AntHocNet's seed-independence gate (order case for `isl-grid`) | swarm-routing/AntHocNet `tools/checks/check-seed-independence.py` (swarm-routing/AntHocNet#471) | done |
+| Measure the dependence on ns-3-dev `master` with numbers (the differing `##RUN##` fields, swarm-routing/ns3-tools#198's torus `delaySum`/`l3tx`) for the upstream text | [swarm-routing/ns3-tools#244](https://github.com/swarm-routing/ns3-tools/issues/244) | open |
+| A standalone stock-ns-3 reproducer for the upstream report | [swarm-routing/ns3-tools#241](https://github.com/swarm-routing/ns3-tools/issues/241) | open |
+| On a fixed ns-3 release: a multi-interface, single-process (`--isolateArms=0`) heap-churn case that must pass for `aodv` and `dsdv` | [swarm-routing/ns3-tools#206](https://github.com/swarm-routing/ns3-tools/issues/206), [swarm-routing/ns3-tools#239](https://github.com/swarm-routing/ns3-tools/issues/239) | open (needs the upstream fix) |
 
 ## Upstream report
 
 **Status: draft ready, not yet reported.** The ready-to-file text (title,
 modules and versions, description, how to reproduce, expected, proposed fix)
-is kept in [#206](https://github.com/swarm-routing/ns3-tools/issues/206),
+is kept in [swarm-routing/ns3-tools#206](https://github.com/swarm-routing/ns3-tools/issues/206),
 "Ready-to-file upstream bug text"; edits are made there. The maintainer files
-it on the nsnam GitLab under their own account; the link then goes into #206,
-#239 and the register. The stock dependence was re-shown on ns-3-dev `master` `8ec9b4a1`
+it on the nsnam GitLab under their own account; the link then goes into swarm-routing/ns3-tools#206,
+swarm-routing/ns3-tools#239 and the register. The stock dependence was re-shown on ns-3-dev `master` `8ec9b4a1`
 ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)); a standalone stock-ns-3 program for the report is
-[#241](https://github.com/swarm-routing/ns3-tools/issues/241).
+[swarm-routing/ns3-tools#241](https://github.com/swarm-routing/ns3-tools/issues/241).
 
-Proposed fix (from #206): key the maps by interface index, for example
+Proposed fix (from swarm-routing/ns3-tools#206): key the maps by interface index, for example
 `std::map<uint32_t, std::pair<Ptr<Socket>, Ipv4InterfaceAddress>>`, so
 iteration follows interface order; the send loops keep their bodies and the
 lookups by socket or address become lookups by interface index.
@@ -299,12 +299,12 @@ lookups by socket or address become lookups by interface index.
 | 2026-08-05 | swarm-routing/AntHocNet#362: `isl-grid` rows depend on `--protocols` order |
 | 2026-09-24 | swarm-routing/AntHocNet#471 merged: AntHocNet's own maps ordered by interface; the order case gates `anthocnet` only |
 | 2026-10-16 | swarm-routing/AntHocNet#675: stock AODV satellite rows move with unrelated code (v2.2.0 re-baseline) |
-| 2026-11-15 | swarm-routing/AntHocNet#1039 (the `leo-walker` gate), #198 (cause shown), #202 merged (`--isolateArms`, v1.1.0), #206 opened with the upstream text, swarm-routing/AntHocNet#1059 merged; #211/#212 (the test's own heap, v1.1.1) |
-| 2026-11-16 | registered as NS3-002, RCAPA ticket #239; `ArmIsolationTest` still reports `DIFFERS` on ns-3-dev `master` `8ec9b4a1` and on 3.49, 3/3 each ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)) |
+| 2026-11-15 | swarm-routing/AntHocNet#1039 (the `leo-walker` gate), swarm-routing/ns3-tools#198 (cause shown), swarm-routing/ns3-tools#202 merged (`--isolateArms`, v1.1.0), swarm-routing/ns3-tools#206 opened with the upstream text, swarm-routing/AntHocNet#1059 merged; swarm-routing/ns3-tools#211 and swarm-routing/ns3-tools#212 (the test's own heap, v1.1.1) |
+| 2026-11-16 | registered as NS3-002, RCAPA ticket swarm-routing/ns3-tools#239; `ArmIsolationTest` still reports `DIFFERS` on ns-3-dev `master` `8ec9b4a1` and on 3.49, 3/3 each ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)) |
 
 ## Links
 
-- Investigation: [swarm-routing/AntHocNet#362](https://github.com/swarm-routing/AntHocNet/issues/362), [swarm-routing/AntHocNet#675](https://github.com/swarm-routing/AntHocNet/issues/675), [swarm-routing/AntHocNet#1039](https://github.com/swarm-routing/AntHocNet/issues/1039), [#198](https://github.com/swarm-routing/ns3-tools/issues/198), [#211](https://github.com/swarm-routing/ns3-tools/issues/211)
-- Fixes on our side: [swarm-routing/AntHocNet#471](https://github.com/swarm-routing/AntHocNet/pull/471), [swarm-routing/AntHocNet#1040](https://github.com/swarm-routing/AntHocNet/pull/1040) (hid it), [swarm-routing/AntHocNet#1059](https://github.com/swarm-routing/AntHocNet/pull/1059), [#202](https://github.com/swarm-routing/ns3-tools/pull/202), [#212](https://github.com/swarm-routing/ns3-tools/pull/212), [#214](https://github.com/swarm-routing/ns3-tools/pull/214)
-- Upstream text: [#206](https://github.com/swarm-routing/ns3-tools/issues/206); RCAPA ticket: [#239](https://github.com/swarm-routing/ns3-tools/issues/239)
+- Investigation: [swarm-routing/AntHocNet#362](https://github.com/swarm-routing/AntHocNet/issues/362), [swarm-routing/AntHocNet#675](https://github.com/swarm-routing/AntHocNet/issues/675), [swarm-routing/AntHocNet#1039](https://github.com/swarm-routing/AntHocNet/issues/1039), [swarm-routing/ns3-tools#198](https://github.com/swarm-routing/ns3-tools/issues/198), [swarm-routing/ns3-tools#211](https://github.com/swarm-routing/ns3-tools/issues/211)
+- Fixes on our side: [swarm-routing/AntHocNet#471](https://github.com/swarm-routing/AntHocNet/pull/471), [swarm-routing/AntHocNet#1040](https://github.com/swarm-routing/AntHocNet/pull/1040) (hid it), [swarm-routing/AntHocNet#1059](https://github.com/swarm-routing/AntHocNet/pull/1059), [swarm-routing/ns3-tools#202](https://github.com/swarm-routing/ns3-tools/pull/202), [swarm-routing/ns3-tools#212](https://github.com/swarm-routing/ns3-tools/pull/212), [swarm-routing/ns3-tools#214](https://github.com/swarm-routing/ns3-tools/pull/214)
+- Upstream text: [swarm-routing/ns3-tools#206](https://github.com/swarm-routing/ns3-tools/issues/206); RCAPA ticket: [swarm-routing/ns3-tools#239](https://github.com/swarm-routing/ns3-tools/issues/239)
 - ns-3 sources (ns-3.49 tag): [`aodv-routing-protocol.h`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/aodv/model/aodv-routing-protocol.h), [`aodv-routing-protocol.cc`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/aodv/model/aodv-routing-protocol.cc), [`dsdv-routing-protocol.h`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/dsdv/model/dsdv-routing-protocol.h), [`dsdv-routing-protocol.cc`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/dsdv/model/dsdv-routing-protocol.cc), [`ptr.h`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/core/model/ptr.h)
