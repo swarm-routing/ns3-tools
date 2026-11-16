@@ -8,8 +8,8 @@
 | RCAPA ticket | [#239](https://github.com/swarm-routing/ns3-tools/issues/239) |
 | Status | open upstream; draft ready, not yet reported; worked around (`--isolateArms`) |
 | Found | 2026-08-05 in [swarm-routing/AntHocNet#362](https://github.com/swarm-routing/AntHocNet/issues/362); cause shown 2026-11-15 in [#198](https://github.com/swarm-routing/ns3-tools/issues/198) |
-| Last checked | 2026-11-16: the declarations and loops below read at the ns-3.48 and ns-3.49 tags for this page |
-| ns-3 versions | run: 3.42 (#362's CI), 3.48 (swarm-routing/AntHocNet#1039), 3.49 (#198, #212); read: 3.42, 3.48, 3.49; earlier releases not checked |
+| Last checked | 2026-11-16: `ArmIsolationTest` re-run on ns-3-dev `master` `8ec9b4a1` and on ns-3.49, 3 tries each ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)); the declarations and loops below read at the ns-3.48 and ns-3.49 tags |
+| ns-3 versions | run: 3.42 (#362's CI), 3.48 (swarm-routing/AntHocNet#1039), 3.49 (#198, #212, 2026-11-16), ns-3-dev `master` `8ec9b4a190b52dadb5a3c35572dec687e1b75379` of 2026-11-11 (2026-11-16); read: 3.42, 3.48, 3.49; earlier releases not checked |
 | Modules | `aodv` (`RoutingProtocol::m_socketAddresses`, `m_socketSubnetBroadcastAddresses`), `dsdv` (`RoutingProtocol::m_socketAddresses`); `core` (`Ptr<T>::operator<`) |
 | Impact on our repositories | any scenario with more than one interface per node (AntHocNet's `isl-grid` and `leo-walker`, routing-bench test arms) gives stock AODV and DSDV rows that move with unrelated allocations: byte-identity checks and attribution controls fail on them. Single-interface Wi-Fi scenarios (routing-compare's own) are unaffected. No published conclusion changed: the paired deltas stayed within noise (swarm-routing/AntHocNet#675). |
 | Upstream | not yet reported; text in [#206](https://github.com/swarm-routing/ns3-tools/issues/206) |
@@ -66,6 +66,13 @@ docker run --rm -v "$PWD:/src:ro" ghcr.io/swarm-routing/ns3-dev:latest-debug \
 - Actual (stock ns-3.49, glibc allocator): `... DIFFERS from its rows alone (#198)`.
   The test reports this half and does not assert it; under ASan (the sanitized
   image) freed blocks are not reused soon, so it may print `matches`.
+- On ns-3-dev `master` `8ec9b4a1` (routing-bench at `bb2951e` in `contrib/`,
+  built with the `ns3-dev:latest-debug` toolchain, `-d default`, then
+  `test-runner --suite=routing-bench --verbose`) and on the image's ns-3.49
+  tree as control: `DIFFERS` in 3 of 3 tries on each, and the suite passes on
+  both, so `--isolateArms` holds on `master` too ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)). The run
+  shows *that* the rows differ, not by how much; the `delaySum`/`l3tx`
+  magnitudes above come from #198's torus run and were not repeated.
 - Image: `ghcr.io/swarm-routing/ns3-dev:latest-debug` = `3.49-debug`
   (`sha256:dc9d3e01e3c9c90060fc2f97f576446ff9affcbd5b240193cab7deeefffc1dd6`
   on 2026-11-16).
@@ -261,8 +268,9 @@ modules and versions, description, how to reproduce, expected, proposed fix)
 is kept in [#206](https://github.com/swarm-routing/ns3-tools/issues/206),
 "Ready-to-file upstream bug text"; edits are made there. The maintainer files
 it on the nsnam GitLab under their own account; the link then goes into #206,
-#239 and the register. Before filing, re-run the #206 reproducer on ns-3-dev
-`master` and record the commit on #239.
+#239 and the register. The stock dependence was re-shown on ns-3-dev `master` `8ec9b4a1`
+([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)); a standalone stock-ns-3 program for the report is
+[#241](https://github.com/swarm-routing/ns3-tools/issues/241).
 
 Proposed fix (from #206): key the maps by interface index, for example
 `std::map<uint32_t, std::pair<Ptr<Socket>, Ipv4InterfaceAddress>>`, so
@@ -277,7 +285,7 @@ lookups by socket or address become lookups by interface index.
 | 2026-09-24 | swarm-routing/AntHocNet#471 merged: AntHocNet's own maps ordered by interface; the order case gates `anthocnet` only |
 | 2026-10-16 | swarm-routing/AntHocNet#675: stock AODV satellite rows move with unrelated code (v2.2.0 re-baseline) |
 | 2026-11-15 | swarm-routing/AntHocNet#1039 (the `leo-walker` gate), #198 (cause shown), #202 merged (`--isolateArms`, v1.1.0), #206 opened with the upstream text, swarm-routing/AntHocNet#1059 merged; #211/#212 (the test's own heap, v1.1.1) |
-| 2026-11-16 | registered as NS3-002, RCAPA ticket #239 |
+| 2026-11-16 | registered as NS3-002, RCAPA ticket #239; `ArmIsolationTest` still reports `DIFFERS` on ns-3-dev `master` `8ec9b4a1` and on 3.49, 3/3 each ([comment](https://github.com/swarm-routing/ns3-tools/issues/206#issuecomment-6904893072)) |
 
 ## Links
 
