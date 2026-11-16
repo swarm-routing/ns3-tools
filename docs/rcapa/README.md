@@ -1,11 +1,12 @@
 # RCAPA: regressions in a release of swarm-routing/ns3-tools
 
 An **RCAPA** (root cause analysis with corrective and preventive actions) is
-the full record of one **regression in a published release** of this
-project: something that worked in a released version and broke after a
-change. A bug or change that never reached a release needs none (an
-ordinary `bug` issue is enough), and an upstream ns-3 bug is an `NS3-NNN` in
-swarm-routing/ns3-tools. The org's rule and its decision table are in
+the full record of one **regression in a published library**: a version of
+it that another project consumes (a release pinned by a lock, PyPI, a vcpkg
+port) worked, and a later one broke. A bug or change that never reached a
+published version needs none (an ordinary `bug` issue is enough), a Docker
+image needs one only when its composition is the cause, and an upstream
+ns-3 bug is an `NS3-NNN` in swarm-routing/ns3-tools. The org's rule and its decision table are in
 [CONTRIBUTING.md, "RCAPA"](https://github.com/swarm-routing/.github/blob/main/CONTRIBUTING.md#rcapa)
 ([ADR-0003](https://github.com/swarm-routing/.github/blob/main/docs/adr/0003-rcapa-for-ns3-bugs-and-released-regressions.md)).
 This page is the project's flow and its index.
@@ -18,42 +19,37 @@ each in [`../ns3-rcapa/`](../ns3-rcapa/README.md) (form *ns-3 bug (RCAPA)*,
 labels `rcapa` and `ns3-upstream`, always required), and a defect in how we
 carry a report upstream is a `PROC-NNN` there.
 
-A **published release** of ns3-tools is a `v*` tag of this repository: its
-GitHub release with the `routing-bench` tarball and the `ns3-tool` wheel and
-sdist (`tools/release/dist.sh`), the `ns3-tools` package on PyPI
-(`release.yml`'s `pypi` job), the release image (`image` job), archived on
-Zenodo (concept DOI
-[10.5281/zenodo.24136068](https://doi.org/10.5281/zenodo.24136068)).
-AntHocNet pins a release in `ns3-tools.lock`. The CLI and marker contract v1
-are frozen since v1.0.0 (`docs/markers.md`), so a changed marker line or reader
-output against a release is a regression. A defect introduced after the last
-tag and fixed before the next one never reached a release and needs no
-RCAPA; a defect in a released version needs one whenever it is found
-(`git tag --contains <commit>`).
+**Published** versions of ns3-tools are its `v*` releases as consumers pin
+them: AntHocNet's `ns3-tools.lock` (the `routing-bench` harness and the
+readers) and the `ns3-tools` package on PyPI. The CLI and marker contract v1
+are frozen since v1.0.0 (`docs/markers.md`), so a changed marker line or
+reader output against a pinned release is a regression. A consumer that
+finds one (AntHocNet after an `ns3-tools.lock` bump) opens an `NST-NNN` here
+with its failing check as the reproducer.
 
 | | |
 |---|---|
-| Published as | `v*` tags: GitHub release (routing-bench tarball, wheel, sdist) + Zenodo DOI, `ns3-tools` on PyPI, the release image; pinned by AntHocNet's `ns3-tools.lock` |
+| Published as | `v*` releases pinned by AntHocNet's `ns3-tools.lock`, and `ns3-tools` on PyPI |
 | ID prefix | `NST-NNN` (ns3-tools' own code); `NS3-NNN` and `PROC-NNN` stay in [`../ns3-bugs.md`](../ns3-bugs.md) |
-| Ticket | an issue in swarm-routing/ns3-tools, form *Regression in a release (RCAPA)*, title `[rcapa] NST-NNN <short description>`, labels `rcapa` and `bug` |
-| Verified by | the reproducer against the failing tag and the last good one: `make check` (ruff, the Python self-tests), the readers byte-identical on `python/tests/fixtures/cells/` and on AntHocNet's corpus (`NS3_TOOL_CELLS`), `scenario_check` and `change_plan` verdicts equal to AntHocNet's, the harness suite and stock-arm checks of `ns3.yml`, `tools/checks/check-perf-markers.sh` for `##PERF##` |
-| Corrective action | the fix PR with a fixture or self-test that fails without it; a marker change follows golden rule 11 (append only, or a schema version bump with the readers and benchmarks' parsers); then a release bump and the PyPI publish |
-| Preventive action | the fixture, corpus case or harness check that would have caught it before the tag |
-| Closes when | the fix is merged **and** a `v*` release carries it (tag, version DOI read from Zenodo, the PyPI version), and AntHocNet's lock bump is merged if it was affected |
+| Ticket | an issue in swarm-routing/ns3-tools, form *Regression in a release (RCAPA)*, title `[rcapa] NST-NNN <short description>`, labels `rcapa` and `bug`, opened from the consumer's finding |
+| Verified by | the consumer's failing check on the new release against the old one; then `make check` (ruff, the Python self-tests), the readers byte-identical on `python/tests/fixtures/cells/` and on AntHocNet's corpus (`NS3_TOOL_CELLS`), `scenario_check` and `change_plan` verdicts equal to AntHocNet's, the harness suite and stock-arm checks of `ns3.yml` |
+| Corrective action | the fix PR with a fixture or self-test that fails without it; a marker change follows golden rule 11; then a release and the PyPI publish |
+| Preventive action | the fixture, corpus case or harness check that would have caught it before the release |
+| Closes when | an ns3-tools release carries the fix (tag, PyPI version) **and** the consumer that found it runs green on its lock bump to that release |
 
 ```mermaid
 sequenceDiagram
-    participant U as Consumer or campaign
+    participant C as AntHocNet, after a lock bump
     participant T as RCAPA ticket
     participant G as self-tests and harness checks
     participant M as main
-    participant R as Release, PyPI and Zenodo
-    U->>T: a released ns3-tool or harness output changed
-    T->>G: reproduce against the failing and last good tag
-    T->>M: fix with a fixture that fails without it
-    M->>R: release bump and PyPI publish
-    R->>U: consumer lock bumped
-    U->>T: tag, DOI and PyPI version recorded, ticket closed
+    participant R as ns3-tools release and PyPI
+    C->>T: a check that passed on the old version fails on the new one
+    T->>G: reproduce with the consumer's check, new version against old
+    T->>M: fix with a test that fails without it
+    M->>R: a release carries the fix
+    R->>C: the consumer moves to it and runs green
+    C->>T: release and green run recorded, ticket closed
 ```
 
 ## Index
@@ -68,8 +64,9 @@ sequenceDiagram
 2. Copy [`_template.md`](_template.md) to `rcapa-<short-description>.md`
    (lowercase, hyphens: what breaks, not where it was found), and add its row
    to the index in the same pull request.
-3. The ticket stays open until the corrective action is merged **and a
-   release carries the fix**; record that release in the index.
+3. The ticket stays open until the corrective action is merged, a release
+   carries the fix, and the consumer that found it runs green on that
+   release; record the release in the index.
 
 ## What an RCAPA answers
 
