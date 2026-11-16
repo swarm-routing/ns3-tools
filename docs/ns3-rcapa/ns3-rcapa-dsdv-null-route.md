@@ -5,14 +5,14 @@
 | | |
 |---|---|
 | ID | NS3-003 |
-| RCAPA ticket | [#240](https://github.com/swarm-routing/ns3-tools/issues/240) |
+| RCAPA ticket | [swarm-routing/ns3-tools#240](https://github.com/swarm-routing/ns3-tools/issues/240) |
 | Status | reported; fix proposed upstream (merge request open, stalled since 2026-09-16: `need_rebase`, no reviewer; PROC-001); worked around (AntHocNet refuses `dsdv` on multi-interface grids) |
 | Found | 2026-08-01 in [swarm-routing/AntHocNet#281](https://github.com/swarm-routing/AntHocNet/issues/281); root cause 2026-08-14 in [swarm-routing/AntHocNet#420](https://github.com/swarm-routing/AntHocNet/issues/420) |
-| Last checked | 2026-11-16: nsnam/ns-3-dev#1364 and !2985 open, !2985 `need_rebase` with no reviewer, !3011 an alternative whose author defers to !2985 (GitLab API and the MR thread); ns-3.49's `dsdv-routing-protocol.cc` read at its tag, the defect lines unchanged |
+| Last checked | 2026-11-16: [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364) and [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) open, [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) `need_rebase` with no reviewer, [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011) an alternative whose author defers to [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) (GitLab API and the MR thread); ns-3.49's `dsdv-routing-protocol.cc` read at its tag, the defect lines unchanged |
 | ns-3 versions | run: 3.36, 3.42, 3.48, ns-3-dev `master` `b677fede` (2026-08-15); read: 3.48, 3.49 (same lines); fixed in: none yet |
 | Modules | `dsdv` (`RoutingProtocol::LookForQueuedPackets`, the update senders, `RoutingTableEntry`); the fault surfaces in `internet` (`Ipv4L3Protocol::SendRealOut`) |
-| Impact on our repositories | stock `dsdv` cannot run on a topology with more than one interface per node (AntHocNet's ISL torus, `isl-grid`): it aborts, or crashes silently in optimized builds. Single-interface runs can hit it rarely (upstream #503: about 0.27 % of 7800 runs). |
-| Upstream | [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364), fix [!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) |
+| Impact on our repositories | stock `dsdv` cannot run on a topology with more than one interface per node (AntHocNet's ISL torus, `isl-grid`): it aborts, or crashes silently in optimized builds. Single-interface runs can hit it rarely (upstream [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503): about 0.27 % of 7800 runs). |
+| Upstream | [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364), fix [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) |
 
 DSDV's `LookForQueuedPackets()` ignores a failed `LookupRoute()` and sends the
 queued packet on a default-constructed route whose output device is null.
@@ -47,7 +47,7 @@ verification against ns-3-dev `master`
 
 The minimal program, stock modules only:
 [`dsdv-multi-interface-crash.cc` at AntHocNet `cde1b35b`](https://github.com/swarm-routing/AntHocNet/blob/cde1b35b8155eb763ea240adcfe5a063ffcfe91b/docs/handoffs/ns3-dsdv-upstream/dsdv-multi-interface-crash.cc)
-(the repaired copy; the one inlined in #434's body lost its template arguments
+(the repaired copy; the one inlined in swarm-routing/AntHocNet#434's body lost its template arguments
 to HTML escaping). A three-node point-to-point chain
 `n0 — 10.1.1.0/30 — n1 — 10.1.2.0/30 — n2`, traffic n2 → n0; only n1 has two
 interfaces.
@@ -71,10 +71,10 @@ interfaces.
 - No randomness: the fault is deterministic on the chain.
 - Images: `ghcr.io/swarm-routing/ns3-dev:3.48-debug`
   (`sha256:d81ec51cd842c1fcae85f82c55973615cdde4c7a477c831897d62a6fdb62c2c2` on
-  2026-11-16). Not yet re-run on `latest` (3.49): an acceptance box of #240.
+  2026-11-16). Not yet re-run on `latest` (3.49): an acceptance box of swarm-routing/ns3-tools#240.
 - The single-interface stress program from the same handoff,
   [`dsdv-single-interface-stress.cc`](https://github.com/swarm-routing/AntHocNet/blob/cde1b35b8155eb763ea240adcfe5a063ffcfe91b/docs/handoffs/ns3-dsdv-upstream/dsdv-single-interface-stress.cc),
-  tries the rare single-interface path (upstream #503).
+  tries the rare single-interface path (upstream [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503)).
 
 ## Root cause: five whys
 
@@ -95,19 +95,19 @@ interfaces.
    update's source address (`nextHop = sender`, `dsdv-routing-protocol.cc:619`),
    but a node advertises itself only as `m_ipv4->GetAddress(1, 0)`
    (`:861–862`, `:913`, `:916`). n1 hears as 10.1.2.1 on one link but announces
-   only 10.1.1.2, so n2 has no table entry keyed on its own next hop (#434 §1
+   only 10.1.1.2, so n2 has no table entry keyed on its own next hop (swarm-routing/AntHocNet#434 §1
    and the reproducer's header comment).
 4. **Why does DSDV advertise one hard-coded address?** It was written for one
    non-loopback interface per node, since the original contribution (about
    ns-3.9, 2010); nothing documents that limit, and the same file's
-   `LoopbackRoute()` already handles several interfaces (#434 §2, §3).
-5. **Why did nobody catch it upstream?** Upstream #503 (2021) carried the same
+   `LoopbackRoute()` already handles several interfaces (swarm-routing/AntHocNet#434 §2, §3).
+5. **Why did nobody catch it upstream?** Upstream [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503) (2021) carried the same
    frames on single-interface Wi-Fi and was closed in 2025 assuming a fix; MR
-   !1652 (2023) moved the `NS_ASSERT(route)` that cannot fire and left the
-   unchecked lookup (#434 §2). Our own per-PR satellite gates used a 1×2
+   [nsnam/ns-3-dev!1652](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/1652) (2023) moved the `NS_ASSERT(route)` that cannot fire and left the
+   unchecked lookup (swarm-routing/AntHocNet#434 §2). Our own per-PR satellite gates used a 1×2
    anchor, one interface per node, which does not exercise the deterministic
-   multi-interface trigger (#434 §5); whether the rare single-interface crash
-   of #503 is the same path is likely but not proven.
+   multi-interface trigger (swarm-routing/AntHocNet#434 §5); whether the rare single-interface crash
+   of [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503) is the same path is likely but not proven.
 
 **Root cause.** An unchecked routing-table lookup in
 `LookForQueuedPackets()` turns a missing next hop into a send on a device-less
@@ -219,16 +219,16 @@ ns-3.48):
 | Action | Where | Status |
 |--------|-------|--------|
 | The corridor cell's protocol list drops `dsdv` | [swarm-routing/AntHocNet#281](https://github.com/swarm-routing/AntHocNet/issues/281) | done |
-| `isl-grid` refuses `dsdv` up front on any topology where a node holds more than one ISL ("ns-3's DSDV is single-interface-only (#420)") | swarm-routing/AntHocNet `ns3/anthocnet/examples/isl-grid.cc` ([swarm-routing/AntHocNet#422](https://github.com/swarm-routing/AntHocNet/pull/422)) | done |
+| `isl-grid` refuses `dsdv` up front on any topology where a node holds more than one ISL ("ns-3's DSDV is single-interface-only (swarm-routing/AntHocNet#420)") | swarm-routing/AntHocNet `ns3/anthocnet/examples/isl-grid.cc` ([swarm-routing/AntHocNet#422](https://github.com/swarm-routing/AntHocNet/pull/422)) | done |
 | ns3-tools: `routing-compare`'s own scenarios give each node one Wi-Fi interface, so the deterministic trigger is not reached; no guard here | — | none needed today |
 
 ## Preventive actions
 
 | Action | Where | Status |
 |--------|-------|--------|
-| Satellite protocol-arm smoke: every arm runs on a 3×3 torus, and `dsdv` is refused rather than crashing | swarm-routing/AntHocNet `ci-ns3.yml` (#422) | done |
+| Satellite protocol-arm smoke: every arm runs on a 3×3 torus, and `dsdv` is refused rather than crashing | swarm-routing/AntHocNet `ci-ns3.yml` (swarm-routing/AntHocNet#422) | done |
 | The same audit turned on our vendored arms: GPSR's hard-coded device, AOMDV's unchecked `PathFind()` | [swarm-routing/AntHocNet#437](https://github.com/swarm-routing/AntHocNet/issues/437), [swarm-routing/AntHocNet#416](https://github.com/swarm-routing/AntHocNet/issues/416) | tracked there |
-| Re-run the reproducer on `latest` and on ns-3-dev `master`; on the release that carries !2985, re-run it and revisit the `isl-grid` guard | [#240](https://github.com/swarm-routing/ns3-tools/issues/240) | open |
+| Re-run the reproducer on `latest` and on ns-3-dev `master`; on the release that carries [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985), re-run it and revisit the `isl-grid` guard | [swarm-routing/ns3-tools#240](https://github.com/swarm-routing/ns3-tools/issues/240) | open |
 
 ## Upstream report
 
@@ -244,43 +244,43 @@ ns-3.48):
   fails; `9e7d4b1d` advertise the address of the interface a message is sent
   from; `32420b67` invoke the error callback when dropping queued packets;
   `34524842` a regression test for a multi-interface chain.
-- A pointer comment on the older [#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503).
+- A pointer comment on the older [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503).
 
 Nothing is left to file, but the merge request is not merged. Its thread
 after 2026-08-17, unread here until 2026-11-16:
 
 - 2026-09-13, [note 3825700321](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985#note_3825700321):
-  an alternative fix, [!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011), announced.
-- 2026-09-16: !3011's author: "This MR also fixes the root advertisement bug
-  and asserts real delivery, so I think closing off !3011 could be the right
+  an alternative fix, [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011), announced.
+- 2026-09-16: [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011)'s author: "This MR also fixes the root advertisement bug
+  and asserts real delivery, so I think closing off [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011) could be the right
   call here."
 - Since then: `detailed_merge_status` `need_rebase`, no reviewer assigned,
   head pipeline green.
 
 Next (maintainer, swarm-routing/.github#519 section 4): rebase on `master`
-and request a `module::dsdv` review, citing !3011's deferral. How this went
+and request a `module::dsdv` review, citing [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011)'s deferral. How this went
 unnoticed, and what prevents it, is PROC-001
-([`ns3-rcapa-upstream-report-tracking.md`](ns3-rcapa-upstream-report-tracking.md), #247).
+([`ns3-rcapa-upstream-report-tracking.md`](ns3-rcapa-upstream-report-tracking.md), swarm-routing/ns3-tools#247).
 
 ## Timeline
 
 | Date | Event |
 |------|-------|
-| 2021-12-08 | upstream #503 reports the same frames on single-interface Wi-Fi (closed 2025-06-09 without a fix) |
+| 2021-12-08 | upstream [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503) reports the same frames on single-interface Wi-Fi (closed 2025-06-09 without a fix) |
 | 2026-08-01 | swarm-routing/AntHocNet#281: dsdv crashes the ISL corridor cell |
 | 2026-08-14 | swarm-routing/AntHocNet#420 root cause; swarm-routing/AntHocNet#422 merged (guard and arm smoke) |
 | 2026-08-15 | swarm-routing/AntHocNet#434: reproducer, verification on ns-3-dev `master` `b677fede`, draft |
-| 2026-08-16 | filed as nsnam/ns-3-dev#1364 with MR !2985; the upstream maintainer asks for multi-interface compliance, the MR grows the advertisement fix |
+| 2026-08-16 | filed as [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364) with MR [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985); the upstream maintainer asks for multi-interface compliance, the MR grows the advertisement fix |
 | 2026-08-17 | filing record verified against GitLab (swarm-routing/AntHocNet#445, swarm-routing/AntHocNet#452) |
-| 2026-09-13 | alternative fix !3011 announced on !2985 (note 3825700321) |
-| 2026-09-16 | !3011's author proposes closing it in favour of !2985; no activity on !2985 since |
-| 2026-11-16 | registered as NS3-003, RCAPA ticket #240; #1364 and !2985 still open, no release carries the fix (ns-3.49 is the latest); !2985 found stalled (`need_rebase`, no reviewer), recorded as PROC-001 (#247) |
+| 2026-09-13 | alternative fix [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011) announced on [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) (note 3825700321) |
+| 2026-09-16 | [nsnam/ns-3-dev!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011)'s author proposes closing it in favour of [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985); no activity on [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) since |
+| 2026-11-16 | registered as NS3-003, RCAPA ticket swarm-routing/ns3-tools#240; [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364) and [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) still open, no release carries the fix (ns-3.49 is the latest); [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985) found stalled (`need_rebase`, no reviewer), recorded as PROC-001 (swarm-routing/ns3-tools#247) |
 
 ## Links
 
 - Investigation: [swarm-routing/AntHocNet#281](https://github.com/swarm-routing/AntHocNet/issues/281), [swarm-routing/AntHocNet#420](https://github.com/swarm-routing/AntHocNet/issues/420), [swarm-routing/AntHocNet#434](https://github.com/swarm-routing/AntHocNet/issues/434) (the [archived handoff](https://github.com/swarm-routing/AntHocNet/issues/434#issuecomment-6267904034), the [reconciliation](https://github.com/swarm-routing/AntHocNet/issues/434#issuecomment-5310630314))
 - Record: [swarm-routing/AntHocNet#445](https://github.com/swarm-routing/AntHocNet/pull/445), [swarm-routing/AntHocNet#452](https://github.com/swarm-routing/AntHocNet/pull/452); the handoff files at [`cde1b35b`](https://github.com/swarm-routing/AntHocNet/tree/cde1b35b8155eb763ea240adcfe5a063ffcfe91b/docs/handoffs/ns3-dsdv-upstream) (reproducers and both patches)
 - Workaround: [swarm-routing/AntHocNet#422](https://github.com/swarm-routing/AntHocNet/pull/422)
-- Upstream: [#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364), [!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985), [#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503)
+- Upstream: [nsnam/ns-3-dev#1364](https://gitlab.com/nsnam/ns-3-dev/-/issues/1364), [nsnam/ns-3-dev!2985](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985), [nsnam/ns-3-dev#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503)
 - ns-3 sources (ns-3.49 tag): [`dsdv-routing-protocol.cc`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/dsdv/model/dsdv-routing-protocol.cc), [`dsdv-rtable.cc`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/dsdv/model/dsdv-rtable.cc), [`ipv4-l3-protocol.cc`](https://gitlab.com/nsnam/ns-3-dev/-/blob/ns-3.49/src/internet/model/ipv4-l3-protocol.cc)
-- RCAPA ticket: [#240](https://github.com/swarm-routing/ns3-tools/issues/240)
+- RCAPA ticket: [swarm-routing/ns3-tools#240](https://github.com/swarm-routing/ns3-tools/issues/240)

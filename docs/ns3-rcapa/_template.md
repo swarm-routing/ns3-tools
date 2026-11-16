@@ -1,21 +1,25 @@
 # NS3-NNN: {one-line title: what breaks}
 
 <!-- Copy to ns3-rcapa-<short-description>.md. README.md in this directory says
-what each section must answer. Delete these comments. -->
+what each section must answer. Delete these comments.
+References are fully qualified ("Writing one" in README.md): swarm-routing/<repo>#N
+for the org's items, a link with text nsnam/ns-3-dev#N or nsnam/ns-3-dev!N to the
+full gitlab.com URL for ns-3's; never a bare number with a hash or a bang.
+tools/checks/check-refs.py checks it. -->
 
 ## Summary
 
 | | |
 |---|---|
 | ID | NS3-NNN |
-| RCAPA ticket | [#N](https://github.com/swarm-routing/ns3-tools/issues/N): `[rcapa] NS3-NNN {short description}` |
+| RCAPA ticket | [swarm-routing/ns3-tools#N](https://github.com/swarm-routing/ns3-tools/issues/N): `[rcapa] NS3-NNN {short description}` |
 | Status | open upstream / draft ready / reported / worked around / fixed in ns-3.X |
-| Found | YYYY-MM-DD, in {repo}#N |
+| Found | YYYY-MM-DD, in swarm-routing/{repo}#N |
 | Last checked | YYYY-MM-DD (what was checked: a re-run, a source read, the upstream thread) |
 | ns-3 versions | run: …; read: …; not affected: … |
 | Modules | … |
 | Impact on our repositories | which arms, gates, campaigns or numbers it touches |
-| Upstream | link, or "not yet reported" |
+| Upstream | [nsnam/ns-3-dev#N](https://gitlab.com/nsnam/ns-3-dev/-/issues/N), MR [nsnam/ns-3-dev!N](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/N), or "not yet reported" |
 
 {two or three sentences: the defect and its effect.}
 

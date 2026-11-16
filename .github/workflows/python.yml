@@ -34,6 +34,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Self-tests (fixtures)
         run: for t in python/tests/test_*.py; do echo "== $t"; python3 "$t"; done
+      # ns3-tools#247: every reference in the ns-3 bug register and its RCAPAs
+      # is fully qualified (swarm-routing/<repo>#N, nsnam/ns-3-dev#N|!N links).
+      - name: References in the bug register are fully qualified
+        run: |
+          python3 -I tools/checks/check-refs.py --self-test
+          python3 -I tools/checks/check-refs.py docs/ns3-bugs.md docs/ns3-rcapa/
       - name: Install the package; console scripts run
         run: |
           python3 -m pip install ./python
