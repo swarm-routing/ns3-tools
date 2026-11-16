@@ -30,9 +30,15 @@ with its status and a link to its RCAPA here. This directory holds the detail
    repositories, each with its PR) and preventive actions (tests, expected
    failures, canaries, checks that catch a recurrence). An action not done yet
    is an open issue, linked.
-6. **What goes upstream?** The ready-to-file report and its status. The
-   maintainer files upstream reports on the [nsnam GitLab](https://gitlab.com/nsnam/ns-3-dev/-/issues)
-   under their own account; a session drafts and records, never posts.
+6. **What goes upstream?** The report and its status. Reports go out only
+   through the upstream bridge,
+   [swarm-routing/ns3-upstream-report](https://github.com/swarm-routing/ns3-upstream-report)
+   (swarm-routing/ns3-upstream-report#2): the report is a file there
+   (`reports/NS3-NNN.md`), merged by pull request, verified on ns-3-dev
+   `master` by its CI, and sent to the
+   [nsnam GitLab](https://gitlab.com/nsnam/ns-3-dev/-/issues) after a veto
+   window announced on the item's mirror ticket (the `hold` label stops it).
+   A session drafts and records; it never posts upstream any other way.
 7. **When?** A dated timeline and every link.
 
 ## Adding a bug: the ticket first
@@ -50,12 +56,19 @@ same format. The full procedure is in the register's
    this repository). Its acceptance criteria: this document written, the five
    whys cited, the reproducer verified on the latest image and on ns-3-dev
    `master`, corrective and preventive actions linked, the upstream report
-   filed by the maintainer or the decision recorded.
+   sent through the bridge or the decision not to send recorded.
 2. Copy [`_template.md`](_template.md) to `ns3-rcapa-<short-description>.md`
    (lowercase, hyphens: what breaks, not where it was found). Its summary links
    the ticket.
 3. Add its row to the register and to the table above, in the same pull
    request.
+4. To report it upstream: a pull request to swarm-routing/ns3-upstream-report
+   adds the item to its `tracked.toml` (id, title, RCAPA ticket, the
+   reproducer P1 verify runs, the workarounds to remove once it is fixed)
+   and its `reports/NS3-NNN.md`. The bridge opens the mirror ticket; link it
+   from the RCAPA ticket. The RCAPA ticket stays open until the bridge
+   reports the fix in an ns-3 release and the workaround issues it opens are
+   closed.
 
 ## Writing one
 
