@@ -35,7 +35,7 @@ with its failing check as the reproducer.
 | Verified by | the consumer's failing check on the new release against the old one; then `make check` (ruff, the Python self-tests), the readers byte-identical on `python/tests/fixtures/cells/` and on AntHocNet's corpus (`NS3_TOOL_CELLS`), `scenario_check` and `change_plan` verdicts equal to AntHocNet's, the harness suite and stock-arm checks of `ns3.yml` |
 | Corrective action | the fix PR with a fixture or self-test that fails without it; a marker change follows golden rule 11; then a release and the PyPI publish |
 | Preventive action | the fixture, corpus case or harness check that would have caught it before the release |
-| Closes when | an ns3-tools release carries the fix (tag, PyPI version) **and** the consumer that found it runs green on its lock bump to that release |
+| Closes when | an ns3-tools release carries the fix (tag, PyPI version) **and** the consumer that found it runs green on that release (its lock bump, or the PyPI version it installs) |
 
 ```mermaid
 sequenceDiagram
