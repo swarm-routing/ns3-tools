@@ -47,11 +47,13 @@ jobs:
   python-quality:
     # ruff (org ruff.toml) + the self-tests under coverage, report-only
     # (swarm-routing/.github#35, phase 1); keeps the `python-coverage` artifact.
+    # tools/checks/*.py is measured too (its tests in tools/checks/tests/), so
+    # SonarQube Cloud sees the coverage of the CI scripts it analyses (#249).
     uses: swarm-routing/.github/.github/workflows/reusable-python-ci.yml@main
     with:
-      paths: python
-      tests: python/tests/test_*.py
-      source: python/ns3_tool
+      paths: python tools
+      tests: python/tests/test_*.py tools/checks/tests/test_*.py
+      source: python/ns3_tool tools/checks
 
   module:
     # After the Python job, whose coverage the scan imports; but a ruff finding
