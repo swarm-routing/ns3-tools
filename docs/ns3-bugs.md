@@ -13,6 +13,9 @@ and an **RCAPA ticket**, an issue titled `[rcapa] NS3-NNN …` in this
 repository. The detail (reproduction, five whys, diagrams, source excerpts,
 actions, the upstream text, the timeline) is in the RCAPA, not here.
 
+A regression in a published release of ns3-tools' own code is not an ns-3
+bug: it is an `NST-NNN` RCAPA, in [`rcapa/README.md`](rcapa/README.md).
+
 Upstream reports are filed on the [nsnam GitLab](https://gitlab.com/nsnam/ns-3-dev/-/issues)
 by the maintainer, under their own account: a report speaks for the project.
 A session drafts the text and records the link once it is filed; it never
