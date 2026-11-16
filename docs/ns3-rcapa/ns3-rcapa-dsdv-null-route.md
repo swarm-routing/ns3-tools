@@ -6,9 +6,9 @@
 |---|---|
 | ID | NS3-003 |
 | RCAPA ticket | [#240](https://github.com/swarm-routing/ns3-tools/issues/240) |
-| Status | reported; fix proposed upstream (merge request open); worked around (AntHocNet refuses `dsdv` on multi-interface grids) |
+| Status | reported; fix proposed upstream (merge request open, stalled since 2026-09-16: `need_rebase`, no reviewer; PROC-001); worked around (AntHocNet refuses `dsdv` on multi-interface grids) |
 | Found | 2026-08-01 in [swarm-routing/AntHocNet#281](https://github.com/swarm-routing/AntHocNet/issues/281); root cause 2026-08-14 in [swarm-routing/AntHocNet#420](https://github.com/swarm-routing/AntHocNet/issues/420) |
-| Last checked | 2026-11-16: nsnam/ns-3-dev#1364 and !2985 open (GitLab API); ns-3.49's `dsdv-routing-protocol.cc` read at its tag, the defect lines unchanged |
+| Last checked | 2026-11-16: nsnam/ns-3-dev#1364 and !2985 open, !2985 `need_rebase` with no reviewer, !3011 an alternative whose author defers to !2985 (GitLab API and the MR thread); ns-3.49's `dsdv-routing-protocol.cc` read at its tag, the defect lines unchanged |
 | ns-3 versions | run: 3.36, 3.42, 3.48, ns-3-dev `master` `b677fede` (2026-08-15); read: 3.48, 3.49 (same lines); fixed in: none yet |
 | Modules | `dsdv` (`RoutingProtocol::LookForQueuedPackets`, the update senders, `RoutingTableEntry`); the fault surfaces in `internet` (`Ipv4L3Protocol::SendRealOut`) |
 | Impact on our repositories | stock `dsdv` cannot run on a topology with more than one interface per node (AntHocNet's ISL torus, `isl-grid`): it aborts, or crashes silently in optimized builds. Single-interface runs can hit it rarely (upstream #503: about 0.27 % of 7800 runs). |
@@ -246,8 +246,21 @@ ns-3.48):
   `34524842` a regression test for a multi-interface chain.
 - A pointer comment on the older [#503](https://gitlab.com/nsnam/ns-3-dev/-/issues/503).
 
-Nothing is left to file. Follow-up comments upstream, if any, are the
-maintainer's.
+Nothing is left to file, but the merge request is not merged. Its thread
+after 2026-08-17, unread here until 2026-11-16:
+
+- 2026-09-13, [note 3825700321](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/2985#note_3825700321):
+  an alternative fix, [!3011](https://gitlab.com/nsnam/ns-3-dev/-/merge_requests/3011), announced.
+- 2026-09-16: !3011's author: "This MR also fixes the root advertisement bug
+  and asserts real delivery, so I think closing off !3011 could be the right
+  call here."
+- Since then: `detailed_merge_status` `need_rebase`, no reviewer assigned,
+  head pipeline green.
+
+Next (maintainer, swarm-routing/.github#519 section 4): rebase on `master`
+and request a `module::dsdv` review, citing !3011's deferral. How this went
+unnoticed, and what prevents it, is PROC-001
+([`ns3-rcapa-upstream-report-tracking.md`](ns3-rcapa-upstream-report-tracking.md), #247).
 
 ## Timeline
 
@@ -259,7 +272,9 @@ maintainer's.
 | 2026-08-15 | swarm-routing/AntHocNet#434: reproducer, verification on ns-3-dev `master` `b677fede`, draft |
 | 2026-08-16 | filed as nsnam/ns-3-dev#1364 with MR !2985; the upstream maintainer asks for multi-interface compliance, the MR grows the advertisement fix |
 | 2026-08-17 | filing record verified against GitLab (swarm-routing/AntHocNet#445, swarm-routing/AntHocNet#452) |
-| 2026-11-16 | registered as NS3-003, RCAPA ticket #240; #1364 and !2985 still open, no release carries the fix (ns-3.49 is the latest) |
+| 2026-09-13 | alternative fix !3011 announced on !2985 (note 3825700321) |
+| 2026-09-16 | !3011's author proposes closing it in favour of !2985; no activity on !2985 since |
+| 2026-11-16 | registered as NS3-003, RCAPA ticket #240; #1364 and !2985 still open, no release carries the fix (ns-3.49 is the latest); !2985 found stalled (`need_rebase`, no reviewer), recorded as PROC-001 (#247) |
 
 ## Links
 
