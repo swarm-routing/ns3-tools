@@ -26,15 +26,15 @@ build: ## build what this repo ships
 
 test: ## the fast tests CI runs on every PR
 	for t in python/tests/test_*.py; do python3 "$$t" || exit 1; done
-	python3 -I tools/checks/check-refs.py --self-test
+	for t in tools/checks/tests/test_*.py; do python3 "$$t" || exit 1; done
 	python3 -I tools/checks/check-refs.py docs/ns3-bugs.md docs/ns3-rcapa/
 
 lint: org-tools ## static checks, no changes
-	ruff check --config "$(ORG_DIR)/ruff.toml" python
-	ruff format --check --config "$(ORG_DIR)/ruff.toml" python
+	ruff check --config "$(ORG_DIR)/ruff.toml" python tools
+	ruff format --check --config "$(ORG_DIR)/ruff.toml" python tools
 
 format: org-tools ## apply the formatters
-	ruff format --config "$(ORG_DIR)/ruff.toml" python
+	ruff format --config "$(ORG_DIR)/ruff.toml" python tools
 
 clean: ## remove build outputs
 	rm -rf build dist
