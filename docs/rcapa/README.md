@@ -26,8 +26,10 @@ Zenodo (concept DOI
 [10.5281/zenodo.24136068](https://doi.org/10.5281/zenodo.24136068)).
 AntHocNet pins a release in `ns3-tools.lock`. The CLI and marker contract v1
 are frozen since v1.0.0 (`docs/markers.md`), so a changed marker line or reader
-output against a release is a regression. A defect caught on `main` before
-the next tag needs no RCAPA.
+output against a release is a regression. A defect introduced after the last
+tag and fixed before the next one never reached a release and needs no
+RCAPA; a defect in a released version needs one whenever it is found
+(`git tag --contains <commit>`).
 
 | | |
 |---|---|
