@@ -132,12 +132,33 @@ jobs:
       files: coverage.xml
       flags: python
 
+  # A docs-only pull request or merge group (swarm-routing/.github#581): the
+  # stock-arms and scaffold jobs skip their steps, with no image pulled, and
+  # still report.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs-only: ${{ steps.changes.outputs.docs-only }}
+    steps:
+      - name: Harden the runner (audit egress)
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        timeout-minutes: 2  # its download and start take seconds (swarm-routing/.github#164)
+        with:
+          egress-policy: audit
+      - uses: swarm-routing/.github/.github/actions/changes@main
+        id: changes
+        timeout-minutes: 2
+
   stock-arms:
     name: stock arms deliver (${{ matrix.arms }} on ns-${{ matrix.version }})
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # no image on a docs-only change: the steps skip on the bare runner
     container:
-      image: ghcr.io/swarm-routing/ns3-dev:${{ matrix.version }}
+      image: ${{ needs.changes.outputs.docs-only != 'true' && format('ghcr.io/swarm-routing/ns3-dev:{0}', matrix.version) || '' }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -153,11 +174,14 @@ jobs:
     # in a container cannot take it on a GitHub-hosted runner (it needs sudo on the VM).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           persist-credentials: false
       - name: Build routing-bench alone (stock ns-3 only) and run its suite
+        if: needs.changes.outputs.docs-only != 'true'
         run: ns3-build-contrib --test "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench"
       - name: routing-bench's suite through the bare test runner, routing-bench alone (#211)
+        if: needs.changes.outputs.docs-only != 'true'
         timeout-minutes: 10
         working-directory: /opt/ns-3
         # As a consumer runs it: test.py passes the runner extra arguments, so
@@ -169,21 +193,25 @@ jobs:
           [ -n "$runner" ] || { echo "::error::no ns-3 test runner under build/utils"; exit 1; }
           for _ in 1 2 3; do "$runner" --suite=routing-bench; done
       - name: Every listed arm delivers; an unknown arm aborts
+        if: needs.changes.outputs.docs-only != 'true'
         run: bash tools/checks/check-stock-arms.sh /opt/ns-3 "${{ matrix.arms }}"
       - name: "One ##PERF## line per arm and seed, and no other byte moves (#91)"
-        if: matrix.version == 'latest'
+        if: needs.changes.outputs.docs-only != 'true' && (matrix.version == 'latest')
         timeout-minutes: 15
         run: bash tools/checks/check-perf-markers.sh /opt/ns-3 "olsr dsdv"
 
   scaffold:
+    needs: changes
+    if: ${{ !cancelled() }}
     # ns3-tool scaffold (#39): the skeleton it writes builds as a contrib module
     # beside routing-bench with strict warnings, routing-compare offers its arm,
     # and the arm (stock OLSR until replaced) delivers.
     name: ns3-tool scaffold builds and registers an arm
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # no image on a docs-only change: the steps skip on the bare runner
     container:
-      image: ghcr.io/swarm-routing/ns3-dev:latest-debug
+      image: ${{ needs.changes.outputs.docs-only != 'true' && 'ghcr.io/swarm-routing/ns3-dev:latest-debug' || '' }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -191,16 +219,21 @@ jobs:
     # in a container cannot take it on a GitHub-hosted runner.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           persist-credentials: false
       - name: Scaffold an arm module
+        if: needs.changes.outputs.docs-only != 'true'
         run: python3 python/ns3_tool/cli.py scaffold scaffold-demo --out /tmp/scaffold --holder "ns3-tools CI"
       - name: Build it beside routing-bench (strict warnings)
+        if: needs.changes.outputs.docs-only != 'true'
         run: ns3-build-contrib --strict-warnings "routing-bench=$GITHUB_WORKSPACE/ns3/routing-bench" scaffold-demo=/tmp/scaffold/scaffold-demo
       - name: routing-compare offers the arm, and it delivers
+        if: needs.changes.outputs.docs-only != 'true'
         timeout-minutes: 15
         run: bash tools/checks/check-scaffold-arm.sh /opt/ns-3 scaffold-demo
       - name: routing-bench's suite through the bare test runner, another arm module installed (#211)
+        if: needs.changes.outputs.docs-only != 'true'
         timeout-minutes: 10
         working-directory: /opt/ns-3
         # test.py passes extra arguments to the runner, so the runner alone is

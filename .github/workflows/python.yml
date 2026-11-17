@@ -32,6 +32,10 @@ jobs:
         timeout-minutes: 2  # its download and start take seconds (swarm-routing/.github#164)
         with:
           egress-policy: audit
+      # a docs-only change skips the steps below; the check still reports (swarm-routing/.github#581)
+      - uses: swarm-routing/.github/.github/actions/changes@main
+        id: changes
+        timeout-minutes: 2
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -39,14 +43,17 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Self-tests (fixtures)
+        if: steps.changes.outputs.docs-only != 'true'
         run: for t in python/tests/test_*.py; do echo "== $t"; python3 "$t"; done
       # ns3-tools#247: every reference in the ns-3 bug register and its RCAPAs
       # is fully qualified (swarm-routing/<repo>#N, nsnam/ns-3-dev#N|!N links).
       - name: References in the bug register are fully qualified
+        # reads docs/: runs on a docs-only change too
         run: |
           python3 -I tools/checks/check-refs.py --self-test
           python3 -I tools/checks/check-refs.py docs/ns3-bugs.md docs/ns3-rcapa/
       - name: Install the package; console scripts run
+        if: steps.changes.outputs.docs-only != 'true'
         run: |
           python3 -m pip install ./python
           cd "$RUNNER_TEMP"
@@ -67,10 +74,16 @@ jobs:
         timeout-minutes: 2  # its download and start take seconds (swarm-routing/.github#164)
         with:
           egress-policy: audit
+      # a docs-only change skips the steps below; the check still reports (swarm-routing/.github#581)
+      - uses: swarm-routing/.github/.github/actions/changes@main
+        id: changes
+        timeout-minutes: 2
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.docs-only != 'true'
         with:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.docs-only != 'true'
         with:
           repository: swarm-routing/AntHocNet
           path: anthocnet
@@ -83,18 +96,22 @@ jobs:
             tools/bench/campaigns
           persist-credentials: false
       - run: NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" python3 python/tests/test_bench_parse_query.py
+        if: steps.changes.outputs.docs-only != 'true'
       # ns3-tools#28: the port's verdicts equal AntHocNet's script on every cell.
-      - run: |
+      - if: steps.changes.outputs.docs-only != 'true'
+        run: |
           NS3_TOOL_CELLS="$PWD/anthocnet/results/cells" \
           NS3_TOOL_SCENARIO_CHECK="$PWD/anthocnet/tools/bench/scenario_check.py" \
             python3 python/tests/test_scenario_check_corpus.py
       # ns3-tools#81: change-plan verdicts equal AntHocNet's campaign.py on
       # every committed plan (the plans are YAML: PyYAML, for both scripts).
       - name: PyYAML
+        if: steps.changes.outputs.docs-only != 'true'
         timeout-minutes: 5
         run: |
           python3 -m pip install --quiet --only-binary :all: pyyaml==6.0.3
       - run: NS3_TOOL_ANTHOCNET="$PWD/anthocnet" python3 python/tests/test_change_plan.py
+        if: steps.changes.outputs.docs-only != 'true'
 
 # ruff and the self-tests under coverage (reusable-python-ci.yml) run in
 # ns3.yml, job `python-quality`: the SonarQube Cloud scan there imports their
