@@ -72,7 +72,7 @@
   "test_most_status": "?",
   "test_most_justification": "The owner answers from the coverage report: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "test_continuous_integration_status": "Met",
-  "test_continuous_integration_justification": "GitHub Actions on every pull request: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/dco.yml.",
+  "test_continuous_integration_justification": "GitHub Actions runs the tests on every pull request: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "test_policy_status": "Met",
   "test_policy_justification": "New functionality needs tests: https://github.com/swarm-routing/ns3-tools/blob/main/AGENTS.md.",
   "tests_are_added_status": "?",
@@ -126,11 +126,11 @@
   "static_analysis_often_status": "Met",
   "static_analysis_often_justification": "Runs on every pull request or push: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "dynamic_analysis_status": "Met",
-  "dynamic_analysis_justification": "Dynamic analysis (sanitizers) in CI: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
+  "dynamic_analysis_justification": "Dynamic analysis (AddressSanitizer) in CI: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "dynamic_analysis_unsafe_status": "Met",
-  "dynamic_analysis_unsafe_justification": "C++ runs under AddressSanitizer and UBSan in CI: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
+  "dynamic_analysis_unsafe_justification": "C/C++ tests run under AddressSanitizer in CI: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "dynamic_analysis_enable_assertions_status": "Met",
   "dynamic_analysis_enable_assertions_justification": "Tests run with assertions on (debug builds): https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml.",
   "dynamic_analysis_fixed_status": "Met",
-  "dynamic_analysis_fixed_justification": "A sanitizer or fuzz failure fails CI and is fixed before merge: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml."
+  "dynamic_analysis_fixed_justification": "A finding fails the pull request's CI, so it is fixed before merge: https://github.com/swarm-routing/ns3-tools/blob/main/.github/workflows/ns3.yml."
 }
